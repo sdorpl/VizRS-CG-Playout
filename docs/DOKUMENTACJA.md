@@ -704,7 +704,10 @@ docker compose up -d
 ```
 
 uruchamia VizRS (`:8788`), sidecar (`:7700`, `/health`) i ErsatzTV (`:8409`,
-media testowe z wolumenu `seed-media` albo `MEDIA_DIR`). Stos nie montuje
+media testowe z wolumenu `seed-media` albo `MEDIA_DIR`). Za reverse proxy
+na hoście ustaw `ETV_PORT=127.0.0.1:8409`: ErsatzTV przestaje być publiczny, ale
+tracą go też kontenery spoza stosu łączące się przez adres hosta Dockera
+(np. Restreamer). Stos nie montuje
 żadnych plików z hosta, więc działa tak samo z klonu repozytorium i w
 Portainerze wdrażającym stos z GitHuba (**Stacks → Add stack → Repository**).
 Usługa `seed` (niżej) kopiuje
@@ -715,7 +718,9 @@ w ErsatzTV jako `/vizrs`.
 W ErsatzTV dodaj element **VizRS** do pozycji harmonogramu
 (**Schedules → pozycja → Graphics Elements**) albo do **Deco** przypisanego
 do playoutu i zresetuj playout – bez tego ErsatzTV nie uruchamia skryptu.
-Przy kilku kanałach skopiuj element z `channel=2`, … w URL. Elementy
+Numer `channel=` w `vizrs.yml` ustaw w wolumenie ErsatzTV na numer kanału:
+aktualizacja stosu zmienia resztę pliku, ale zachowuje jego adres (także
+`render`, `area`). Przy kilku kanałach skopiuj element z `channel=2`, … w URL. Elementy
 poszczególnych stron powstają same (§3).
 
 W `/vizrs` jest też nakładka ffmpeg `vizrs-ffmpeg` (§1), zbudowana w obrazie
