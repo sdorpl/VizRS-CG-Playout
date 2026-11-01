@@ -14,6 +14,9 @@
     }
   ],
   "channel_buses": true,
+  "etv_config": "/etc/ersatz",
+  "etv_url": "http://127.0.0.1:8409",
+  "sync_seconds": 60,
   "channels": {
     "2": { "on_clip": "TAKE 4001 headline={title}" }
   },

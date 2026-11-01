@@ -72,24 +72,6 @@ fn sync_pages(url: &str) -> io::Result<Option<SyncReport>> {
     sync::sync_templates(&pages, &dir, SyncOptions { element_url: &element_url, rewrite: false, prune: false }).map(Some)
 }
 
-/// ErsatzTV's channels -> the sidecar, which names them in VizRS. The API key
-/// stays in this container: the sidecar gets numbers and names only.
-fn sync_channels(url: &str) -> io::Result<()> {
-    let folder = std::env::var("ETV_CONFIG_FOLDER").ok().filter(|f| !f.is_empty()).unwrap_or_else(|| "/config".into());
-    let secrets = json::parse(&std::fs::read_to_string(Path::new(&folder).join("api-secrets.json"))?).map_err(|e| error(e.to_string()))?;
-    let key = secrets.get("ApiKey").and_then(|k| k.as_str()).unwrap_or("");
-    let channels = json::parse(&net::get("http://127.0.0.1:8409/api/channels", &format!("X-Etv-Api-Key: {key}\r\n"))?)
-        .map_err(|e| error(e.to_string()))?;
-    let list = channels.as_array().ok_or_else(|| error("channels: expected an array".into()))?;
-    let items = list.iter().filter_map(|c| {
-        let number = c.get("number")?.as_str()?;
-        Some(json::object([("number", number.into()), ("name", c.get("name")?.as_str()?.into())]))
-    });
-    let body = json::Value::Array(items.collect()).to_string();
-    let base = url.split('?').next().unwrap_or(url);
-    net::post(&format!("{base}/channels"), "", &body)
-}
-
 /// Start time of a process from its `stat`; the name before `)` may hold spaces.
 fn start_time(stat: &str) -> Option<u64> {
     stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
@@ -139,12 +121,6 @@ pub fn run(url: &str) {
         Ok(Some(report)) if report.changed() => log(format!("page elements: {report}")),
         Ok(_) => {}
         Err(e) => log(format!("page elements: {e}")),
-    });
-    let channels_url = url.to_owned();
-    thread::spawn(move || {
-        if let Err(e) = sync_channels(&channels_url) {
-            log(format!("channel names: {e}"));
-        }
     });
     let data = json::parse(&String::from_utf8_lossy(&body)).ok();
     let media = data.as_ref().and_then(|d| d.get("MediaItem_Path")).and_then(|p| p.as_str());

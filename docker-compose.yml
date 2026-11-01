@@ -114,6 +114,14 @@ services:
       # auto (native while everything on air is native, Chromium otherwise).
       VIZRS_RENDERER: ${VIZRS_RENDERER:-auto}
       VIZRS_RENDERER_BIN: ${VIZRS_RENDERER_BIN:-}
+      # The sidecar installs the ErsatzTV programs and syncs channels and page elements.
+      VIZRS_ETV_CONFIG: /etv-config
+      VIZRS_ETV_URL: http://ersatztv:8409
+      VIZRS_CLIENT_DIR: /vizrs-client
+      VIZRS_SYNC_SECONDS: ${VIZRS_SYNC_SECONDS:-60}
+    volumes:
+      - ersatztv-config:/etv-config
+      - vizrs-client:/vizrs-client
     # Chromium renders through /dev/shm; the Docker default of 64 MB is too small.
     shm_size: 512mb
     ports:

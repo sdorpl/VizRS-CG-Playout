@@ -146,8 +146,6 @@ pub struct Server {
     ads: Arc<AdMatcher>,
     browser: Option<String>,
     channels: Mutex<HashMap<String, Arc<ChannelEvents>>>,
-    /// The channel list last named in VizRS.
-    channel_list: Mutex<String>,
     sessions: Shared,
     count: AtomicUsize,
     empty: Empty,
@@ -169,7 +167,6 @@ impl Server {
             ads: Arc::new(ads),
             browser,
             channels: Mutex::new(HashMap::new()),
-            channel_list: Mutex::new(String::new()),
             sessions: Shared::default(),
             count: AtomicUsize::new(0),
             empty: Empty::new(),
@@ -289,10 +286,6 @@ impl Server {
                 self.frames_request(&request, stream);
                 Ok(())
             }
-            ("POST", "/etv/channels") => {
-                self.channels_request(&request);
-                http::respond(&mut stream, 200, None, b"")
-            }
             ("POST", "/etv") => {
                 self.script_session(&request, stream);
                 Ok(())
@@ -301,33 +294,6 @@ impl Server {
         };
         if let Err(error) = result {
             crate::debug!("http {} {}: {error}", request.method, request.path);
-        }
-    }
-
-    /// ErsatzTV's channels, from the client: each gets its antenna and name in VizRS.
-    fn channels_request(&self, request: &Request) {
-        let body = String::from_utf8_lossy(&request.body).into_owned();
-        let mut last = self.channel_list.lock().unwrap_or_else(|e| e.into_inner());
-        if !self.config.channel_buses || *last == body {
-            return;
-        }
-        let (Ok(list), Some(api)) = (json::parse(&body), sync::http_url_of(&self.config.output_url)) else { return };
-        let headers = if self.config.vizrs.token.is_empty() { String::new() } else { format!("X-Token: {}\r\n", self.config.vizrs.token) };
-        let mut sent = true;
-        for item in list.as_array().unwrap_or(&[]) {
-            let (Some(number), Some(name)) = (item.get("number").and_then(Value::as_str), item.get("name").and_then(Value::as_str)) else {
-                continue;
-            };
-            let reply =
-                crate::net::post(&format!("{api}/api/channels/{number}"), &headers, &json::object([("name", name.into())]).to_string());
-            if let Err(error) = reply {
-                crate::warn!("channel {number}: name in VizRS: {error}");
-                sent = false;
-            }
-        }
-        // A failure tries again with the next client.
-        if sent {
-            *last = body;
         }
     }
 

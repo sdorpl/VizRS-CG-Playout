@@ -120,23 +120,44 @@ test("channels: each channel commands its own VizRS, the others the main one", a
   assert.deepEqual(second.received, ["TAKE 2 headline=Two", "TAKE 3"]);
 });
 
-test("channel_buses: ErsatzTV's channel names reach VizRS once", async (t) => {
+test("sync: ErsatzTV's channels get antennas and names, the programs reach the volume", async (t) => {
   const seen = [];
-  const vizrsHttp = http.createServer((request, response) => {
+  const fake = http.createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
     request.on("end", () => {
+      if (request.url === "/api/channels") {
+        seen.push(["key", request.headers["x-etv-api-key"]]);
+        return response.writeHead(200).end(JSON.stringify([{ number: "4", name: "BTB Info" }]));
+      }
+      if (request.url === "/api/show") return response.writeHead(200).end(JSON.stringify({ pages: [{ number: 3001, name: "Ticker" }] }));
       seen.push([request.url, request.headers["x-token"], body]);
       response.writeHead(200).end("{}");
     });
   });
-  t.after(() => vizrsHttp.close());
-  const port = await listen(vizrsHttp);
-  const cg = await sidecar(t, { vizrs: { address: "127.0.0.1:9", token: "s" }, channel_buses: true, output_url: `http://127.0.0.1:${port}/output` });
-  const post = () => fetch(`${cg.url}/etv/channels`, { method: "POST", body: JSON.stringify([{ number: "4", name: "BTB Info" }]) });
-  await post();
-  await post();
-  assert.deepEqual(seen, [["/api/channels/4", "s", '{"name":"BTB Info"}']]);
+  t.after(() => fake.close());
+  const port = await listen(fake);
+  const root = mkdtempSync(path.join(os.tmpdir(), "etv-sync-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const dir of ["client", "volume", "config"]) mkdirSync(path.join(root, dir));
+  writeFileSync(path.join(root, "client/vizrs-ffmpeg"), "program");
+  writeFileSync(path.join(root, "vizrs.yml"), "name: VizRS\nargs:\n  - http://cg:7700/etv\n");
+  writeFileSync(path.join(root, "config/api-secrets.json"), '{"ApiKey":"k"}');
+  await sidecar(t, {
+    vizrs: { address: "127.0.0.1:9", token: "s" },
+    channel_buses: true,
+    output_url: `http://127.0.0.1:${port}/output`,
+    etv_url: `http://127.0.0.1:${port}`,
+    etv_config: path.join(root, "config"),
+    client_source: path.join(root, "client"),
+    client_dir: path.join(root, "volume"),
+    sync_seconds: 1,
+  });
+  await sleep(1500);
+  assert.equal(readFileSync(path.join(root, "volume/vizrs-ffmpeg"), "utf8"), "program");
+  assert.ok(seen.some(([key, value]) => key === "key" && value === "k"));
+  assert.deepEqual(seen.filter(([key]) => key !== "key"), [["/api/channels/4", "s", '{"name":"BTB Info"}']], "named once");
+  assert.ok(readdirSync(path.join(root, "config/templates/graphics-elements/script")).includes("page-3001.yml"));
 });
 
 test("channel_buses: a new channel uses its own antenna in VizRS", async (t) => {

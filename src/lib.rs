@@ -10,6 +10,7 @@ pub mod capture;
 pub mod config;
 pub mod devtools;
 pub mod etv_client;
+pub mod etv_sync;
 pub mod frames;
 pub mod http;
 pub mod json;

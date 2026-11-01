@@ -227,7 +227,7 @@ fn with_name(text: &str, name: impl FnOnce(&str) -> String) -> String {
 }
 
 /// A reader of the folder sees the old file or the new one, never a part or none.
-fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
+pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let file = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| error(format!("bad path {}", path.display())))?;
     let temporary = path.with_file_name(format!(".{file}.{}.tmp", std::process::id()));
     fs::write(&temporary, text)?;

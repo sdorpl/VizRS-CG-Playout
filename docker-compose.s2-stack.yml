@@ -33,6 +33,10 @@ services:
     - VIZRS_TAPE=${VIZRS_TAPE:-0}
     - VIZRS_TOKEN=${VIZRS_TOKEN:-vizrs-operator-change-me}
     - VIZRS_BROWSER_ARGS=${VIZRS_BROWSER_ARGS:---num-raster-threads=2 --disable-smooth-scrolling}
+    - VIZRS_ETV_CONFIG=/etv-config
+    - VIZRS_ETV_URL=http://ersatztv:8409
+    - VIZRS_CLIENT_DIR=/vizrs-client
+    - VIZRS_SYNC_SECONDS=${VIZRS_SYNC_SECONDS:-60}
     image: ${CG_IMAGE:-ghcr.io/sdorpl/virtrs-cg:latest}
     init: true
     labels:
@@ -48,6 +52,16 @@ services:
       target: 7700
     restart: unless-stopped
     shm_size: 512mb
+    volumes:
+    - bind:
+        create_host_path: true
+      source: /etc/ersatz
+      target: /etv-config
+      type: bind
+    - source: vizrs-client
+      target: /vizrs-client
+      type: volume
+      volume: {}
   ersatztv:
     cpu_shares: 2048
     depends_on:

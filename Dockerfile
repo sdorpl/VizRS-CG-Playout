@@ -21,14 +21,20 @@ RUN case "$TARGETARCH" in \
                 fi ;; \
       *) echo "unsupported architecture $TARGETARCH" >&2; exit 1 ;; \
     esac \
-    && rustup target add "$(cat /target)"
+    && rustup target add "$(cat /target)" \
+    && sed 's/-gnu$/-musl/' /target > /target-musl \
+    && rustup target add "$(cat /target-musl)"
 # The native gcc of Debian arm64 has the same name.
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src src
 RUN cargo build --release --locked --target "$(cat /target)" \
-    && cp "target/$(cat /target)/release/virtrs-cg" /virtrs-cg
+    && cp "target/$(cat /target)/release/virtrs-cg" /virtrs-cg \
+    && cargo build --release --locked --bin vizrs-etv-client --bin vizrs-ffmpeg --target "$(cat /target-musl)" \
+    && mkdir /client \
+    && cp "target/$(cat /target-musl)/release/vizrs-etv-client" "target/$(cat /target-musl)/release/vizrs-ffmpeg" /client/
 
 ARG VIZRS_REF=v2.0.12
 RUN git clone --depth 1 --branch "$VIZRS_REF" https://github.com/sdorpl/VizRS-CG-System.git /vizrs \
@@ -42,10 +48,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /virtrs-cg /usr/local/bin/virtrs-cg
 COPY --from=build /vizrs-render /usr/local/bin/vizrs-render
+# Static programs for the ErsatzTV container; the sidecar installs them (DOKUMENTACJA §4).
+COPY --from=build /client /usr/local/share/vizrs/client
+COPY etv/templates/graphics-elements/script/vizrs.yml /usr/local/share/vizrs/vizrs.yml
 WORKDIR /app
 COPY etv etv
 
-ENV VIZRS_RENDERER_BIN=/usr/local/bin/vizrs-render
+ENV VIZRS_RENDERER_BIN=/usr/local/bin/vizrs-render \
+    VIZRS_CLIENT_SOURCE=/usr/local/share/vizrs/client
 # Chromium needs a writable HOME (crashpad) for the unprivileged user. The
 # browser binary itself, not Debian's /usr/bin wrapper: the wrapper runs it as
 # a child of sh, so stopping and the parent-death signal would only reach sh.

@@ -19,3 +19,6 @@ services:
   # Prebuilt image with vizrs-render: --build must not overwrite it from Dockerfile.
   cg:
     build: !reset null
+    volumes: !override
+      - /etc/ersatz:/etv-config
+      - vizrs-client:/vizrs-client

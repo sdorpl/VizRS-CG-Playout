@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use virtrs_cg::config::Config;
+use virtrs_cg::etv_sync;
 use virtrs_cg::server::{MAX_BODY, Server};
 use virtrs_cg::{error, http, info, log, sys, warn};
 
@@ -128,6 +129,7 @@ fn main() -> ExitCode {
     let burn_in = if config.output_url.is_empty() { "off" } else { config.output_url.as_str() };
     info!("listening on {}; VizRS {}; burn-in {burn_in}", config.listen, config.vizrs.address);
 
+    etv_sync::start(&config);
     let server = Server::new(config);
     let stopping = Arc::clone(&server);
     std::thread::spawn(move || {

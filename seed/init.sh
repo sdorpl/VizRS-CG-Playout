@@ -2,9 +2,7 @@
 # Every start of the stack (the image of seed/Dockerfile): copies the reference
 # instance into empty volumes – the VizRS show with its backgrounds, the
 # ErsatzTV channel database and the test media. Volumes that already hold data
-# are left alone. The ErsatzTV programs and the graphics element are ours and
-# are always replaced (the element keeps its address), so a new version of the
-# stack brings them along.
+# are left alone. The ErsatzTV programs and elements come from the sidecar.
 set -eu
 
 # A new volume created here belongs to root; VizRS runs as 10001.
@@ -31,18 +29,15 @@ else
   echo "seed: test media copied"
 fi
 
-rm -rf /vizrs-client/*
-cp -R /seed/client/. /vizrs-client/
-chmod 755 /vizrs-client/*
-mkdir -p /ersatztv-config/templates/graphics-elements/script
-# The general element; the page elements come from the live VizRS show, written
-# by vizrs-etv-client (src/sync.rs).
+# The sidecar (user 10001) keeps these up to date itself: programs, elements
+# and read access to the ErsatzTV API key.
 elements=/ersatztv-config/templates/graphics-elements/script
-# The element's address is per instance (channel=, area=): a new version keeps it.
-url=$(grep -m1 '^  - http' "$elements/vizrs.yml" 2>/dev/null || true)
-cp -R /seed/templates/. "$elements/"
-if [ -n "$url" ]; then
-  URL="$url" awk '/^  - http/ { print ENVIRON["URL"]; next } { print }' \
-    /seed/templates/vizrs.yml > "$elements/vizrs.yml"
+mkdir -p "$elements"
+chown -R 10001:10001 /vizrs-client "$elements"
+if [ -e /ersatztv-config/api-secrets.json ]; then
+  chown root:10001 /ersatztv-config/api-secrets.json
+  chmod 640 /ersatztv-config/api-secrets.json
 fi
-echo "seed: ErsatzTV clients and VizRS graphics elements updated"
+chgrp 10001 /ersatztv-config
+chmod g+x /ersatztv-config /ersatztv-config/templates /ersatztv-config/templates/graphics-elements
+echo "seed: access for the sidecar set"

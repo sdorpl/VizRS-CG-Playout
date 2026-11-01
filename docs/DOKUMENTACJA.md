@@ -213,7 +213,6 @@ Sidecar to jeden plik binarny `virtrs-cg` (Rust) obok bezgłowego Chromium:
 | `POST /etv?channel=1[&render=720p][&area=1920x140+0+930]` | treść: dane szablonu ErsatzTV; odpowiedź: niekończący się strumień pakietów ETV; `render` – rozmiar renderowania grafiki, `area` – obszar grafiki (§1) |
 | `GET /ffmpeg?channel=1[&wait=2000][&area=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki |
 | `GET /ffmpeg/frames?session=N[&fps=25/1][&area=1]` | surowe klatki `yuva420p` przejętej sesji dla ffmpeg, z `area=1` w rozmiarze obszaru grafiki (Nakładka ffmpeg, niżej) |
-| `POST /etv/channels` | numery i nazwy kanałów ErsatzTV od klienta, dla VizRS (§3) |
 | `GET /etv/pages[?channel=1]` | strony VizRS kanału (lista elementów, §3) |
 | `GET /health` | liczba sesji, stan przechwytywania (`size` kanału, `render`, `area`, `fps`, `mode`: `screencast` albo `frames`, `status`: `capturing`, `paused`, `restarting`…, `seq`) i kanały z nakładką ffmpeg (`overlay`) |
 
@@ -581,10 +580,9 @@ od razu ma własną grafikę. Wymaga VizRS z antenami kanałów. Strony i show s
 wspólne, a różnią się tym, co kanał bierze na antenę. Operator wybiera antenę
 kanału w Trio (lista **Antena**), a główna antena przy tej opcji nie idzie na emisję. Karuzela, rundown, makra i dock działają na wybranej antenie.
 
-Przy `channel_buses` klient `vizrs-etv-client` odczytuje kanały z API ErsatzTV
-(klucz z `api-secrets.json` zostaje w jego kontenerze) i podaje numery i nazwy
-sidecarowi (`POST /etv/channels`), a ten zakłada je w VizRS. Lista **Antena** w Trio
-pokazuje więc kanały ErsatzTV z ich nazwami. Port API to 8409.
+Przy `channel_buses` sidecar co `sync_seconds` czyta kanały z API ErsatzTV i
+zakłada je z nazwami w VizRS (§4), więc lista **Antena** w Trio pokazuje kanały
+ErsatzTV, zanim pójdzie na nich pierwsza grafika.
 
 Obiekt `channels` nadpisuje ustawienia kanału: komendy, `shows`, a także własny
 VizRS (kanał z `vizrs.address` nie używa wtedy anteny kanału). Czego nie podasz,
@@ -811,6 +809,22 @@ Obraz sidecara ma `tzdata` i sam ustawia `TZ=Europe/Warsaw`, więc ta sama
 strefa obowiązuje też poza tym compose (np. `docker run`). Inną strefę daje
 tylko zmiana kotwicy w compose.
 
+### Synchronizacja z ErsatzTV
+
+Sidecar sam utrzymuje integrację, więc jego wersja zawsze zgadza się z klientami:
+
+- na starcie kopiuje `vizrs-etv-client` i `vizrs-ffmpeg` z obrazu do wolumenu
+  (`VIZRS_CLIENT_SOURCE`, `VIZRS_CLIENT_DIR`) podmianą pliku, bez przerywania
+  działającego ffmpeg, i aktualizuje `vizrs.yml`, zachowując jego adres;
+- co `VIZRS_SYNC_SECONDS` (domyślnie 60 s) przez API ErsatzTV (`VIZRS_ETV_URL`,
+  klucz z `api-secrets.json` w `VIZRS_ETV_CONFIG`) zakłada anteny i nazwy kanałów,
+  a ze stron VizRS robi elementy `page-<ID>.yml`.
+
+Puste `VIZRS_ETV_CONFIG` wyłącza synchronizację, a wtedy elementy stron robi jak
+dotąd klient (§3). `seed` wypełnia tylko puste wolumeny i przy każdym starcie
+stosu daje użytkownikowi 10001 zapis do klientów i elementów oraz odczyt klucza
+API. Błędy trafiają tylko do logu.
+
 ### Automatyczna aktualizacja po wydaniu
 
 Stosy s1 i s2 używają obrazów z wydań: `virtrs-cg`, `vizrs` i `vizrs-seed`.
@@ -818,7 +832,8 @@ Watchtower ich nie dotyka, bo odtworzenie jednego kontenera pomija `seed` i
 zależności. Aktualizuje Portainer: workflow `stack-refresh.yml` co 15 minut
 porównuje najnowsze wydania obu repozytoriów z plikiem `.release` i przy zmianie
 zapisuje go na `main`. Stos w Portainerze ma włączone **GitOps updates** z
-**Re-pull image**, więc po tym commicie pobiera obrazy i uruchamia `seed` na nowo.
+**Re-pull image**, więc po tym commicie pobiera obrazy, a nowy `cg` przynosi
+programy ErsatzTV.
 Odtworzenie `cg` zamraża grafikę do końca pozycji; naprawą jest restart ErsatzTV.
 
 ### Dane startowe (`seed/`)
@@ -1043,6 +1058,10 @@ virtrs-cg config.json      # albo CONFIG=config.json virtrs-cg
   "renderer_bin": ""
 }
 ```
+
+Opcje `etv_config`, `etv_url`, `client_source`, `client_dir`, `sync_seconds`
+(env `VIZRS_ETV_CONFIG`, `VIZRS_ETV_URL`, `VIZRS_CLIENT_SOURCE`, `VIZRS_CLIENT_DIR`,
+`VIZRS_SYNC_SECONDS`): synchronizacja z ErsatzTV (§4).
 
 Obiekt `channels` (opcjonalny, env `VIZRS_CHANNELS` z tym samym JSON-em; błędny
 JSON w env trafia do logu i jest pomijany) daje kanałowi własny VizRS (§3).

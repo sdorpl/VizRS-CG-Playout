@@ -62,6 +62,15 @@ pub struct Config {
     pub channels: Vec<ChannelOverride>,
     /// Each ErsatzTV channel gets its own antenna in VizRS, without configuration.
     pub channel_buses: bool,
+    /// ErsatzTV's configuration folder; "" = the sidecar does not sync with ErsatzTV.
+    pub etv_config: String,
+    /// ErsatzTV's address, e.g. `http://ersatztv:8409`.
+    pub etv_url: String,
+    /// The ErsatzTV programs in the image, and the volume they go to; "" = not installed.
+    pub client_source: String,
+    pub client_dir: String,
+    /// Time between syncs with ErsatzTV.
+    pub sync_seconds: f64,
     /// Before each command to VizRS (`@2 `); set by `for_channel`.
     pub command_prefix: String,
     /// An item without the VizRS graphics element (no session after the
@@ -110,6 +119,11 @@ impl Default for Config {
             shows: Vec::new(),
             channels: Vec::new(),
             channel_buses: false,
+            etv_config: String::new(),
+            etv_url: String::new(),
+            client_source: String::new(),
+            client_dir: String::new(),
+            sync_seconds: 60.0,
             command_prefix: String::new(),
             ad_without_element: true,
             in_seconds: 5.0,
@@ -243,6 +257,11 @@ impl Config {
                     }
                     "channels" => config.channels = channel_overrides(value)?,
                     "channel_buses" => config.channel_buses = boolean(value, key)?,
+                    "etv_config" => config.etv_config = string(value, key)?,
+                    "etv_url" => config.etv_url = string(value, key)?,
+                    "client_source" => config.client_source = string(value, key)?,
+                    "client_dir" => config.client_dir = string(value, key)?,
+                    "sync_seconds" => config.sync_seconds = number(value, key)?,
                     "ad_without_element" => config.ad_without_element = boolean(value, key)?,
                     "in_seconds" => config.in_seconds = number(value, key)?,
                     "out_seconds" => config.out_seconds = number(value, key)?,
@@ -295,6 +314,24 @@ impl Config {
             match json::parse(&v).map_err(|e| e.to_string()).and_then(|value| channel_overrides(&value)) {
                 Ok(channels) => config.channels = channels,
                 Err(error) => warnings.push(format!("VIZRS_CHANNELS: {error}; ignored")),
+            }
+        }
+        if let Some(v) = env("VIZRS_ETV_CONFIG") {
+            config.etv_config = v;
+        }
+        if let Some(v) = env("VIZRS_ETV_URL") {
+            config.etv_url = v.trim_end_matches('/').to_owned();
+        }
+        if let Some(v) = env("VIZRS_CLIENT_SOURCE") {
+            config.client_source = v;
+        }
+        if let Some(v) = env("VIZRS_CLIENT_DIR") {
+            config.client_dir = v;
+        }
+        if let Some(v) = env("VIZRS_SYNC_SECONDS").filter(|v| !v.is_empty()) {
+            match v.trim().parse() {
+                Ok(seconds) => config.sync_seconds = seconds,
+                Err(_) => warnings.push(format!("VIZRS_SYNC_SECONDS=\"{v}\" is not a number; using {}", config.sync_seconds)),
             }
         }
         if let Some(v) = env("VIZRS_CHANNEL_BUSES").filter(|v| !v.is_empty()) {
@@ -534,6 +571,13 @@ mod tests {
         let own = config.for_channel("5");
         assert_eq!((own.command_prefix.as_str(), own.output_url.as_str()), ("", "http://o:8088/output"));
         assert_eq!(Config::default().for_channel("7").command_prefix, "");
+        let (config, _) = Config::from_values(None, &|name| match name {
+            "VIZRS_ETV_URL" => Some("http://ersatztv:8409/".into()),
+            "VIZRS_SYNC_SECONDS" => Some("30".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!((config.etv_url.as_str(), config.sync_seconds), ("http://ersatztv:8409", 30.0));
     }
 
     #[test]
