@@ -1,6 +1,6 @@
 {
   "name": "vizrs-cg-playout-tests",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "private": true,
   "description": "Contract tests of the VizRS CG Playout sidecar (Rust binary) as a black box: Node.js standard library only",
   "type": "module",
