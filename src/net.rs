@@ -101,6 +101,24 @@ pub fn get(url: &str, headers: &str) -> io::Result<String> {
     }
 }
 
+/// `POST` of JSON; an answer other than 200 is an error.
+pub fn post(url: &str, headers: &str, body: &str) -> io::Result<()> {
+    let parts = Url::split(url).ok_or_else(|| error(format!("bad URL {url}")))?;
+    let mut stream = connect(&parts)?;
+    let request = format!(
+        "POST {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+        parts.target(),
+        parts.netloc,
+        body.len()
+    );
+    stream.write_all(request.as_bytes())?;
+    let line = read_head(&mut stream, parts.netloc)?;
+    match status_of(&line) {
+        "200" => Ok(()),
+        status => Err(error(format!("HTTP {status} from {}", parts.netloc))),
+    }
+}
+
 /// Status code of a status line.
 pub fn status_of(line: &str) -> &str {
     line.split(' ').nth(1).unwrap_or("")

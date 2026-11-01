@@ -213,6 +213,7 @@ Sidecar to jeden plik binarny `virtrs-cg` (Rust) obok bezgłowego Chromium:
 | `POST /etv?channel=1[&render=720p][&area=1920x140+0+930]` | treść: dane szablonu ErsatzTV; odpowiedź: niekończący się strumień pakietów ETV; `render` – rozmiar renderowania grafiki, `area` – obszar grafiki (§1) |
 | `GET /ffmpeg?channel=1[&wait=2000][&area=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki |
 | `GET /ffmpeg/frames?session=N[&fps=25/1][&area=1]` | surowe klatki `yuva420p` przejętej sesji dla ffmpeg, z `area=1` w rozmiarze obszaru grafiki (Nakładka ffmpeg, niżej) |
+| `POST /etv/channels` | numery i nazwy kanałów ErsatzTV od klienta, dla VizRS (§3) |
 | `GET /etv/pages[?channel=1]` | strony VizRS kanału (lista elementów, §3) |
 | `GET /health` | liczba sesji, stan przechwytywania (`size` kanału, `render`, `area`, `fps`, `mode`: `screencast` albo `frames`, `status`: `capturing`, `paused`, `restarting`…, `seq`) i kanały z nakładką ffmpeg (`overlay`) |
 
@@ -579,6 +580,11 @@ kieruje na nie każdy kanał ErsatzTV bez konfiguracji: nowy kanał z elementem 
 od razu ma własną grafikę. Wymaga VizRS z antenami kanałów. Strony i show są
 wspólne, a różnią się tym, co kanał bierze na antenę. Operator wybiera antenę
 kanału w Trio (lista **Antena**), a główna antena przy tej opcji nie idzie na emisję. Karuzela, rundown, makra i dock działają na wybranej antenie.
+
+Przy `channel_buses` klient `vizrs-etv-client` odczytuje kanały z API ErsatzTV
+(klucz z `api-secrets.json` zostaje w jego kontenerze) i podaje numery i nazwy
+sidecarowi (`POST /etv/channels`), a ten zakłada je w VizRS. Lista **Antena** w Trio
+pokazuje więc kanały ErsatzTV z ich nazwami. Port API to 8409.
 
 Obiekt `channels` nadpisuje ustawienia kanału: komendy, `shows`, a także własny
 VizRS (kanał z `vizrs.address` nie używa wtedy anteny kanału). Czego nie podasz,
