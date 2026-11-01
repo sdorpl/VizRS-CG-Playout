@@ -1,0 +1,31 @@
+name: Stack refresh
+# Nowe wydanie sidecara albo VizRS = commit pliku .release na main: Portainer
+# (GitOps, Re-pull image) pobiera wtedy obrazy na s1 i s2 (DOKUMENTACJA §4).
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wersje
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest() { gh release view --repo "$1" --json tagName -q .tagName; }
+          printf 'virtrs-cg %s\nvizrs %s\n' "$(latest sdorpl/VirtRS-CG-Playout)" "$(latest sdorpl/VizRS-CG-System)" > .release
+          cat .release
+      - name: Zapis
+        run: |
+          git diff --quiet --exit-code -- .release 2>/dev/null && [ "$(git ls-files .release)" ] && exit 0
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add .release
+          git commit -m "Wydania: $(tr '\n' ' ' < .release)"
+          git push

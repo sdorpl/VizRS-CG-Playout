@@ -1,6 +1,6 @@
 [package]
 name = "virtrs-cg"
-version = "2.4.1"
+version = "2.4.2"
 edition = "2024"
 rust-version = "1.87"
 description = "VizRS graphics for ErsatzTV channels: commands on clip start and burn-in of /output"

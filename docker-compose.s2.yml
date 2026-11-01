@@ -4,11 +4,8 @@
 # volumes of these services, update the lists here too.
 services:
   # Portainer agent cannot run BuildKit ("frame too large"): nothing here may
-  # build. Image built on s2 from a tree with channel=4 in vizrs.yml.
+  # build. The image comes from the release (docker-compose.ampere.yml).
   seed:
-    image: virtrs-cg-playout-seed:latest
-    pull_policy: never
-    build: !reset null
     volumes: !override
       - vizrs-data:/vizrs-data
       - /etc/ersatz:/ersatztv-config

@@ -811,6 +811,16 @@ Obraz sidecara ma `tzdata` i sam ustawia `TZ=Europe/Warsaw`, więc ta sama
 strefa obowiązuje też poza tym compose (np. `docker run`). Inną strefę daje
 tylko zmiana kotwicy w compose.
 
+### Automatyczna aktualizacja po wydaniu
+
+Stosy s1 i s2 używają obrazów z wydań: `virtrs-cg`, `vizrs` i `vizrs-seed`.
+Watchtower ich nie dotyka, bo odtworzenie jednego kontenera pomija `seed` i
+zależności. Aktualizuje Portainer: workflow `stack-refresh.yml` co 15 minut
+porównuje najnowsze wydania obu repozytoriów z plikiem `.release` i przy zmianie
+zapisuje go na `main`. Stos w Portainerze ma włączone **GitOps updates** z
+**Re-pull image**, więc po tym commicie pobiera obrazy i uruchamia `seed` na nowo.
+Odtworzenie `cg` zamraża grafikę do końca pozycji; naprawą jest restart ErsatzTV.
+
 ### Dane startowe (`seed/`)
 
 Pierwszy start stosu dostaje gotową konfigurację instancji wzorcowej. Usługa

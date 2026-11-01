@@ -2,6 +2,7 @@ name: Release
 # Wydanie po wypchnięciu znacznika v* (np. v2.0.6) albo ręcznie (Actions → Release → Run workflow).
 #   binarka virtrs-cg (Rust) z client/ (vizrs-etv-client i vizrs-ffmpeg, statyczne musl) i etv/: Linux x86_64 i arm64 (.tar.gz)
 #   obraz Docker ghcr.io/<właściciel>/virtrs-cg:<wersja> i :latest (amd64 + arm64)
+#   obraz ghcr.io/<właściciel>/vizrs-seed:<wersja> i :latest (dane startowe i programy ErsatzTV; stosy s1 i s2)
 #   wydanie na GitHubie z sumami SHA256SUMS.txt (ręcznie: szkic)
 # Wersja z łącznikiem (v2.1.0-rc1) = wydanie wstępne, bez przesuwania :latest.
 on:
@@ -79,6 +80,17 @@ jobs:
           tags: |
             ${{ steps.img.outputs.name }}:${{ env.VERSION }}
             ${{ !contains(env.VERSION, '-') && format('{0}:latest', steps.img.outputs.name) || '' }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: seed/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          cache-from: type=gha,scope=seed
+          cache-to: type=gha,mode=max,scope=seed
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vizrs-seed:${{ env.VERSION }}
+            ${{ !contains(env.VERSION, '-') && format('ghcr.io/{0}/vizrs-seed:latest', github.repository_owner) || '' }}
 
   release:
     needs: [bin, docker]

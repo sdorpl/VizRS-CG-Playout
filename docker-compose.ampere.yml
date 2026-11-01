@@ -18,6 +18,12 @@
 # Scale the numbers with the shape (CG_CPUS, ...).
 
 services:
+  seed:
+    image: ${SEED_IMAGE:-ghcr.io/sdorpl/vizrs-seed:latest}
+    platform: linux/arm64
+    # From the release, like cg: a Portainer agent cannot build.
+    build: !reset null
+
   vizrs:
     platform: linux/arm64
     cpus: ${VIZRS_CPUS:-0.5}
