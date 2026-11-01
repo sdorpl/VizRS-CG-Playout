@@ -109,7 +109,8 @@ impl Connection {
 
 /// Sends commands over one connection: replies per command and the pages taken
 /// out by `clear_first` (all layers on air, from `STATE`).
-pub fn send(address: &str, token: &str, commands: &[String], clear_first: bool) -> Result<Sent, String> {
+/// `prefix` goes before each of them: `@2 ` aims at the channel's antenna in VizRS.
+pub fn send(address: &str, token: &str, prefix: &str, commands: &[String], clear_first: bool) -> Result<Sent, String> {
     let mut connection = Connection::open(address)?;
     let mut sent = Sent::default();
 
@@ -121,8 +122,8 @@ pub fn send(address: &str, token: &str, commands: &[String], clear_first: bool) 
     }
 
     if clear_first {
-        if let Some((out, pages)) = on_air(&connection.command("STATE")?) {
-            let reply = connection.command(&out)?;
+        if let Some((out, pages)) = on_air(&connection.command(&format!("{prefix}STATE"))?) {
+            let reply = connection.command(&format!("{prefix}{out}"))?;
             if reply.starts_with("OK") {
                 sent.cleared_pages = pages;
             }
@@ -131,7 +132,7 @@ pub fn send(address: &str, token: &str, commands: &[String], clear_first: bool) 
     }
 
     for command in commands {
-        let reply = connection.command(command)?;
+        let reply = connection.command(&format!("{prefix}{command}"))?;
         sent.replies.push((command.clone(), reply));
     }
     Ok(sent)
@@ -373,7 +374,7 @@ fn send_clip(config: &Config, cleared: &mut Option<Vec<String>>, Batch { ad, res
         return;
     }
 
-    match send(&config.vizrs.address, &config.vizrs.token, &commands, ad) {
+    match send(&config.vizrs.address, &config.vizrs.token, &config.command_prefix, &commands, ad) {
         Ok(sent) => {
             // Later ads of the same break only find `on_ad` graphics on air.
             if !sent.cleared_pages.is_empty() && cleared.is_none() {
@@ -462,7 +463,7 @@ mod tests {
                 _ => "OK {}".into(),
             })
         });
-        let sent = send(&address, "secret", &["TAKE 9".into(), "UPDATE 1 a=b".into()], true).unwrap();
+        let sent = send(&address, "secret", "", &["TAKE 9".into(), "UPDATE 1 a=b".into()], true).unwrap();
         assert_eq!(sent.cleared_pages, ["1001", "3001"]);
         assert_eq!(sent.replies[0], ("OUT main,bug".into(), "OK {}".into()));
         assert_eq!(sent.replies[1], ("TAKE 9".into(), "ERR no page".into()));
@@ -472,14 +473,14 @@ mod tests {
     #[test]
     fn rejected_auth_and_lost_connection() {
         let (address, server) = fake(|_| Some("ERR unauthorized".into()));
-        assert_eq!(send(&address, "bad", &["TAKE 1".into()], false).unwrap_err(), "AUTH: ERR unauthorized");
+        assert_eq!(send(&address, "bad", "", &["TAKE 1".into()], false).unwrap_err(), "AUTH: ERR unauthorized");
         server.join().unwrap();
 
         let (address, server) = fake(|_| None);
-        assert_eq!(send(&address, "", &["TAKE 1".into()], false).unwrap_err(), "connection closed");
+        assert_eq!(send(&address, "", "", &["TAKE 1".into()], false).unwrap_err(), "connection closed");
         server.join().unwrap();
 
-        assert!(send("127.0.0.1:9", "", &[], false).unwrap_err().starts_with("connect to 127.0.0.1:9: "));
+        assert!(send("127.0.0.1:9", "", "", &[], false).unwrap_err().starts_with("connect to 127.0.0.1:9: "));
     }
 
     #[test]
@@ -493,7 +494,7 @@ mod tests {
             drop(stream);
         });
         let started = std::time::Instant::now();
-        assert_eq!(send(&address, "", &["TAKE 1".into()], false).unwrap_err(), "TAKE: no reply");
+        assert_eq!(send(&address, "", "", &["TAKE 1".into()], false).unwrap_err(), "TAKE: no reply");
         assert!(started.elapsed() < REPLY_TIMEOUT + Duration::from_millis(400));
         hold.join().unwrap();
     }

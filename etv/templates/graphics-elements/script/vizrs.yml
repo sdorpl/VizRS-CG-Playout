@@ -1,21 +1,20 @@
 # VizRS graphics for ErsatzTV (VizRS CG Playout).
 # Copy to <ErsatzTV config>/templates/graphics-elements/script/ and add the
 # element "VizRS" to the channel's Deco (Graphics Elements).
-# "channel=" must be the ErsatzTV channel number; a stack update keeps the
-# address set here in the volume. Change it per channel when several channels
-# share one sidecar.
-# "&render=720p" renders the graphics at 720p and scales them to the channel
+# The client takes the channel from ErsatzTV by itself; "?channel=N" fixes it.
+# A stack update keeps the address set here in the volume.
+# "?render=720p" renders the graphics at 720p and scales them to the channel
 # (less CPU for animations, softer text); default: the channel size.
-# "&area=1920x140+0+930" (WxH+X+Y): only that part of the channel carries
+# "?area=1920x140+0+930" (WxH+X+Y): only that part of the channel carries
 # graphics (here a ticker strip); Chromium draws and ffmpeg overlays only it,
 # everything outside is cut off. Several areas comma-separated, e.g. a ticker
-# and a logo: "&area=1920x140+0+930,160x160+1690+30". Default: the whole channel.
+# and a logo: "?area=1920x140+0+930,160x160+1690+30". Default: the whole channel.
 # The elements of single VizRS pages (page-<ID>.yml) are written next to this
-# file by the client, with this URL plus "&page=<ID>" (DOKUMENTACJA §3).
+# file by the client, with this URL plus "page=<ID>" (DOKUMENTACJA §3).
 name: VizRS
 command: /vizrs/vizrs-etv-client
 args:
-  - http://cg:7700/etv?channel=1
+  - http://cg:7700/etv
 z_index: 100
 # Current and next programmes from the guide: {next_title}, {next_start}.
 epg_entries: 3

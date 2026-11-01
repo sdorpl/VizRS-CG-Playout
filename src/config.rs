@@ -33,6 +33,20 @@ pub struct ShowOverride {
     pub ad_match: Option<AdMatch>,
 }
 
+/// What one ErsatzTV channel has of its own: another VizRS means other
+/// graphics (VizRS has one on-air state). `None` = the global value.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChannelOverride {
+    /// ErsatzTV channel number, as in `/etv?channel=`.
+    pub channel: String,
+    pub address: Option<String>,
+    pub token: Option<String>,
+    pub output_url: Option<String>,
+    pub on_clip: Option<String>,
+    pub on_ad: Option<String>,
+    pub shows: Option<Vec<ShowOverride>>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub listen: String,
@@ -44,6 +58,12 @@ pub struct Config {
     pub ad_match: AdMatch,
     /// Per-show overrides for `on_clip`, `on_ad` and `ad_match`.
     pub shows: Vec<ShowOverride>,
+    /// Per-channel overrides of the VizRS instance and its commands.
+    pub channels: Vec<ChannelOverride>,
+    /// Each ErsatzTV channel gets its own antenna in VizRS, without configuration.
+    pub channel_buses: bool,
+    /// Before each command to VizRS (`@2 `); set by `for_channel`.
+    pub command_prefix: String,
     /// An item without the VizRS graphics element (no session after the
     /// previous item ends) is treated as a commercial.
     pub ad_without_element: bool,
@@ -88,6 +108,9 @@ impl Default for Config {
             on_ad: String::new(),
             ad_match: AdMatch::default(),
             shows: Vec::new(),
+            channels: Vec::new(),
+            channel_buses: false,
+            command_prefix: String::new(),
             ad_without_element: true,
             in_seconds: 5.0,
             out_seconds: 5.0,
@@ -129,6 +152,55 @@ fn boolean(value: &Value, name: &str) -> Result<bool, String> {
     value.as_bool().ok_or_else(|| format!("{name}: expected true or false"))
 }
 
+/// A `shows` array; `name` is its place in the configuration.
+fn show_overrides(value: &Value, name: &str) -> Result<Vec<ShowOverride>, String> {
+    let items = value.as_array().ok_or(format!("{name}: expected an array"))?;
+    let mut shows = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let prefix = format!("{name}[{i}]");
+        let show_title = item.get("show_title").map(|v| string(v, &format!("{prefix}.show_title"))).transpose()?.unwrap_or_default();
+        if show_title.is_empty() {
+            return Err(format!("{prefix}: show_title is required"));
+        }
+        let on_clip = item.get("on_clip").map(|v| string(v, &format!("{prefix}.on_clip"))).transpose()?;
+        let on_ad = item.get("on_ad").map(|v| string(v, &format!("{prefix}.on_ad"))).transpose()?;
+        let ad_match = if item.get("ad_match").is_some_and(|v| !v.is_null()) {
+            let v = item.get("ad_match").unwrap();
+            let path = v.get("path").map(|p| string(p, &format!("{prefix}.ad_match.path"))).transpose()?.unwrap_or_default();
+            let title = v.get("title").map(|t| string(t, &format!("{prefix}.ad_match.title"))).transpose()?.unwrap_or_default();
+            Some(AdMatch { path, title })
+        } else {
+            None
+        };
+        shows.push(ShowOverride { show_title, on_clip, on_ad, ad_match });
+    }
+    Ok(shows)
+}
+
+/// The `channels` object: `{"2": {"vizrs": {"address": "vizrs2:6100"}, …}}`.
+fn channel_overrides(value: &Value) -> Result<Vec<ChannelOverride>, String> {
+    let Value::Object(members) = value else { return Err("channels: expected an object".into()) };
+    let mut channels = Vec::new();
+    for (channel, item) in members {
+        let prefix = format!("channels.{channel}");
+        if !matches!(item, Value::Object(_)) {
+            return Err(format!("{prefix}: expected an object"));
+        }
+        let field = |value: Option<&Value>, name: &str| value.map(|v| string(v, &format!("{prefix}.{name}"))).transpose();
+        let vizrs = item.get("vizrs");
+        channels.push(ChannelOverride {
+            channel: channel.clone(),
+            address: field(vizrs.and_then(|v| v.get("address")), "vizrs.address")?,
+            token: field(vizrs.and_then(|v| v.get("token")), "vizrs.token")?,
+            output_url: field(item.get("output_url"), "output_url")?,
+            on_clip: field(item.get("on_clip"), "on_clip")?,
+            on_ad: field(item.get("on_ad"), "on_ad")?,
+            shows: item.get("shows").map(|v| show_overrides(v, &format!("{prefix}.shows"))).transpose()?,
+        });
+    }
+    Ok(channels)
+}
+
 /// `\n` in an environment value is a line break (one command per line).
 fn unescape(value: &str) -> String {
     value.replace("\\n", "\n")
@@ -167,29 +239,10 @@ impl Config {
                         }
                     }
                     "shows" => {
-                        let items = value.as_array().ok_or("shows: expected an array")?;
-                        for (i, item) in items.iter().enumerate() {
-                            let prefix = format!("shows[{i}]");
-                            let show_title =
-                                item.get("show_title").map(|v| string(v, &format!("{prefix}.show_title"))).transpose()?.unwrap_or_default();
-                            if show_title.is_empty() {
-                                return Err(format!("{prefix}: show_title is required"));
-                            }
-                            let on_clip = item.get("on_clip").map(|v| string(v, &format!("{prefix}.on_clip"))).transpose()?;
-                            let on_ad = item.get("on_ad").map(|v| string(v, &format!("{prefix}.on_ad"))).transpose()?;
-                            let ad_match = if item.get("ad_match").is_some_and(|v| !v.is_null()) {
-                                let v = item.get("ad_match").unwrap();
-                                let path =
-                                    v.get("path").map(|p| string(p, &format!("{prefix}.ad_match.path"))).transpose()?.unwrap_or_default();
-                                let title =
-                                    v.get("title").map(|t| string(t, &format!("{prefix}.ad_match.title"))).transpose()?.unwrap_or_default();
-                                Some(AdMatch { path, title })
-                            } else {
-                                None
-                            };
-                            config.shows.push(ShowOverride { show_title, on_clip, on_ad, ad_match });
-                        }
+                        config.shows = show_overrides(value, "shows")?;
                     }
+                    "channels" => config.channels = channel_overrides(value)?,
+                    "channel_buses" => config.channel_buses = boolean(value, key)?,
                     "ad_without_element" => config.ad_without_element = boolean(value, key)?,
                     "in_seconds" => config.in_seconds = number(value, key)?,
                     "out_seconds" => config.out_seconds = number(value, key)?,
@@ -237,6 +290,15 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_AD_TITLE") {
             config.ad_match.title = v;
+        }
+        if let Some(v) = env("VIZRS_CHANNELS").filter(|v| !v.trim().is_empty()) {
+            match json::parse(&v).map_err(|e| e.to_string()).and_then(|value| channel_overrides(&value)) {
+                Ok(channels) => config.channels = channels,
+                Err(error) => warnings.push(format!("VIZRS_CHANNELS: {error}; ignored")),
+            }
+        }
+        if let Some(v) = env("VIZRS_CHANNEL_BUSES").filter(|v| !v.is_empty()) {
+            config.channel_buses = v == "1";
         }
         if let Some(v) = env("VIZRS_AD_WITHOUT_ELEMENT") {
             config.ad_without_element = v != "0";
@@ -296,6 +358,38 @@ impl Config {
         }
 
         Ok((config, warnings))
+    }
+
+    /// The configuration of one ErsatzTV channel.
+    pub fn for_channel(&self, channel: &str) -> Config {
+        let mut config = self.clone();
+        // A channel with its own address has a VizRS of its own: no antenna to pick there.
+        let own_vizrs = self.channels.iter().any(|c| c.channel == channel && c.address.is_some());
+        if self.channel_buses && !own_vizrs {
+            config.command_prefix = format!("@{channel} ");
+            if !config.output_url.is_empty() {
+                let separator = if config.output_url.contains('?') { '&' } else { '?' };
+                config.output_url = format!("{}{separator}bus=ch-{channel}", config.output_url);
+            }
+        }
+        if let Some(own) = self.channels.iter().find(|c| c.channel == channel) {
+            let fields = [
+                (&own.address, &mut config.vizrs.address),
+                (&own.token, &mut config.vizrs.token),
+                (&own.output_url, &mut config.output_url),
+                (&own.on_clip, &mut config.on_clip),
+                (&own.on_ad, &mut config.on_ad),
+            ];
+            for (value, target) in fields {
+                if let Some(value) = value {
+                    target.clone_from(value);
+                }
+            }
+            if let Some(shows) = &own.shows {
+                config.shows.clone_from(shows);
+            }
+        }
+        config
     }
 
     /// `file` (optional) and the process environment.
@@ -424,6 +518,58 @@ mod tests {
         assert_eq!(config.listen_addr(), "0.0.0.0:7701");
         config.listen = "[::1]:7700".into();
         assert_eq!(config.listen_addr(), "[::1]:7700");
+    }
+
+    #[test]
+    fn channel_buses_aim_each_channel_at_its_antenna() {
+        let file = json::parse(
+            r#"{"output_url": "http://v:8088/output?token=t", "channel_buses": true,
+                "channels": {"5": {"vizrs": {"address": "o:6100"}, "output_url": "http://o:8088/output"}}}"#,
+        )
+        .unwrap();
+        let (config, _) = Config::from_values(Some(&file), &|_| None).unwrap();
+        let channel = config.for_channel("7");
+        assert_eq!(channel.command_prefix, "@7 ");
+        assert_eq!(channel.output_url, "http://v:8088/output?token=t&bus=ch-7");
+        let own = config.for_channel("5");
+        assert_eq!((own.command_prefix.as_str(), own.output_url.as_str()), ("", "http://o:8088/output"));
+        assert_eq!(Config::default().for_channel("7").command_prefix, "");
+    }
+
+    #[test]
+    fn channels_have_their_own_vizrs() {
+        let file = json::parse(
+            r#"{
+                "vizrs": {"address": "vizrs:6100", "token": "t"},
+                "output_url": "http://vizrs:8088/output",
+                "on_clip": "TAKE 1",
+                "channels": {"2": {"vizrs": {"address": "vizrs2:6100"}, "output_url": "http://vizrs2:8088/output", "on_ad": "TAKE 9",
+                    "shows": [{"show_title": "Kino", "on_clip": "TAKE 5"}]}}
+            }"#,
+        )
+        .unwrap();
+        let (config, _) = Config::from_values(Some(&file), &|_| None).unwrap();
+
+        let first = config.for_channel("1");
+        assert_eq!((first.vizrs.address.as_str(), first.output_url.as_str()), ("vizrs:6100", "http://vizrs:8088/output"));
+        let second = config.for_channel("2");
+        assert_eq!((second.vizrs.address.as_str(), second.output_url.as_str()), ("vizrs2:6100", "http://vizrs2:8088/output"));
+        assert!(first.shows.is_empty());
+        assert_eq!(second.shows[0].on_clip.as_deref(), Some("TAKE 5"));
+        assert_eq!((second.vizrs.token.as_str(), second.on_clip.as_str(), second.on_ad.as_str()), ("t", "TAKE 1", "TAKE 9"));
+
+        let (config, warnings) =
+            Config::from_values(None, &|name| (name == "VIZRS_CHANNELS").then(|| r#"{"3":{"vizrs":{"address":"c:6100"}}}"#.to_owned()))
+                .unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(config.for_channel("3").vizrs.address, "c:6100");
+
+        let (config, warnings) = Config::from_values(None, &|name| (name == "VIZRS_CHANNELS").then(|| "{".to_owned())).unwrap();
+        assert!(config.channels.is_empty());
+        assert_eq!(warnings.len(), 1);
+
+        let bad = json::parse(r#"{"channels": {"1": "x"}}"#).unwrap();
+        assert!(Config::from_values(Some(&bad), &|_| None).is_err());
     }
 
     #[test]

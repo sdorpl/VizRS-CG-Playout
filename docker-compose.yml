@@ -75,6 +75,11 @@ services:
       # Commands per clip; "\n" separates lines.
       VIZRS_ON_CLIP: "${VIZRS_ON_CLIP:-TAKE 4001 headline={title}|sub=Next: {next_title} at {next_start}}"
       VIZRS_ON_AD: ${VIZRS_ON_AD:-}
+      # 1 = each ErsatzTV channel has its own antenna in VizRS, with no setup
+      # (needs VizRS with channel antennas, TCP "@N").
+      VIZRS_CHANNEL_BUSES: ${VIZRS_CHANNEL_BUSES:-0}
+      # Per-channel overrides (JSON): commands, shows, another VizRS.
+      VIZRS_CHANNELS: ${VIZRS_CHANNELS:-}
       VIZRS_AD_PATH: ${VIZRS_AD_PATH:-/(ads|commercials|reklamy)/}
       # Schedule items without the VizRS element count as ads (0 = off).
       VIZRS_AD_WITHOUT_ELEMENT: ${VIZRS_AD_WITHOUT_ELEMENT:-1}

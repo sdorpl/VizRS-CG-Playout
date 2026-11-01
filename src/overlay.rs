@@ -506,7 +506,7 @@ pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames
 }
 
 /// `application/x-www-form-urlencoded` value, as `urllib.parse.urlencode`.
-fn quote_plus(text: &str) -> String {
+pub fn quote_plus(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'-' | b'~' => (b as char).to_string(),

@@ -98,6 +98,37 @@ test("client streams frames paced by the clock, commands reach VizRS once per it
   assert.equal((await cg.health()).sessions, 0, "every session ended");
 });
 
+test("channels: each channel commands its own VizRS, the others the main one", async (t) => {
+  const [main, second] = [await fakeVizrs(), await fakeVizrs()];
+  t.after(main.close);
+  t.after(second.close);
+  const cg = await sidecar(t, {
+    vizrs: { address: main.address },
+    on_clip: "TAKE 1 headline={title}",
+    in_seconds: 0,
+    out_seconds: -1,
+    channels: { 2: { vizrs: { address: second.address }, on_clip: "TAKE 2 headline={title}", shows: [{ show_title: "Kino", on_clip: "TAKE 3" }] } },
+  });
+
+  await runClient(`${cg.url}/etv?channel=1`, item("/m/One.mp4", "2026-10-24T20:00:00+02:00"), 300);
+  await runClient(`${cg.url}/etv?channel=2`, item("/m/Two.mp4", "2026-10-24T20:00:00+02:00"), 300);
+  const show = { MediaItem_ShowTitle: "Kino" };
+  await runClient(`${cg.url}/etv?channel=2`, item("/m/Film.mp4", "2026-10-24T21:00:00+02:00", show), 300);
+  await runClient(`${cg.url}/etv?channel=1`, item("/m/Film.mp4", "2026-10-24T21:00:00+02:00", show), 300);
+  await sleep(100);
+  assert.deepEqual(main.received, ["TAKE 1 headline=One", "TAKE 1 headline=Film"]);
+  assert.deepEqual(second.received, ["TAKE 2 headline=Two", "TAKE 3"]);
+});
+
+test("channel_buses: a new channel uses its own antenna in VizRS", async (t) => {
+  const vizrs = await fakeVizrs([{ page: { number: 7 } }]);
+  t.after(vizrs.close);
+  const cg = await sidecar(t, { vizrs: { address: vizrs.address }, on_clip: "TAKE 1", in_seconds: 0, out_seconds: -1, channel_buses: true });
+  await runClient(`${cg.url}/etv?channel=9`, item("/m/One.mp4", "2026-10-24T20:00:00+02:00"), 300);
+  await sleep(100);
+  assert.deepEqual(vizrs.received, ["@9 TAKE 1"]);
+});
+
 test("page elements: TAKE in_seconds after the item's start, OUT out_seconds before its stop", async (t) => {
   const vizrs = await fakeVizrs();
   t.after(vizrs.close);

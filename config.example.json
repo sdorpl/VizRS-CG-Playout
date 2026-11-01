@@ -13,6 +13,10 @@
       "ad_match": { "path": "/reklamy/", "title": "" }
     }
   ],
+  "channel_buses": true,
+  "channels": {
+    "2": { "on_clip": "TAKE 4001 headline={title}" }
+  },
   "ad_without_element": true,
   "in_seconds": 5,
   "out_seconds": 5,

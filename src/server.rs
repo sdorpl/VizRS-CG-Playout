@@ -144,7 +144,6 @@ fn lock(sessions: &Shared) -> MutexGuard<'_, Sessions> {
 pub struct Server {
     pub config: Arc<Config>,
     ads: Arc<AdMatcher>,
-    shows: Arc<ShowMatcher>,
     browser: Option<String>,
     channels: Mutex<HashMap<String, Arc<ChannelEvents>>>,
     sessions: Shared,
@@ -158,7 +157,7 @@ impl Server {
         for warning in warnings {
             crate::warn!("{warning}");
         }
-        let (shows, show_warnings) = ShowMatcher::new(&config.shows);
+        let (_, show_warnings) = ShowMatcher::new(&config.shows);
         for warning in show_warnings {
             crate::warn!("{warning}");
         }
@@ -166,7 +165,6 @@ impl Server {
         Arc::new(Server {
             config: Arc::new(config),
             ads: Arc::new(ads),
-            shows: Arc::new(shows),
             browser,
             channels: Mutex::new(HashMap::new()),
             sessions: Shared::default(),
@@ -177,15 +175,20 @@ impl Server {
 
     fn events_for(&self, channel: &str) -> Arc<ChannelEvents> {
         let mut channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
-        let events = channels
-            .entry(channel.to_owned())
-            .or_insert_with(|| ChannelEvents::new(Arc::clone(&self.config), Arc::clone(&self.ads), Arc::clone(&self.shows)));
+        let events = channels.entry(channel.to_owned()).or_insert_with(|| {
+            let config = self.config.for_channel(channel);
+            let (shows, warnings) = ShowMatcher::new(&config.shows);
+            for warning in warnings {
+                crate::warn!("channel {channel}: {warning}");
+            }
+            ChannelEvents::new(Arc::new(config), Arc::clone(&self.ads), Arc::new(shows))
+        });
         Arc::clone(events)
     }
 
-    /// One capture per channel size, render size and graphics area, shared by the channels that have them.
-    fn capture_for(&self, width: u32, height: u32, fps: f64, spec: &str, area: &str) -> Graphics {
-        if self.config.output_url.is_empty() || width == 0 || height == 0 {
+    /// One capture per /output page, channel size, render size and graphics area, shared by the channels that have them.
+    fn capture_for(&self, url: &str, width: u32, height: u32, fps: f64, spec: &str, area: &str) -> Graphics {
+        if url.is_empty() || width == 0 || height == 0 {
             return Graphics::Empty;
         }
         let (rw, rh) = render_size(spec, width, height).unwrap_or_else(|error| {
@@ -204,13 +207,13 @@ impl Server {
             crate::warn!("{error}; using the whole channel");
             Vec::new()
         });
-        let key = format!("{width}x{height}/{rw}x{rh}/{}", geometries(&areas));
+        let key = format!("{url}/{width}x{height}/{rw}x{rh}/{}", geometries(&areas));
         let mut sessions = lock(&self.sessions);
         if let Some((_, capture)) = sessions.captures.iter().find(|(k, _)| *k == key) {
             return Graphics::Capture(Arc::clone(capture));
         }
         let capture = Capture::start(CaptureOptions {
-            url: self.config.output_url.clone(),
+            url: url.to_owned(),
             width: rw,
             height: rh,
             out_width: width,
@@ -277,7 +280,7 @@ impl Server {
     pub fn handle(&self, request: Request, mut stream: TcpStream) {
         let result = match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => http::respond(&mut stream, 200, Some("application/json"), self.health().to_string().as_bytes()),
-            ("GET", "/etv/pages") => self.pages_request(stream),
+            ("GET", "/etv/pages") => self.pages_request(&request, stream),
             ("GET", "/ffmpeg") => self.claim_request(&request, stream),
             ("GET", "/ffmpeg/frames") => {
                 self.frames_request(&request, stream);
@@ -294,10 +297,11 @@ impl Server {
         }
     }
 
-    /// The pages of VizRS; the address of its API comes from `output_url`.
-    fn pages_request(&self, mut stream: TcpStream) -> std::io::Result<()> {
-        let pages = sync::http_url_of(&self.config.output_url).ok_or_else(|| "no output_url".to_owned()).and_then(|url| {
-            let show = sync::fetch_show(&url, &self.config.vizrs.token).map_err(|e| e.to_string())?;
+    /// The pages of the channel's VizRS; the address of its API comes from `output_url`.
+    fn pages_request(&self, request: &Request, mut stream: TcpStream) -> std::io::Result<()> {
+        let config = self.config.for_channel(request.param("channel").unwrap_or(""));
+        let pages = sync::http_url_of(&config.output_url).ok_or_else(|| "no output_url".to_owned()).and_then(|url| {
+            let show = sync::fetch_show(&url, &config.vizrs.token).map_err(|e| e.to_string())?;
             sync::parse_pages(&show)
         });
         match pages {
@@ -480,7 +484,9 @@ impl Server {
         let carrier = lock(&self.sessions).carriers.insert(piece.clone());
         let spec = request.param("render").unwrap_or(&self.config.render_size).to_owned();
         let area = request.param("area").unwrap_or(&self.config.area).to_owned();
-        let capture = match carrier.then(|| self.capture_for(ctx.width, ctx.height, fps, &spec, &area)) {
+        let capture = match carrier
+            .then(|| self.capture_for(&self.config.for_channel(&channel).output_url, ctx.width, ctx.height, fps, &spec, &area))
+        {
             Some(Graphics::Capture(capture)) => Some(capture),
             _ => None,
         };

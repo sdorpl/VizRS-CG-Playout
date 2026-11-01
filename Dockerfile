@@ -30,7 +30,7 @@ COPY src src
 RUN cargo build --release --locked --target "$(cat /target)" \
     && cp "target/$(cat /target)/release/virtrs-cg" /virtrs-cg
 
-ARG VIZRS_REF=v2.0.10
+ARG VIZRS_REF=v2.0.12
 RUN git clone --depth 1 --branch "$VIZRS_REF" https://github.com/sdorpl/VizRS-CG-System.git /vizrs \
     && cd /vizrs/source/render \
     && cargo build --release --locked --target "$(cat /target)" \

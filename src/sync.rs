@@ -87,7 +87,18 @@ pub fn http_url_of(output_url: &str) -> Option<String> {
 /// The address of a sidecar's page list, from the URL of an element.
 pub fn pages_url(element_url: &str) -> Option<String> {
     let url = Url::split(element_url)?;
-    Some(format!("{}://{}{}/pages", url.scheme, url.netloc, url.path))
+    let channel = channel_of(element_url).map_or(String::new(), |channel| format!("?channel={channel}"));
+    Some(format!("{}://{}{}/pages{channel}", url.scheme, url.netloc, url.path))
+}
+
+/// The `channel=` an element's URL names, still encoded.
+pub fn channel_of(url: &str) -> Option<&str> {
+    url.split_once('?')?.1.split('&').find_map(|p| p.strip_prefix("channel="))
+}
+
+/// The URL in an element's text.
+fn url_of(text: &str) -> Option<&str> {
+    text.lines().find_map(|line| line.trim().strip_prefix("- "))
 }
 
 /// The URL of a page's element, from `base`: another element of the channel,
@@ -181,7 +192,7 @@ pub fn fetch_show(api_url: &str, token: &str) -> io::Result<String> {
 
 /// The page an element's URL shows.
 fn page_of(text: &str) -> Option<u64> {
-    let url = text.lines().find_map(|line| line.trim().strip_prefix("- "))?;
+    let url = url_of(text)?;
     let (_, query) = url.split_once('?')?;
     query.split('&').find_map(|p| p.strip_prefix("page=").or_else(|| p.strip_prefix("take=")))?.parse().ok()
 }
@@ -229,12 +240,20 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
 /// (no `GENERATED` line) of a page stands for it and stays as it is.
 pub fn sync_templates(pages: &[PageInfo], dir: &Path, options: SyncOptions) -> io::Result<SyncReport> {
     fs::create_dir_all(dir)?;
-    let elements = read_elements(dir)?;
+    let all = read_elements(dir)?;
+    // Each channel keeps its own elements: another channel's page list knows nothing of them.
+    let (elements, others): (Vec<Element>, Vec<Element>) =
+        all.into_iter().partition(|e| options.rewrite || url_of(&e.text).and_then(channel_of) == channel_of(options.element_url));
     let mut report = SyncReport::default();
 
     for page in pages {
         if !elements.iter().any(|e| e.page == page.number) {
-            write_atomic(&dir.join(format!("page-{}.yml", page.number)), &generate_template_yaml(page, options.element_url))?;
+            // The plain name may belong to another channel.
+            let file = match channel_of(options.element_url).filter(|_| others.iter().any(|e| e.page == page.number)) {
+                Some(channel) => format!("page-{}-ch{channel}.yml", page.number),
+                None => format!("page-{}.yml", page.number),
+            };
+            write_atomic(&dir.join(file), &generate_template_yaml(page, options.element_url))?;
             report.created += 1;
         }
         for element in elements.iter().filter(|e| e.page == page.number && e.generated) {
@@ -338,9 +357,25 @@ mod tests {
     }
 
     #[test]
+    fn channels_keep_their_own_elements() {
+        let folder = Folder::new("channels");
+        let sync = |url: &str, pages: &[PageInfo]| {
+            sync_templates(pages, &folder.0, SyncOptions { element_url: url, rewrite: false, prune: false }).unwrap()
+        };
+        sync("http://cg:7700/etv?channel=1", &[page(1, "Jeden")]);
+        sync("http://cg:7700/etv?channel=2", &[page(1, "Dwa"), page(2, "Inna")]);
+        // Channel 2's list changes nothing of channel 1's element.
+        assert!(folder.read("page-1.yml").contains("Jeden"));
+        assert!(folder.read("page-1.yml").contains("channel=1&page=1"));
+        assert!(folder.read("page-1-ch2.yml").contains("channel=2&page=1"));
+        assert!(folder.read("page-2.yml").contains("channel=2&page=2"));
+    }
+
+    #[test]
     fn urls_of_the_channel() {
         assert_eq!(http_url_of("http://vizrs:8088/output?token=x").unwrap(), "http://vizrs:8088");
-        assert_eq!(pages_url("http://cg:7700/etv?channel=4&page=1").unwrap(), "http://cg:7700/etv/pages");
+        assert_eq!(pages_url("http://cg:7700/etv?channel=4&page=1").unwrap(), "http://cg:7700/etv/pages?channel=4");
+        assert_eq!(pages_url("http://cg:7700/etv?page=1").unwrap(), "http://cg:7700/etv/pages");
         // What holds for the channel stays, the element's own commands do not.
         let element = "http://cg:7700/etv?channel=4&render=720p&area=10x10+0+0&page=3001&fields=a=b";
         assert_eq!(channel_url(element), "http://cg:7700/etv?channel=4&render=720p&area=10x10+0+0");
@@ -358,12 +393,12 @@ mod tests {
         // Nothing changed: nothing written.
         assert!(!sync_templates(&[page(3001, "Ticker"), page(4001, "Tytuł")], &folder.0, KEEP).unwrap().changed());
 
-        // Another channel's client: a new name, the element stays on its channel.
-        let other = SyncOptions { element_url: "http://cg:7700/etv?channel=9", ..KEEP };
-        let report = sync_templates(&[page(3001, "Pasek"), page(4001, "Tytuł")], &folder.0, other).unwrap();
+        // The same client after a rename: a new name, the same URL.
+        let report = sync_templates(&[page(3001, "Pasek"), page(4001, "Tytuł")], &folder.0, KEEP).unwrap();
         assert_eq!(report, SyncReport { updated: 1, ..SyncReport::default() });
         let text = folder.read("page-3001.yml");
         assert!(text.contains("name: \"Pasek (3001)\"") && text.contains("channel=4&page=3001"), "{text}");
+        let other = SyncOptions { element_url: "http://cg:7700/etv?channel=9", ..KEEP };
 
         // Asked for: the URL changes too.
         let rewrite = SyncOptions { rewrite: true, ..other };

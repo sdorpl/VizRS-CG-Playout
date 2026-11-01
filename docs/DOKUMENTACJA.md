@@ -213,6 +213,7 @@ Sidecar to jeden plik binarny `virtrs-cg` (Rust) obok bezgłowego Chromium:
 | `POST /etv?channel=1[&render=720p][&area=1920x140+0+930]` | treść: dane szablonu ErsatzTV; odpowiedź: niekończący się strumień pakietów ETV; `render` – rozmiar renderowania grafiki, `area` – obszar grafiki (§1) |
 | `GET /ffmpeg?channel=1[&wait=2000][&area=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki |
 | `GET /ffmpeg/frames?session=N[&fps=25/1][&area=1]` | surowe klatki `yuva420p` przejętej sesji dla ffmpeg, z `area=1` w rozmiarze obszaru grafiki (Nakładka ffmpeg, niżej) |
+| `GET /etv/pages[?channel=1]` | strony VizRS kanału (lista elementów, §3) |
 | `GET /health` | liczba sesji, stan przechwytywania (`size` kanału, `render`, `area`, `fps`, `mode`: `screencast` albo `frames`, `status`: `capturing`, `paused`, `restarting`…, `seq`) i kanały z nakładką ffmpeg (`overlay`) |
 
 Chromium wysyła PNG tylko przy zmianie strony. Sidecar dekoduje klatkę
@@ -360,8 +361,9 @@ sidecar ok. 15%.
 
 Warunki i różnice:
 
-- Numer w `channel=` adresu elementu musi być numerem kanału ErsatzTV.
-  Nakładka zna kanał tylko z adresu płótna.
+- Numer w `channel=` adresu elementu, jeśli jest podany, musi być numerem
+  kanału ErsatzTV (bez niego klient sam go ustala, §4). Nakładka zna kanał tylko
+  z adresu płótna.
 - Z nakładką ErsatzTV nie rysuje własnych elementów grafiki tej pozycji
   (tekst, obraz, watermarki z płótna). Logo i napisy daj do VizRS.
 - Kolory: klatki są w BT.709 (od 720 linii) albo BT.601, w zakresie
@@ -569,6 +571,42 @@ puste). Pierwsza pozycja z elementem przywraca strony. Wyłącza to
 `ad_without_element: false`. Uwaga: zatrzymanie kanału w ErsatzTV (brak
 widzów) wygląda tak samo i też zdejmuje grafikę – wraca przy kolejnej sesji.
 
+### Osobne grafiki na kanał (`channels`)
+
+Jeden VizRS ma osobną antenę na kanał: komendy TCP `@N …` i wyjście
+`/output?bus=ch-N` (API VizRS). Opcja `channel_buses` (env `VIZRS_CHANNEL_BUSES=1`)
+kieruje na nie każdy kanał ErsatzTV bez konfiguracji: nowy kanał z elementem VizRS
+od razu ma własną grafikę. Wymaga VizRS z antenami kanałów. Strony i show są
+wspólne, a różnią się tym, co kanał bierze na antenę. Operator wybiera antenę
+kanału w Trio (lista **Antena**), a główna antena przy tej opcji nie idzie na emisję. Karuzela, rundown, makra i dock działają na wybranej antenie.
+
+Obiekt `channels` nadpisuje ustawienia kanału: komendy, `shows`, a także własny
+VizRS (kanał z `vizrs.address` nie używa wtedy anteny kanału). Czego nie podasz,
+zostaje z ustawień głównych:
+
+```json
+"channels": {
+  "2": {
+    "on_clip": "TAKE 4001 headline={title}",
+    "on_ad": "",
+    "shows": [{ "show_title": "^Kino", "on_clip": "TAKE 5001" }],
+    "vizrs": { "address": "vizrs2:6100" },
+    "output_url": "http://vizrs2:8088/output?token=…"
+  }
+}
+```
+
+- Element `vizrs.yml` bez `channel=` działa na każdym kanale (§4). Tylko gdy dwa
+  kanały mogą grać ten sam materiał w jednej chwili, daj kanałowi kopię elementu
+  z `http://cg:7700/etv?channel=N`, przypisaną w **Deco**. Element z cudzym
+  `channel=` pokaże grafikę tamtego kanału.
+- Każde `/output` ma własne przechwytywanie, więc CPU rośnie z liczbą kanałów
+  (§1); kanały jednej instancji nadal dzielą przechwytywanie.
+- Klient z jawnym `channel=` synchronizuje strony VizRS tego kanału i tylko jego
+  elementy (§3). Numer zajęty przez inny kanał dostaje plik `page-<ID>-ch<N>.yml`.
+- `shows` podane w kanale zastępuje całą główną listę `shows` dla tego kanału;
+  bez niego obowiązuje lista główna. `ad_match` poza `shows` jest wspólne.
+
 ### Elementy graficzne per audycja (`shows`)
 
 Tak jak w przypadku watermarków przypisywanych do pozycji w ErsatzTV, sidecar
@@ -642,7 +680,8 @@ synchronizacja go nie zmienia, a jego strona nie dostaje drugiego elementu.
 Automat zostawia URL istniejącego pliku, więc element raz utworzony trzyma swój
 kanał. Elementy są wspólne dla całego ErsatzTV: przy kilku kanałach na jednym
 sidecarze `page-<ID>.yml` należy do kanału, który utworzył go pierwszy, a dla
-pozostałych skopiuj plik z innym `channel=` (bez pierwszej linii).
+pozostałych skopiuj plik z innym `channel=` (bez pierwszej linii). Elementy
+utworzone przez klienta bez `channel=` są go pozbawione i działają na każdym kanale.
 
 Ręcznie, np. żeby przenieść elementy na inny kanał, służy polecenie:
 
@@ -718,9 +757,16 @@ w ErsatzTV jako `/vizrs`.
 W ErsatzTV dodaj element **VizRS** do pozycji harmonogramu
 (**Schedules → pozycja → Graphics Elements**) albo do **Deco** przypisanego
 do playoutu i zresetuj playout – bez tego ErsatzTV nie uruchamia skryptu.
-Numer `channel=` w `vizrs.yml` ustaw w wolumenie ErsatzTV na numer kanału:
-aktualizacja stosu zmienia resztę pliku, ale zachowuje jego adres (także
-`render`, `area`). Przy kilku kanałach skopiuj element z `channel=2`, … w URL. Elementy
+Numeru kanału nie trzeba ustawiać: `vizrs-etv-client` bez `channel=` w adresie
+bierze go z ErsatzTV. Skrypt nie dostaje numeru, ale ErsatzTV uruchamia go, gdy
+ffmpeg otwiera płótno `/internal/graphics/<kanał>/<pozycja>`, więc klient czyta
+numer z takiego procesu w `/proc` kontenera: z tym samym plikiem wejściowym co
+`MediaItem_Path` pozycji, a bez takiego z najmłodszego. Ten sam element działa
+więc na wielu kanałach. Pomylić się może przy tym samym materiale na dwóch
+kanałach w jednej chwili albo materiale podanym adresem innym niż ta ścieżka;
+adres z `channel=` zawsze wygrywa (§3, `channels`).
+Aktualizacja stosu zmienia resztę `vizrs.yml`, ale zachowuje jego adres (także
+`render`, `area`), a istniejące `channel=` zostaje, dopóki go nie usuniesz. Elementy
 poszczególnych stron powstają same (§3).
 
 W `/vizrs` jest też nakładka ffmpeg `vizrs-ffmpeg` (§1), zbudowana w obrazie
@@ -981,6 +1027,9 @@ virtrs-cg config.json      # albo CONFIG=config.json virtrs-cg
   "renderer_bin": ""
 }
 ```
+
+Obiekt `channels` (opcjonalny, env `VIZRS_CHANNELS` z tym samym JSON-em; błędny
+JSON w env trafia do logu i jest pomijany) daje kanałowi własny VizRS (§3).
 
 Tablica `shows` (opcjonalna) pozwala nadpisać `on_clip`, `on_ad` i `ad_match`
 dla wybranych audycji (§3, Elementy graficzne per audycja).
