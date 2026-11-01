@@ -1,7 +1,9 @@
 # VizRS graphics for ErsatzTV (VizRS CG Playout).
 # Copy to <ErsatzTV config>/templates/graphics-elements/script/ and add the
 # element "VizRS" to the channel's Deco (Graphics Elements).
-# Change "channel=1" per channel when several channels share one sidecar.
+# "channel=" must be the ErsatzTV channel number; a stack update keeps the
+# address set here in the volume. Change it per channel when several channels
+# share one sidecar.
 # "&render=720p" renders the graphics at 720p and scales them to the channel
 # (less CPU for animations, softer text); default: the channel size.
 # "&area=1920x140+0+930" (WxH+X+Y): only that part of the channel carries

@@ -3,7 +3,8 @@
 # instance into empty volumes – the VizRS show with its backgrounds, the
 # ErsatzTV channel database and the test media. Volumes that already hold data
 # are left alone. The ErsatzTV programs and the graphics element are ours and
-# are always replaced, so a new version of the stack brings them along.
+# are always replaced (the element keeps its address), so a new version of the
+# stack brings them along.
 set -eu
 
 # A new volume created here belongs to root; VizRS runs as 10001.
@@ -36,5 +37,12 @@ chmod 755 /vizrs-client/*
 mkdir -p /ersatztv-config/templates/graphics-elements/script
 # The general element; the page elements come from the live VizRS show, written
 # by vizrs-etv-client (src/sync.rs).
-cp -R /seed/templates/. /ersatztv-config/templates/graphics-elements/script/
+elements=/ersatztv-config/templates/graphics-elements/script
+# The element's address is per instance (channel=, area=): a new version keeps it.
+url=$(grep -m1 '^  - http' "$elements/vizrs.yml" 2>/dev/null || true)
+cp -R /seed/templates/. "$elements/"
+if [ -n "$url" ]; then
+  URL="$url" awk '/^  - http/ { print ENVIRON["URL"]; next } { print }' \
+    /seed/templates/vizrs.yml > "$elements/vizrs.yml"
+fi
 echo "seed: ErsatzTV clients and VizRS graphics elements updated"

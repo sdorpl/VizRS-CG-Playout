@@ -142,7 +142,9 @@ services:
     tmpfs:
       - /transcode
     ports:
-      - "8409:8409"
+      # ETV_PORT=127.0.0.1:8409 = local only, behind a reverse proxy on the host
+      # (containers reaching it through the Docker host then lose it).
+      - "${ETV_PORT:-8409}:8409"
 
 volumes:
   vizrs-data:
