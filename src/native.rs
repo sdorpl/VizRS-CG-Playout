@@ -7,7 +7,9 @@
 // (`VZR1`, kind, flags, 2 zero bytes, width and height u32 LE), then RGBA
 // (straight alpha) for kind 1. Kinds: 0 unchanged, 1 picture, 2 empty,
 // 3 not drawn (`c`: something on air needs Chromium), 4 picture of a region:
-// x, y, width, height (u32 LE), its RGBA, the rest transparent. Flags: bit 0 all on air
+// x, y, width, height (u32 LE), its RGBA, the rest transparent, 5 pictures of
+// several `--area`: their count (u32 LE), then each as in kind 4, in channel
+// pixels. Flags: bit 0 all on air
 // drawn natively, bit 1 connected to VizRS.
 
 use std::io::{BufReader, Read, Write};
@@ -25,6 +27,7 @@ use crate::sys;
 pub const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 const MAGIC: &[u8; 4] = b"VZR1";
 const MAX_SIDE: u32 = 8192;
+const MAX_REGIONS: u32 = 64;
 
 /// Which renderer draws the burn-in (`renderer`, DOKUMENTACJA §5).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,6 +79,8 @@ pub enum Kind {
     Picture(Vec<u8>),
     /// A picture transparent outside the region (x, y, w, h) of the frame.
     Region(Area, Vec<u8>),
+    /// Pictures of the areas, in channel pixels (a renderer given several `--area`).
+    Regions(Vec<(Area, Vec<u8>)>),
     Empty,
     /// Something on air needs Chromium; nothing drawn.
     Skipped,
@@ -117,20 +122,35 @@ pub fn read_reply(input: &mut impl Read) -> Result<Option<Reply>, String> {
         2 => Kind::Empty,
         3 => Kind::Skipped,
         4 => {
-            let mut b = [0u8; 16];
-            input.read_exact(&mut b).map_err(|e| e.to_string())?;
-            let v = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
-            let r = Area { x: v(0), y: v(4), w: v(8), h: v(12) };
-            if u64::from(r.x) + u64::from(r.w) > u64::from(width) || u64::from(r.y) + u64::from(r.h) > u64::from(height) {
-                return Err(format!("native renderer: region {}x{}+{}+{} outside {width}x{height}", r.w, r.h, r.x, r.y));
-            }
-            let mut rgba = vec![0u8; r.w as usize * r.h as usize * 4];
-            input.read_exact(&mut rgba).map_err(|e| e.to_string())?;
+            let (r, rgba) = read_region(input, width, height)?;
             Kind::Region(r, rgba)
+        }
+        5 => {
+            let mut count = [0u8; 4];
+            input.read_exact(&mut count).map_err(|e| e.to_string())?;
+            let count = u32::from_le_bytes(count);
+            if count > MAX_REGIONS {
+                return Err(format!("native renderer: {count} regions"));
+            }
+            Kind::Regions((0..count).map(|_| read_region(input, width, height)).collect::<Result<_, _>>()?)
         }
         other => return Err(format!("native renderer: record kind {other}")),
     };
     Ok(Some(Reply { kind, complete: head[5] & 1 != 0, connected: head[5] & 2 != 0, width, height }))
+}
+
+/// One region: x, y, width, height (u32 LE) and its RGBA, inside `width`x`height`.
+fn read_region(input: &mut impl Read, width: u32, height: u32) -> Result<(Area, Vec<u8>), String> {
+    let mut b = [0u8; 16];
+    input.read_exact(&mut b).map_err(|e| e.to_string())?;
+    let v = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    let r = Area { x: v(0), y: v(4), w: v(8), h: v(12) };
+    if u64::from(r.x) + u64::from(r.w) > u64::from(width) || u64::from(r.y) + u64::from(r.h) > u64::from(height) {
+        return Err(format!("native renderer: region {}x{}+{}+{} outside {width}x{height}", r.w, r.h, r.x, r.y));
+    }
+    let mut rgba = vec![0u8; r.w as usize * r.h as usize * 4];
+    input.read_exact(&mut rgba).map_err(|e| e.to_string())?;
+    Ok((r, rgba))
 }
 
 /// Wall-clock milliseconds at monotonic time `ms` (`sys::monotonic_ms`), plus `offset` seconds.
@@ -147,11 +167,11 @@ pub struct Native {
 }
 
 impl Native {
-    /// Starts `vizrs-render stream` for the /output page `url`, the channel size and its graphics area.
-    pub fn start(bin: &str, url: &str, size: (u32, u32), area: Option<Area>) -> Result<Native, String> {
+    /// Starts `vizrs-render stream` for the /output page `url`, the channel size and its graphics areas.
+    pub fn start(bin: &str, url: &str, size: (u32, u32), areas: &[Area]) -> Result<Native, String> {
         let mut command = Command::new(bin);
         command.args(["stream", "--url", url, "--size", &format!("{}x{}", size.0, size.1)]);
-        if let Some(a) = area {
+        for a in areas {
             command.args(["--area", &format!("{},{},{},{}", a.x, a.y, a.w, a.h)]);
         }
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -222,6 +242,43 @@ pub fn picture_rects(rgba: &[u8], part: Area, areas: &[Area]) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regions_record() {
+        let mut bytes = b"VZR1".to_vec();
+        bytes.extend([5, 3, 0, 0]);
+        bytes.extend(100u32.to_le_bytes());
+        bytes.extend(50u32.to_le_bytes());
+        bytes.extend(2u32.to_le_bytes());
+        for (x, y, px) in [(10u32, 20u32, [1u8, 2, 3, 4]), (90, 40, [5, 6, 7, 8])] {
+            for v in [x, y, 1, 1] {
+                bytes.extend(v.to_le_bytes());
+            }
+            bytes.extend(px);
+        }
+        let reply = read_reply(&mut &bytes[..]).unwrap().unwrap();
+        assert!(reply.complete && reply.connected);
+        assert_eq!(
+            reply.kind,
+            Kind::Regions(vec![
+                (Area { x: 10, y: 20, w: 1, h: 1 }, vec![1, 2, 3, 4]),
+                (Area { x: 90, y: 40, w: 1, h: 1 }, vec![5, 6, 7, 8]),
+            ])
+        );
+    }
+
+    #[test]
+    fn region_outside_the_channel_is_an_error() {
+        let mut bytes = b"VZR1".to_vec();
+        bytes.extend([5, 0, 0, 0]);
+        bytes.extend(10u32.to_le_bytes());
+        bytes.extend(10u32.to_le_bytes());
+        bytes.extend(1u32.to_le_bytes());
+        for v in [9u32, 0, 2, 1] {
+            bytes.extend(v.to_le_bytes());
+        }
+        assert!(read_reply(&mut &bytes[..]).is_err());
+    }
 
     fn record(kind: u8, flags: u8, w: u32, h: u32, px: &[u8]) -> Vec<u8> {
         let mut out = b"VZR1".to_vec();

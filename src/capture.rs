@@ -628,7 +628,7 @@ impl Capture {
         result
     }
 
-    /// The part of the channel the native renderer draws: the bounding box of the areas, else all of it.
+    /// The part of the channel a one-area native renderer draws: that area, else all of it.
     fn native_part(&self) -> Area {
         let o = &self.options;
         if o.areas.is_empty() { Area { x: 0, y: 0, w: o.out_width, h: o.out_height } } else { union(&o.areas) }
@@ -636,9 +636,7 @@ impl Capture {
 
     fn start_native(&self) -> Result<Native, String> {
         let o = &self.options;
-        let part = self.native_part();
-        let area = (!o.areas.is_empty()).then_some(part);
-        Native::start(&o.renderer_bin, &o.url, (o.out_width, o.out_height), area)
+        Native::start(&o.renderer_bin, &o.url, (o.out_width, o.out_height), &o.areas)
     }
 
     /// One native frame into the history; false when the renderer left it to Chromium.
@@ -654,6 +652,10 @@ impl Capture {
                     return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
                 }
                 self.history.set(native::picture_rects(&rgba, part, &self.options.areas), at);
+            }
+            Kind::Regions(regions) => {
+                let rects = regions.iter().flat_map(|(region, rgba)| native::picture_rects(rgba, *region, &self.options.areas));
+                self.history.set(rects.collect(), at);
             }
             Kind::Region(r, rgba) => {
                 let part = self.native_part();

@@ -192,6 +192,12 @@ zatrzymywany. `/health`: `renderer` (ustawienie) i `drawn_by` (`native` albo
 `chromium` – kto narysował ostatnią klatkę). Zmiany listy rzeczy, których
 renderer nie umie, trafiają do logu (`vizrs-render: …`).
 
+Przy kilku obszarach `VIZRS_AREA` jeden proces `vizrs-render` (od 0.3) dostaje
+je wszystkie (`--area` powtórzone) i rysuje każdy osobno, nie ich obwiednię.
+Pomiar na A1 (s2, 1600×900 25 kl./s, dolny pas i róg, sam renderer): obwiednia
+22,3% rdzenia, osobne obszary w dwóch procesach 12,5%. Sidecar z tą wersją
+wymaga renderera 0.3: starszy wziąłby tylko ostatni `--area`.
+
 Koszt (x86, kanał 1280×720 25 kl./s, crawl VizRS, sidecar razem z rysującym):
 Chromium ok. 56% rdzenia, renderer natywny ok. 14%. Pomiar na Ampere A1
 i stan obsługiwanych elementów: VizRS `docs/plany/PLAN-native.md`.

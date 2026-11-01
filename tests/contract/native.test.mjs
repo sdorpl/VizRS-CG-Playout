@@ -24,6 +24,8 @@ fs.writeFileSync(dir + "/started", "1");
 const size = args[args.indexOf("--size") + 1].split("x").map(Number);
 const ai = args.indexOf("--area");
 const [ax, ay, w, h] = ai >= 0 ? args[ai + 1].split(",").map(Number) : [0, 0, ...size];
+const areas = args.flatMap((a, i) => (a === "--area" ? [args[i + 1].split(",").map(Number)] : []));
+const u32s = (...v) => { const b = Buffer.alloc(v.length * 4); v.forEach((x, i) => b.writeUInt32LE(x, i * 4)); return b; };
 const header = (kind, flags) => { const b = Buffer.alloc(16); b.write("VZR1"); b[4] = kind; b[5] = flags; b.writeUInt32LE(w, 8); b.writeUInt32LE(h, 12); return b; };
 let n = 0, rest = "";
 process.stdin.on("data", (d) => {
@@ -36,7 +38,12 @@ process.stdin.on("data", (d) => {
     n++;
     if (first && n > 5) process.exit(3);
     const force = (line.split(" ")[3] || "").includes("f");
-    if (n === 1 || force) {
+    if (areas.length > 1 && (n === 1 || force)) {
+      const b = Buffer.alloc(16); b.write("VZR1"); b[4] = 5; b[5] = 3; b.writeUInt32LE(size[0], 8); b.writeUInt32LE(size[1], 12);
+      const parts = [b, u32s(areas.length)];
+      for (const [x, y, aw, ah] of areas) parts.push(u32s(x, y, aw, ah), Buffer.alloc(aw * ah * 4, Buffer.from([0, 255, 0, 255])));
+      process.stdout.write(Buffer.concat(parts));
+    } else if (n === 1 || force) {
       const px = Buffer.alloc(w * h * 4);
       for (let y = 100; y < 120; y++) for (let x = 40; x < 160; x++) {
         const lx = x - ax, ly = y - ay;
@@ -123,4 +130,29 @@ test("renderer native with a graphics area: the renderer draws only the area", {
   assert.deepEqual(at(30, 110), [0, 0, 0, 0]); // outside the area
   const runs = readFileSync(join(dir, "args"), "utf8");
   assert.match(runs, /--size 320x180 --area 20,90,200,40/);
+});
+
+test("renderer native with several areas: one process, each area drawn on its own", { timeout: 60000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "virtrs-native-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "vizrs-render");
+  writeFileSync(bin, FAKE);
+  chmodSync(bin, 0o755);
+  writeFileSync(join(dir, "started"), "1"); // no exit in this test
+  const area = "300x20+10+150,40x20+270+10";
+  const cg = await startSidecar(
+    { vizrs: { address: "127.0.0.1:9", token: "" }, output_url: "http://127.0.0.1:9/output", lead_seconds: 0, renderer: "native", renderer_bin: bin, area },
+    { FAKE_DIR: dir },
+  );
+  t.after(cg.stop);
+  const [width, height] = [320, 180];
+  const data = { Resolution: { Width: width, Height: height }, FrameRate: 25, MediaItem_Path: "/m/News.mp4" };
+  const last = readFrames(await runClient(`${cg.url}/etv?channel=1&area=${encodeURIComponent(area)}`, data, 2500), width, height).at(-1);
+  const at = (px, py) => [...last.subarray((py * width + px) * 4, (py * width + px) * 4 + 4)];
+  assert.deepEqual(at(100, 160), [0, 255, 0, 255]);
+  assert.deepEqual(at(280, 20), [0, 255, 0, 255]);
+  assert.deepEqual(at(100, 90), [0, 0, 0, 0]); // between the areas
+  const runs = readFileSync(join(dir, "args"), "utf8").trim().split("\n");
+  assert.equal(runs.length, 1);
+  assert.match(runs[0], /--area 10,150,300,20 --area 270,10,40,20/);
 });
