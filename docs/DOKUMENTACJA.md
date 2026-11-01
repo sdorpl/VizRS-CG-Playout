@@ -177,9 +177,9 @@ z grafiką (pasek tickera, nie cały kanał).
 
 | `renderer` | Kto rysuje |
 |---|---|
-| `chromium` (domyślnie) | bezgłowy Chromium, jak dotąd |
+| `chromium` | bezgłowy Chromium, jak dotąd |
 | `native` | tylko renderer natywny, Chromium się nie uruchamia; czego renderer nie umie, nie ma na obrazie (lista w logu) |
-| `auto` | renderer natywny, dopóki wszystko na antenie umie narysować; gdy na antenę wejdzie coś, czego nie umie (np. ruch na wzór BTB, obraz WebP albo wideo, font spoza wbudowanych; renderer 0.2 rysuje całe INFO24 i R7), w tej samej klatce rysuje Chromium, a po zejściu tej grafiki znów renderer natywny |
+| `auto` (domyślnie) | renderer natywny, dopóki wszystko na antenie umie narysować; gdy na antenę wejdzie coś, czego nie umie (np. ruch na wzór BTB, obraz WebP albo wideo, font spoza wbudowanych; renderer 0.2 rysuje całe INFO24 i R7), w tej samej klatce rysuje Chromium, a po zejściu tej grafiki znów renderer natywny |
 
 W trybie `auto` Chromium działa obok w trybie `frames`, ale nie rysuje, dopóki
 rysuje renderer natywny (prawie nie zużywa CPU). Przejście na Chromium daje
@@ -204,7 +204,7 @@ i stan obsługiwanych elementów: VizRS `docs/plany/PLAN-native.md`.
 Domyślny obraz Dockera nie zawiera `vizrs-render`. Ma go `Dockerfile.render`;
 obraz `ghcr.io/sdorpl/virtrs-cg:render-native` (amd64 i arm64) buduje workflow
 `render-image.yml` po pushu na gałąź `render-native` (każda architektura
-natywnie). Na A1: `CG_IMAGE` na ten obraz i `VIZRS_RENDERER=auto`.
+natywnie). Na A1: `CG_IMAGE` na ten obraz. Bez `vizrs-render` tryb `auto` rysuje Chromium.
 
 Pomiar: §8 (Taśma crawla).
 

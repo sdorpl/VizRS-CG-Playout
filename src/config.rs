@@ -98,7 +98,7 @@ impl Default for Config {
             capture_mode: "frames".into(),
             clock_offset_seconds: 0.0,
             tape: false,
-            renderer: "chromium".into(),
+            renderer: "auto".into(),
             renderer_bin: String::new(),
             browser: String::new(),
             no_sandbox: false,
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn renderer() {
-        assert_eq!(Config::default().renderer, "chromium");
+        assert_eq!(Config::default().renderer, "auto");
         let file = json::parse(r#"{"renderer":"auto","renderer_bin":"/opt/vizrs-render"}"#).unwrap();
         let (config, warnings) = Config::from_values(Some(&file), &env(&[])).unwrap();
         assert_eq!((config.renderer.as_str(), config.renderer_bin.as_str()), ("auto", "/opt/vizrs-render"));

@@ -23,6 +23,6 @@
   "capture_mode": "frames",
   "clock_offset_seconds": 0,
   "tape": false,
-  "renderer": "chromium",
+  "renderer": "auto",
   "renderer_bin": ""
 }
