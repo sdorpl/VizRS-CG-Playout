@@ -1,0 +1,157 @@
+# s2, complete stack for Portainer (Compose path, no Additional paths): the agent
+# cannot run BuildKit, so nothing here builds. Generated from docker-compose.yml,
+# docker-compose.ampere.yml and docker-compose.s2.yml; regenerate when they change.
+networks:
+  default:
+    name: repo_default
+services:
+  cg:
+    cpus: ${CG_CPUS:-2}
+    depends_on:
+      vizrs:
+        condition: service_started
+    environment:
+    - LEAD_SECONDS=${LEAD_SECONDS:-5}
+    - TZ=Europe/Warsaw
+    - VIZRS_ADDRESS=vizrs:6100
+    - VIZRS_AD_PATH=${VIZRS_AD_PATH:-/(ads|commercials|reklamy)/}
+    - VIZRS_AD_WITHOUT_ELEMENT=${VIZRS_AD_WITHOUT_ELEMENT:-1}
+    - VIZRS_AREA=${VIZRS_AREA:-}
+    - VIZRS_CAPTURE_MODE=${VIZRS_CAPTURE_MODE:-}
+    - VIZRS_CLOCK_OFFSET=${VIZRS_CLOCK_OFFSET:-}
+    - VIZRS_IN_SECONDS=${VIZRS_IN_SECONDS:-5}
+    - VIZRS_MAX_FPS=${VIZRS_MAX_FPS:-}
+    - VIZRS_ON_AD=${VIZRS_ON_AD:-}
+    - 'VIZRS_ON_CLIP=${VIZRS_ON_CLIP:-TAKE 4001 headline={title}|sub=Next: {next_title} at {next_start}}'
+    - VIZRS_OUTPUT_URL=http://vizrs:8088/output?token=${VIZRS_OUTPUT_TOKEN:-vizrs-output-change-me}
+    - VIZRS_OUT_SECONDS=${VIZRS_OUT_SECONDS:-5}
+    - VIZRS_RENDERER=${VIZRS_RENDERER:-auto}
+    - VIZRS_RENDERER_BIN=${VIZRS_RENDERER_BIN:-}
+    - VIZRS_RENDER_SIZE=${VIZRS_RENDER_SIZE:-}
+    - VIZRS_TAPE=${VIZRS_TAPE:-0}
+    - VIZRS_TOKEN=${VIZRS_TOKEN:-vizrs-operator-change-me}
+    - VIZRS_BROWSER_ARGS=${VIZRS_BROWSER_ARGS:---num-raster-threads=2 --disable-smooth-scrolling}
+    image: ${CG_IMAGE:-ghcr.io/sdorpl/virtrs-cg:latest}
+    init: true
+    labels:
+      com.centurylinklabs.watchtower.enable: 'false'
+    mem_limit: ${CG_MEMORY:-2g}
+    networks:
+      default: null
+    platform: linux/arm64
+    ports:
+    - mode: ingress
+      protocol: tcp
+      published: '7700'
+      target: 7700
+    restart: unless-stopped
+    shm_size: 512mb
+  ersatztv:
+    cpu_shares: 2048
+    depends_on:
+      cg:
+        condition: service_started
+      seed:
+        condition: service_completed_successfully
+    environment:
+    - TZ=Europe/Warsaw
+    - VIZRS_CG_URL=${VIZRS_CG_URL-http://cg:7700}
+    - VIZRS_FFMPEG_FPS=${VIZRS_FFMPEG_FPS:-}
+    - VIZRS_FFMPEG_FPS_BLEND=${VIZRS_FFMPEG_FPS_BLEND-1}
+    - VIZRS_FFMPEG_PRESET=${VIZRS_FFMPEG_PRESET:-veryfast}
+    - VIZRS_FFMPEG_READRATE_CATCHUP=${VIZRS_FFMPEG_READRATE_CATCHUP-2}
+    image: ghcr.io/ersatztv/legacy:latest
+    labels:
+      com.centurylinklabs.watchtower.enable: 'false'
+    networks:
+      default: null
+    platform: linux/arm64
+    ports:
+    - ${ETV_PORT:-8409}:8409
+    restart: unless-stopped
+    tmpfs:
+    - /transcode:size=${TRANSCODE_TMPFS:-4g}
+    volumes:
+    - bind:
+        create_host_path: true
+      source: /etc/ersatz
+      target: /config
+      type: bind
+    - read_only: true
+      source: vizrs-client
+      target: /vizrs
+      type: volume
+      volume: {}
+    - bind:
+        create_host_path: true
+      read_only: true
+      source: /media/tv
+      target: /media/tv
+      type: bind
+  seed:
+    environment:
+      TZ: Europe/Warsaw
+    image: virtrs-cg-playout-seed:latest
+    labels:
+      com.centurylinklabs.watchtower.enable: 'false'
+    networks:
+      default: null
+    pull_policy: never
+    restart: 'no'
+    user: 0:0
+    volumes:
+    - source: vizrs-data
+      target: /vizrs-data
+      type: volume
+      volume: {}
+    - bind:
+        create_host_path: true
+      source: /etc/ersatz
+      target: /ersatztv-config
+      type: bind
+    - source: vizrs-client
+      target: /vizrs-client
+      type: volume
+      volume: {}
+    - source: seed-media
+      target: /media
+      type: volume
+      volume: {}
+  vizrs:
+    cpus: ${VIZRS_CPUS:-0.5}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      TZ: Europe/Warsaw
+      VIZRS_OUTPUT_TOKEN: ${VIZRS_OUTPUT_TOKEN:-vizrs-output-change-me}
+      VIZRS_TCP: '6100'
+      VIZRS_TOKEN: ${VIZRS_TOKEN:-vizrs-operator-change-me}
+    image: ghcr.io/sdorpl/vizrs:latest
+    labels:
+      com.centurylinklabs.watchtower.enable: 'false'
+    networks:
+      default: null
+    platform: linux/arm64
+    ports:
+    - ${VIZRS_PORT:-8788}:8088
+    restart: unless-stopped
+    volumes:
+    - source: vizrs-data
+      target: /data
+      type: volume
+      volume: {}
+volumes:
+  ersatztv-config:
+    name: repo_ersatztv-config
+  seed-media:
+    name: repo_seed-media
+  vizrs-client:
+    name: repo_vizrs-client
+  vizrs-data:
+    name: repo_vizrs-data
+x-timezone:
+  TZ: Europe/Warsaw
+x-tokens:
+  VIZRS_OUTPUT_TOKEN: ${VIZRS_OUTPUT_TOKEN:-vizrs-output-change-me}
+  VIZRS_TOKEN: ${VIZRS_TOKEN:-vizrs-operator-change-me}

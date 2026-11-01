@@ -28,6 +28,10 @@ services:
     build:
       context: .
       dockerfile: seed/Dockerfile
+    labels:
+      # Updates come from the stack (Portainer); Watchtower recreates a container
+      # without its compose labels and the next deploy fails on the name.
+      com.centurylinklabs.watchtower.enable: "false"
     restart: "no"
     user: "0:0"
     environment:
@@ -40,6 +44,8 @@ services:
 
   vizrs:
     image: ghcr.io/sdorpl/vizrs:latest
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     restart: unless-stopped
     depends_on:
       seed:
@@ -54,6 +60,8 @@ services:
 
   cg:
     build: .
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     restart: unless-stopped
     # A minimal init as PID 1 reaps the helper processes of a crashed browser.
     init: true
@@ -108,6 +116,8 @@ services:
 
   ersatztv:
     image: ghcr.io/ersatztv/legacy:latest
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     restart: unless-stopped
     depends_on:
       seed:
