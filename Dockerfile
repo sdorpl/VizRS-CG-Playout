@@ -31,7 +31,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src src
 RUN cargo build --release --locked --target "$(cat /target)" \
-    && cp "target/$(cat /target)/release/virtrs-cg" /virtrs-cg \
+    && cp "target/$(cat /target)/release/vizrs-cg" /vizrs-cg \
     && cargo build --release --locked --bin vizrs-etv-client --bin vizrs-ffmpeg --target "$(cat /target-musl)" \
     && mkdir /client \
     && cp "target/$(cat /target-musl)/release/vizrs-etv-client" "target/$(cat /target-musl)/release/vizrs-ffmpeg" /client/
@@ -46,7 +46,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium-headless-shell fonts-dejavu-core fonts-noto-core tzdata \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /virtrs-cg /usr/local/bin/virtrs-cg
+COPY --from=build /vizrs-cg /usr/local/bin/vizrs-cg
 COPY --from=build /vizrs-render /usr/local/bin/vizrs-render
 # Static programs for the ErsatzTV container; the sidecar installs them (DOKUMENTACJA §4).
 COPY --from=build /client /usr/local/share/vizrs/client
@@ -67,4 +67,4 @@ ENV HOME=/tmp \
 
 USER 10001
 EXPOSE 7700
-CMD ["virtrs-cg"]
+CMD ["vizrs-cg"]

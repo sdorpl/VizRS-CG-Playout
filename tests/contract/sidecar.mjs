@@ -1,5 +1,5 @@
 // The sidecar as a process, for the black-box tests of its contract (HTTP,
-// packets, VizRS commands): target/release/virtrs-cg by default (`cargo build
+// packets, VizRS commands): target/release/vizrs-cg by default (`cargo build
 // --release`), or another build with VIRTRS_CG_BIN.
 
 import { spawn } from "node:child_process";
@@ -10,7 +10,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-const RELEASE_BIN = fileURLToPath(new URL("../../target/release/virtrs-cg", import.meta.url));
+const RELEASE_BIN = fileURLToPath(new URL("../../target/release/vizrs-cg", import.meta.url));
 /** The ErsatzTV script client: target/release/vizrs-etv-client or VIZRS_ETV_CLIENT_BIN. */
 export const CLIENT = process.env.VIZRS_ETV_CLIENT_BIN || fileURLToPath(new URL("../../target/release/vizrs-etv-client", import.meta.url));
 const BROWSERS = ["chromium-headless-shell", "chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome", "headless_shell"];

@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use virtrs_cg::area::Area;
-use virtrs_cg::capture::{Capture, CaptureMode, CaptureOptions, find_browser};
-use virtrs_cg::frames::Source;
+use vizrs_cg::area::Area;
+use vizrs_cg::capture::{Capture, CaptureMode, CaptureOptions, find_browser};
+use vizrs_cg::frames::Source;
 
 /// Serves `page` to every request; returns its URL.
 fn serve(page: &'static str) -> String {
@@ -88,7 +88,7 @@ fn capture_with(
         history: Duration::from_secs(5),
         clock_offset: 0.0,
         tape,
-        renderer: virtrs_cg::native::Renderer::Chromium,
+        renderer: vizrs_cg::native::Renderer::Chromium,
         renderer_bin: String::new(),
     }))
 }
@@ -229,7 +229,7 @@ fn chromium_frames_capture_draws_on_the_frame_grid_of_the_channel() {
         let gap = (frame.at - before.at).as_secs_f64() * 1000.0;
         let slots = (gap / 40.0).round();
         assert!(slots >= 1.0 && (gap - slots * 40.0).abs() < 0.05, "{gap} ms between pictures");
-        let x = |f: &virtrs_cg::frames::Frame| f.picture().rects[0].x;
+        let x = |f: &vizrs_cg::frames::Frame| f.picture().rects[0].x;
         if slots == 1.0 && x(&frame) == (x(&before) + 1) % 600 {
             one += 1;
         }
@@ -351,7 +351,7 @@ window.vizrsTape = {
     thread::sleep(Duration::from_secs(3));
 
     // Row 320 of a picture: white (tape), red (bar) or other, x 0..640.
-    let row = |frame: &virtrs_cg::frames::Frame| {
+    let row = |frame: &vizrs_cg::frames::Frame| {
         let mut row = vec![b'.'; 640];
         for r in &frame.picture().rects {
             if (r.y..r.y + r.h).contains(&320) {

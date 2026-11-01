@@ -29,7 +29,7 @@ services:
     cpus: ${VIZRS_CPUS:-0.5}
 
   cg:
-    image: ${CG_IMAGE:-ghcr.io/sdorpl/virtrs-cg:latest}
+    image: ${CG_IMAGE:-ghcr.io/sdorpl/vizrs-cg:latest}
     platform: linux/arm64
     cpus: ${CG_CPUS:-2}
     mem_limit: ${CG_MEMORY:-2g}

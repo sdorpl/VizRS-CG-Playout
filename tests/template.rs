@@ -3,11 +3,11 @@
 
 mod common;
 
-use virtrs_cg::config::AdMatch;
-use virtrs_cg::json::Value;
-use virtrs_cg::template::{AdMatcher, ClipContext, clean_value, clock, render_commands, time_span_seconds};
-use virtrs_cg::time::parse_iso;
-use virtrs_cg::vizrs::on_air;
+use vizrs_cg::config::AdMatch;
+use vizrs_cg::json::Value;
+use vizrs_cg::template::{AdMatcher, ClipContext, clean_value, clock, render_commands, time_span_seconds};
+use vizrs_cg::time::parse_iso;
+use vizrs_cg::vizrs::on_air;
 
 use common::{assert_same, vectors};
 
@@ -71,7 +71,7 @@ fn time_spans_clocks_and_values_match_node() {
     for case in cases(&v, "clean") {
         let input = match case.get("input").unwrap() {
             Value::Null => String::new(),
-            other => virtrs_cg::template::js_string(other),
+            other => vizrs_cg::template::js_string(other),
         };
         assert_eq!(clean_value(&input), text(case, "value"), "{case}");
     }
@@ -104,7 +104,7 @@ fn state_replies_match_node() {
     let v = vectors("vizrs");
     for case in cases(&v, "on_air") {
         let result = match on_air(&text(case, "reply")) {
-            Some((out, pages)) => virtrs_cg::json::object([("out", out.into()), ("pages", pages.into())]),
+            Some((out, pages)) => vizrs_cg::json::object([("out", out.into()), ("pages", pages.into())]),
             None => Value::Null,
         };
         assert_same(&result, case.get("result").unwrap(), &text(case, "reply"));

@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use virtrs_cg::json::{self, Value};
+use vizrs_cg::json::{self, Value};
 
 pub fn vectors(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/vectors").join(format!("{name}.json"));

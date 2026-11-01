@@ -1,4 +1,4 @@
-// Sidecar end to end as a black box (sidecar.mjs: target/release/virtrs-cg or
+// Sidecar end to end as a black box (sidecar.mjs: target/release/vizrs-cg or
 // VIRTRS_CG_BIN): fake VizRS (TCP), the real script client (sidecar.mjs) and
 // ffmpeg overlay (target/release/vizrs-ffmpeg or VIZRS_FFMPEG_BIN). The browser exits
 // at once, so captures send transparent frames; graphics content is tested

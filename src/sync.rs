@@ -1,6 +1,6 @@
 // Synchronization of VizRS pages with ErsatzTV script elements (DOKUMENTACJA §3):
 // one .yml per page, kept up to date by every vizrs-etv-client session and by
-// `virtrs-cg sync`:
+// `vizrs-cg sync`:
 //   name: "Ticker (7303)"
 //   args:
 //     - http://cg:7700/etv?channel=1&page=7303

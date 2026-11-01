@@ -1,6 +1,6 @@
 # VizRS CG Playout – dokumentacja
 
-> Do 2026-10-31 projekt nazywał się **VirtRS CG Playout** (repozytorium `sdorpl/VirtRS-CG-Playout`, GitHub przekierowuje stary adres). Nazwy techniczne zostają bez zmian: binarka `virtrs-cg`, obraz `ghcr.io/sdorpl/virtrs-cg`, zmienne `VIRTRS_*`.
+> Do 2026-10-31 projekt nazywał się **VirtRS CG Playout** (repozytorium `sdorpl/VirtRS-CG-Playout`, GitHub przekierowuje stary adres). Nazwy techniczne zostają bez zmian: binarka `vizrs-cg`, obraz `ghcr.io/sdorpl/vizrs-cg`, zmienne `VIRTRS_*`.
 
 1. [Jak to działa](#1-jak-to-działa)
 2. [Odpowiedniki w VizRS ffPlayout System](#2-odpowiedniki-w-vizrs-ffplayout-system)
@@ -14,7 +14,7 @@
 ## 1. Jak to działa
 
 ```
-ErsatzTV ── element grafiki „script” ──► vizrs-etv-client ──HTTP──► virtrs-cg (sidecar)
+ErsatzTV ── element grafiki „script” ──► vizrs-etv-client ──HTTP──► vizrs-cg (sidecar)
   ▲  stdin: dane szablonu (JSON)                                         │  TCP 6100 ─► VizRS
   └──────── stdout: pakiety grafiki ETV ◄────────────────────────────────┘  Chromium ◄─ /output
 ```
@@ -206,7 +206,7 @@ System wskazanego przez `VIZRS_REF` (na arm64 także krzyżowo).
 
 Pomiar: §8 (Taśma crawla).
 
-Sidecar to jeden plik binarny `virtrs-cg` (Rust) obok bezgłowego Chromium:
+Sidecar to jeden plik binarny `vizrs-cg` (Rust) obok bezgłowego Chromium:
 
 | Adres | Co |
 |---|---|
@@ -644,7 +644,7 @@ Służy do tego tablica `shows` w pliku konfiguracyjnym:
 - Jeśli audycja nie pasuje do żadnego wpisu z `shows`, stosowane są ustawienia
   globalne.
 
-### Osobne elementy grafiki w ErsatzTV (`page=<ID>` / `take=<ID>`) i synchronizacja (`virtrs-cg sync`)
+### Osobne elementy grafiki w ErsatzTV (`page=<ID>` / `take=<ID>`) i synchronizacja (`vizrs-cg sync`)
 
 Drugim sposobem – analogicznym do watermarków w ErsatzTV – jest dodanie
 poszczególnych grafik VizRS jako osobnych elementów graficznych **script**
@@ -690,9 +690,9 @@ utworzone przez klienta bez `channel=` są go pozbawione i działają na każdym
 Ręcznie, np. żeby przenieść elementy na inny kanał, służy polecenie:
 
 ```sh
-virtrs-cg sync [--url http://vizrs:8088] [--token <TOKEN>] [--channel 1] [--cg-url http://cg:7700] [--output-dir <DIR>] [--prune]
+vizrs-cg sync [--url http://vizrs:8088] [--token <TOKEN>] [--channel 1] [--cg-url http://cg:7700] [--output-dir <DIR>] [--prune]
 # albo z pliku projektu show.json:
-virtrs-cg sync --file seed/vizrs-data/show.json --output-dir <DIR>
+vizrs-cg sync --file seed/vizrs-data/show.json --output-dir <DIR>
 ```
 
 Działa tak samo, ale ustawia też URL plików generowanych (`--channel`,
@@ -827,7 +827,7 @@ API. Błędy trafiają tylko do logu.
 
 ### Automatyczna aktualizacja po wydaniu
 
-Stosy s1 i s2 używają obrazów z wydań: `virtrs-cg`, `vizrs` i `vizrs-seed`.
+Stosy s1 i s2 używają obrazów z wydań: `vizrs-cg`, `vizrs` i `vizrs-seed`.
 Watchtower ich nie dotyka, bo odtworzenie jednego kontenera pomija `seed` i
 zależności. Aktualizuje Portainer: workflow `stack-refresh.yml` co 15 minut
 porównuje najnowsze wydania obu repozytoriów z plikiem `.release` i przy zmianie
@@ -902,7 +902,7 @@ docker compose -f docker-compose.yml -f docker-compose.ampere.yml pull
 docker compose -f docker-compose.yml -f docker-compose.ampere.yml up -d
 ```
 
-Obraz sidecara `ghcr.io/sdorpl/virtrs-cg` (amd64 i arm64, zmienna
+Obraz sidecara `ghcr.io/sdorpl/vizrs-cg` (amd64 i arm64, zmienna
 `CG_IMAGE`) buduje workflow wydania po znaczniku `v*`
 (`.github/workflows/release.yml`); pakiet
 w ghcr musi być publiczny albo maszyna zalogowana (`docker login ghcr.io`).
@@ -1020,7 +1020,7 @@ wstawia `fps` przed filtrem nakładania. Sidecar nie potrzebuje GPU.
 
 Binarka z archiwum wydania (`VizRS-CG-Playout-<wersja>-linux-x86_64.tar.gz` albo
 `…-linux-arm64`, §7) albo zbudowana ze źródeł (`cargo build --release`,
-wynik w `target/release/virtrs-cg`, programy ErsatzTV w
+wynik w `target/release/vizrs-cg`, programy ErsatzTV w
 `target/release/vizrs-etv-client` i `vizrs-ffmpeg`; statycznie: `--bin
 vizrs-etv-client --bin vizrs-ffmpeg --target <arch>-unknown-linux-musl`) i Chromium (`chromium-headless-shell`,
 `chromium`, `google-chrome`, … w `PATH` – w tej kolejności – albo
@@ -1032,7 +1032,7 @@ sam silnik bez warstwy interfejsu, przy animacji ok. połowa CPU pełnego
 więc przy zamykaniu sidecara mogłaby zostać osierocona.
 
 ```sh
-virtrs-cg config.json      # albo CONFIG=config.json virtrs-cg
+vizrs-cg config.json      # albo CONFIG=config.json vizrs-cg
 ```
 
 ```json
@@ -1198,7 +1198,7 @@ kanału (do wersji z tą poprawką kończył go dopiero `SIGKILL`).
 ```sh
 cargo test                 # moduły i wektory referencyjne, Chromium (pomijany bez przeglądarki)
 cargo build --release
-npm test                   # testy kontraktu na target/release/virtrs-cg, vizrs-etv-client i vizrs-ffmpeg
+npm test                   # testy kontraktu na target/release/vizrs-cg, vizrs-etv-client i vizrs-ffmpeg
 ```
 
 - `cargo test` – testy modułów (`src/*.rs`) oraz `tests/*.rs`:
@@ -1252,9 +1252,9 @@ Wydanie (`.github/workflows/release.yml`) rusza po znaczniku `v*`
 → Run workflow, z wersją; powstaje wtedy szkic wydania). Buduje:
 
 - archiwa `VizRS-CG-Playout-<wersja>-linux-x86_64.tar.gz` i `…-linux-arm64.tar.gz`
-  (binarka `virtrs-cg`, `client/` z `vizrs-etv-client` i `vizrs-ffmpeg` –
+  (binarka `vizrs-cg`, `client/` z `vizrs-etv-client` i `vizrs-ffmpeg` –
   statycznymi, musl –, `etv/`, `config.example.json`), arm64 natywnie na runnerze arm,
-- obraz `ghcr.io/<właściciel>/virtrs-cg:<wersja>` i `:latest` (amd64 i arm64),
+- obraz `ghcr.io/<właściciel>/vizrs-cg:<wersja>` i `:latest` (amd64 i arm64),
 - wydanie na GitHubie z archiwami i `SHA256SUMS.txt`.
 
 Wersja z łącznikiem (`v2.1.0-rc1`) to wydanie wstępne: obraz dostaje tylko
@@ -1346,7 +1346,7 @@ np. Ampere A1); pierwszy build trwa kilka minut.
    Logs** (tabela i linia JSON); kontener kończy pracę po pomiarze.
 5. Kolejny pomiar: **Containers → virtrs-bench-bench-1 → Start**.
 6. Po zakończeniu sprzątanie (§7): **Stacks → virtrs-bench → Delete**, potem
-   w **Images** `virtrs-cg-bench:local`.
+   w **Images** `vizrs-cg-bench:local`.
 
 Bez Portainera, z katalogu repozytorium:
 

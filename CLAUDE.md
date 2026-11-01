@@ -6,7 +6,7 @@ reklamy bez grafiki i wtapianie `/output` – przez nakładkę ffmpeg (grafika w
 Rodzina VizRS (repozytoria obok, `../`):
 - **VizRS CG System** (`../VizRS CG System`) – silnik grafiki (Rust): Artist, Trio, `/output`, API TCP 6100 / HTTP / SSE. Plan kanału: `docs/plany/PLAN-kanal.md`.
 - **VizRS ffPlayout System** (`../VizRS ffPlayout System`) – **archiwum od 2026-10-24**: porzucony własny playout 24/7 (fork ffplayout, GPL-3.0). Zostaje jako wzorzec integracji VizRS, nie jest rozwijany.
-- **VizRS CG Playout** (to repo, do 2026-10-31 „VirtRS CG Playout”) – ta integracja dla ErsatzTV. Zmieniona tylko nazwa w tekstach; binarki (`virtrs-cg`, `vizrs-etv-client`, `vizrs-ffmpeg`), crate, obrazy, usługi compose, zmienne `VIRTRS_*` bez zmian; repozytorium GitHub: `sdorpl/VizRS-CG-Playout`.
+- **VizRS CG Playout** (to repo, do 2026-10-31 „VirtRS CG Playout”) – ta integracja dla ErsatzTV. Zmieniona tylko nazwa w tekstach; od 2.6.0 binarka, crate i obraz to `vizrs-cg` (wcześniej `virtrs-cg`); usługi compose i zmienne `VIRTRS_*` bez zmian; repozytorium GitHub: `sdorpl/VizRS-CG-Playout`.
 
 Język pracy z użytkownikiem i dokumentacji: **polski**. Kod, komentarze i komunikaty logu są po angielsku — pisz zgodnie z otoczeniem.
 
@@ -63,7 +63,7 @@ Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu
 | `src/packets.rs`, `src/stream.rs`, `src/yuva.rs` | pakiety ETV (`Rectangles`/`Repeat`), tempo strumienia i `lead_seconds`, klatki `yuva420p` dla nakładki ffmpeg |
 | `src/etv_client.rs`, `src/bin/vizrs-etv-client.rs` | klient elementu „script” w kontenerze ErsatzTV: stdin → sidecar → stdout, w tle synchronizacja elementów stron |
 | `src/etv_sync.rs` | sidecar instaluje programy ErsatzTV i `vizrs.yml`, a cyklicznie synchronizuje kanały i elementy stron (DOKUMENTACJA §4) |
-| `src/sync.rs` | strony VizRS → elementy `page-<ID>.yml` ErsatzTV (także `virtrs-cg sync`); plików nie kasuje, bo ErsatzTV usunąłby przypisania (DOKUMENTACJA §3) |
+| `src/sync.rs` | strony VizRS → elementy `page-<ID>.yml` ErsatzTV (także `vizrs-cg sync`); plików nie kasuje, bo ErsatzTV usunąłby przypisania (DOKUMENTACJA §3) |
 | `src/net.rs` | wspólny klient HTTP programów ErsatzTV (URL, połączenia z limitami czasu) |
 | `src/overlay.rs`, `src/bin/vizrs-ffmpeg.rs` | nakładka ffmpeg ErsatzTV (binarka `vizrs-ffmpeg`): płótno grafiki zastąpione klatkami `yuva420p` z sidecara (DOKUMENTACJA §1) |
 | `etv/templates/…/vizrs.yml` | definicja elementu grafiki „VizRS” dla ErsatzTV |

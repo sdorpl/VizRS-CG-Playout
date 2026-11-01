@@ -2,8 +2,8 @@
 
 mod common;
 
-use virtrs_cg::json::Value;
-use virtrs_cg::packets::{Rect, crop, picture_packet, repeat_packet};
+use vizrs_cg::json::Value;
+use vizrs_cg::packets::{Rect, crop, picture_packet, repeat_packet};
 
 use common::{assert_bytes, num, paint, stored_bytes, vectors};
 

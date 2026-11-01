@@ -2,8 +2,8 @@
 
 mod common;
 
-use virtrs_cg::config::Config;
-use virtrs_cg::json::Value;
+use vizrs_cg::config::Config;
+use vizrs_cg::json::Value;
 
 use common::{assert_same, vectors};
 
@@ -31,7 +31,7 @@ fn file_and_environment_match_node() {
 
 #[test]
 fn file_on_disk() {
-    let dir = std::env::temp_dir().join(format!("virtrs-cg-config-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("vizrs-cg-config-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.json");
     std::fs::write(&path, r#"{"on_clip":"TAKE 1","vizrs":{"address":"vizrs:6100"}}"#).unwrap();

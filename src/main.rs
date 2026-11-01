@@ -1,14 +1,14 @@
-// VizRS CG Playout sidecar: `virtrs-cg [config.json]` (or CONFIG=config.json).
+// VizRS CG Playout sidecar: `vizrs-cg [config.json]` (or CONFIG=config.json).
 
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use virtrs_cg::config::Config;
-use virtrs_cg::etv_sync;
-use virtrs_cg::server::{MAX_BODY, Server};
-use virtrs_cg::{error, http, info, log, sys, warn};
+use vizrs_cg::config::Config;
+use vizrs_cg::etv_sync;
+use vizrs_cg::server::{MAX_BODY, Server};
+use vizrs_cg::{error, http, info, log, sys, warn};
 
 fn main() -> ExitCode {
     // Before any thread starts: SIGTERM and SIGINT go to the stop thread below.
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
 
-    // virtrs-cg sync [--output-dir <DIR>] [--channel <CH>] [--url <VIZRS_HTTP>] [--token <TOKEN>] [--cg-url <URL>] [--prune]
+    // vizrs-cg sync [--output-dir <DIR>] [--channel <CH>] [--url <VIZRS_HTTP>] [--token <TOKEN>] [--cg-url <URL>] [--prune]
     if first.as_deref().and_then(|s| s.to_str()) == Some("sync") {
         let mut output_dir = PathBuf::from("etv/templates/graphics-elements/script");
         let mut channel = "1".to_string();
@@ -74,7 +74,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             },
-            None => match virtrs_cg::sync::fetch_show(&vizrs_url, &token) {
+            None => match vizrs_cg::sync::fetch_show(&vizrs_url, &token) {
                 Ok(content) => content,
                 Err(e) => {
                     error!("fetch from {vizrs_url}: {e}");
@@ -83,7 +83,7 @@ fn main() -> ExitCode {
             },
         };
 
-        let pages = match virtrs_cg::sync::parse_pages(&show_json) {
+        let pages = match vizrs_cg::sync::parse_pages(&show_json) {
             Ok(pages) => pages,
             Err(e) => {
                 error!("sync templates: {e}");
@@ -91,8 +91,8 @@ fn main() -> ExitCode {
             }
         };
         let element_url = format!("{}/etv?channel={channel}", cg_url.trim_end_matches('/'));
-        let options = virtrs_cg::sync::SyncOptions { element_url: &element_url, rewrite: true, prune };
-        match virtrs_cg::sync::sync_templates(&pages, &output_dir, options) {
+        let options = vizrs_cg::sync::SyncOptions { element_url: &element_url, rewrite: true, prune };
+        match vizrs_cg::sync::sync_templates(&pages, &output_dir, options) {
             Ok(report) => {
                 info!("synced {} pages to {}: {report}", pages.len(), output_dir.display());
                 return ExitCode::SUCCESS;

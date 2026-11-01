@@ -3,12 +3,12 @@
 
 mod common;
 
-use virtrs_cg::json::Value;
-use virtrs_cg::packets::Rect;
-use virtrs_cg::png::decode_png;
-use virtrs_cg::rects::visible_rects;
-use virtrs_cg::scale::{render_size, scale_rects};
-use virtrs_cg::yuva::{yuva_area, yuva_frame, yuva_size};
+use vizrs_cg::json::Value;
+use vizrs_cg::packets::Rect;
+use vizrs_cg::png::decode_png;
+use vizrs_cg::rects::visible_rects;
+use vizrs_cg::scale::{render_size, scale_rects};
+use vizrs_cg::yuva::{yuva_area, yuva_frame, yuva_size};
 
 use common::{assert_bytes, base64, num, paint, vectors};
 
@@ -41,7 +41,7 @@ fn yuva_frames_match_node() {
                 let (width, height, rgba) = paint(source.get("picture").unwrap());
                 let rects = boxes(source)
                     .into_iter()
-                    .map(|(x, y, w, h)| Rect { x, y, w, h, pixels: virtrs_cg::packets::crop(&rgba, width, (x, y, w, h)) })
+                    .map(|(x, y, w, h)| Rect { x, y, w, h, pixels: vizrs_cg::packets::crop(&rgba, width, (x, y, w, h)) })
                     .collect::<Vec<_>>();
                 (rects, width, height)
             }
@@ -149,10 +149,10 @@ fn rates_and_screencast_steps_match_node() {
     let v = vectors("server");
     for case in list(&v, "rates") {
         let input = case.get("input").and_then(Value::as_str);
-        assert_eq!(Value::from(virtrs_cg::server::parse_rate(input)), *case.get("fps").unwrap(), "{case}");
+        assert_eq!(Value::from(vizrs_cg::server::parse_rate(input)), *case.get("fps").unwrap(), "{case}");
     }
     for case in list(&v, "every_nth_frame") {
         let fps = case.get("fps").and_then(Value::as_f64).unwrap();
-        assert_eq!(virtrs_cg::capture::every_nth_frame(fps), num(case, "n"), "{case}");
+        assert_eq!(vizrs_cg::capture::every_nth_frame(fps), num(case, "n"), "{case}");
     }
 }

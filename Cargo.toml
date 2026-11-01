@@ -1,13 +1,13 @@
 [package]
-name = "virtrs-cg"
-version = "2.5.0"
+name = "vizrs-cg"
+version = "2.6.0"
 edition = "2024"
 rust-version = "1.87"
 description = "VizRS graphics for ErsatzTV channels: commands on clip start and burn-in of /output"
 publish = false
 
 [[bin]]
-name = "virtrs-cg"
+name = "vizrs-cg"
 path = "src/main.rs"
 
 [[bin]]

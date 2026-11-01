@@ -9,7 +9,7 @@ services:
     build:
       context: ..
       dockerfile: bench/Dockerfile
-    image: virtrs-cg-bench:local
+    image: vizrs-cg-bench:local
     restart: "no"
     # Chromium renders through /dev/shm; the Docker default of 64 MB is too small.
     shm_size: 512mb

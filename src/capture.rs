@@ -562,7 +562,7 @@ impl Capture {
 
     fn run_browser(self: &Arc<Self>) -> Result<(), String> {
         let browser = self.options.browser.clone().ok_or("no Chromium found (set VIZRS_BROWSER)")?;
-        let profile = std::env::temp_dir().join(format!("virtrs-cg-{}-{}", std::process::id(), PROFILES.fetch_add(1, Ordering::Relaxed)));
+        let profile = std::env::temp_dir().join(format!("vizrs-cg-{}-{}", std::process::id(), PROFILES.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&profile).map_err(|e| format!("profile {}: {e}", profile.display()))?;
 
         // Chromium reads commands on fd 3 and writes replies and events on fd 4.

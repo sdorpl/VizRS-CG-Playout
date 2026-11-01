@@ -1,6 +1,6 @@
 # VizRS CG Playout — grafika VizRS na kanałach ErsatzTV
 
-> Do 2026-10-31 projekt nazywał się **VirtRS CG Playout** (repozytorium `sdorpl/VirtRS-CG-Playout`, GitHub przekierowuje stary adres). Nazwy techniczne zostają bez zmian: binarka `virtrs-cg`, obraz `ghcr.io/sdorpl/virtrs-cg`, zmienne `VIRTRS_*`.
+> Do 2026-10-31 projekt nazywał się **VirtRS CG Playout** (repozytorium `sdorpl/VirtRS-CG-Playout`, GitHub przekierowuje stary adres). Nazwy techniczne zostają bez zmian: binarka `vizrs-cg`, obraz `ghcr.io/sdorpl/vizrs-cg`, zmienne `VIRTRS_*`.
 
 Część rodziny **VizRS**: grafika z [VizRS CG System](../VizRS%20CG%20System)
 na kanałach [ErsatzTV](https://ersatztv.org). Mały serwis pomocniczy (sidecar)
@@ -15,8 +15,8 @@ obok niezmienionego ErsatzTV:
   Chromium (bez GPU) i nakładana na obraz w ffmpeg ErsatzTV (nakładka
   ffmpeg) albo przez element grafiki ErsatzTV.
 
-Sidecar to jeden plik binarny w Ruście (`virtrs-cg`) obok bezgłowego Chromium;
-wydania: obraz `ghcr.io/sdorpl/virtrs-cg` (amd64, arm64) i archiwa dla Linuksa
+Sidecar to jeden plik binarny w Ruście (`vizrs-cg`) obok bezgłowego Chromium;
+wydania: obraz `ghcr.io/sdorpl/vizrs-cg` (amd64, arm64) i archiwa dla Linuksa
 x86_64 i arm64 (DOKUMENTACJA §4, §7).
 
 ## Rodzina VizRS

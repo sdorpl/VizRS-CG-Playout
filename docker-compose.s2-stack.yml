@@ -37,7 +37,7 @@ services:
     - VIZRS_ETV_URL=http://ersatztv:8409
     - VIZRS_CLIENT_DIR=/vizrs-client
     - VIZRS_SYNC_SECONDS=${VIZRS_SYNC_SECONDS:-60}
-    image: ${CG_IMAGE:-ghcr.io/sdorpl/virtrs-cg:latest}
+    image: ${CG_IMAGE:-ghcr.io/sdorpl/vizrs-cg:latest}
     init: true
     labels:
       com.centurylinklabs.watchtower.enable: 'false'

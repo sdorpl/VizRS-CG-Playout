@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Sidecar benchmark as a black box: a build (target/release/virtrs-cg, or
+// Sidecar benchmark as a black box: a build (target/release/vizrs-cg, or
 // another one with VIRTRS_CG_BIN) burns bench/scene.html in for one session,
 // and the CPU and memory of the sidecar process itself are measured (the
 // browser is measured apart from it). Modes (BENCH_MODES):
@@ -11,7 +11,7 @@
 // Results: a table and one JSON line on stdout (DOKUMENTACJA §8).
 //
 //   cargo build --release && node bench/sidecar.mjs
-//   VIRTRS_CG_BIN=/usr/local/bin/virtrs-cg node bench/sidecar.mjs
+//   VIRTRS_CG_BIN=/usr/local/bin/vizrs-cg node bench/sidecar.mjs
 
 import { readFileSync, readdirSync } from "node:fs";
 import http from "node:http";
@@ -286,7 +286,7 @@ async function run(mode) {
 
   const capture = health0.captures[0] ?? {};
   return {
-    build: path.basename(env.VIRTRS_CG_BIN || "virtrs-cg"),
+    build: path.basename(env.VIRTRS_CG_BIN || "vizrs-cg"),
     mode,
     size: `${WIDTH}x${HEIGHT}`,
     render: capture.render,

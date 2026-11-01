@@ -25,9 +25,9 @@ jobs:
       - run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         with:
-          name: virtrs-cg-linux-x86_64
+          name: vizrs-cg-linux-x86_64
           path: |
-            target/release/virtrs-cg
+            target/release/vizrs-cg
             target/release/vizrs-etv-client
             target/release/vizrs-ffmpeg
       # Testy kontraktu: binarki jako czarne skrzynki, udawany VizRS.

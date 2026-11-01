@@ -19,7 +19,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           latest() { gh release view --repo "$1" --json tagName -q .tagName; }
-          printf 'virtrs-cg %s\nvizrs %s\n' "$(latest sdorpl/VirtRS-CG-Playout)" "$(latest sdorpl/VizRS-CG-System)" > .release
+          printf 'vizrs-cg %s\nvizrs %s\n' "$(latest sdorpl/VirtRS-CG-Playout)" "$(latest sdorpl/VizRS-CG-System)" > .release
           cat .release
       - name: Zapis
         run: |

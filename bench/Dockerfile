@@ -18,20 +18,20 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src src
 RUN cargo build --release --locked --target "$(cat /target)" \
-    && cp "target/$(cat /target)/release/virtrs-cg" /virtrs-cg
+    && cp "target/$(cat /target)/release/vizrs-cg" /vizrs-cg
 
 FROM node:current-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium-headless-shell fonts-dejavu-core fonts-noto-core tzdata \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /virtrs-cg /usr/local/bin/virtrs-cg
+COPY --from=build /vizrs-cg /usr/local/bin/vizrs-cg
 WORKDIR /app
 COPY tests/contract tests/contract
 COPY bench bench
 
 ENV HOME=/tmp \
     TZ=Europe/Warsaw \
-    VIRTRS_CG_BIN=/usr/local/bin/virtrs-cg \
+    VIRTRS_CG_BIN=/usr/local/bin/vizrs-cg \
     VIZRS_BROWSER=/usr/lib/chromium/chromium-headless-shell \
     VIZRS_BROWSER_NO_SANDBOX=1
 USER 10001
