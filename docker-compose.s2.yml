@@ -1,0 +1,19 @@
+# s2: host paths instead of the seed volumes. ErsatzTV config in /etc/ersatz,
+# media in /media/tv. Portainer: Additional paths, after docker-compose.ampere.yml.
+# !override replaces the whole list: when docker-compose.yml changes the
+# volumes of these services, update the lists here too.
+services:
+  seed:
+    volumes: !override
+      - vizrs-data:/vizrs-data
+      - /etc/ersatz:/ersatztv-config
+      - vizrs-client:/vizrs-client
+      - seed-media:/media
+  ersatztv:
+    volumes: !override
+      - /etc/ersatz:/config
+      - vizrs-client:/vizrs:ro
+      - /media/tv:/media/tv:ro
+  # Prebuilt image with vizrs-render: --build must not overwrite it from Dockerfile.
+  cg:
+    build: !reset null
