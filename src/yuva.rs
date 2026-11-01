@@ -129,6 +129,11 @@ fn sum(t: &[[f64; 256]; 3], p: &[u8]) -> f64 {
     t[0][usize::from(p[0])] + t[1][usize::from(p[1])] + t[2][usize::from(p[2])]
 }
 
+/// ffmpeg's name of the colour matrix of the frames of a channel of `height` lines.
+pub fn ffmpeg_matrix(height: u32) -> &'static str {
+    if height >= 720 { "bt709" } else { "smpte170m" }
+}
+
 /// One yuva420p frame of `width`x`height` from visible rectangles of RGBA.
 pub fn yuva_frame(rects: &[Rect], width: u32, height: u32) -> Arc<Yuva> {
     yuva_area(rects, (0, 0, width, height), height >= 720)
@@ -209,4 +214,16 @@ pub fn yuva_area(rects: &[Rect], (ox, oy, width, height): (u32, u32, u32, u32), 
     }
 
     Arc::new(frame)
+}
+
+#[cfg(test)]
+mod matrix_tests {
+    use super::ffmpeg_matrix;
+
+    #[test]
+    fn matrix_name_follows_the_channel_height() {
+        assert_eq!(ffmpeg_matrix(719), "smpte170m");
+        assert_eq!(ffmpeg_matrix(720), "bt709");
+        assert_eq!(ffmpeg_matrix(900), "bt709");
+    }
 }

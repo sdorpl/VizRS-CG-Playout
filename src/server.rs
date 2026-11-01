@@ -8,7 +8,8 @@
 //   GET  /ffmpeg?channel=1[&wait=2000][&area=1]
 //                         the ffmpeg overlay (vizrs-ffmpeg) takes over
 //                         a script session of the channel: its packets
-//                         stop, the reply gives the session, size and rate;
+//                         stop, the reply gives the session, size, rate and
+//                         colour matrix of the frames;
 //                         with area=1 (the overlay can place the graphics)
 //                         the graphics areas (`areas`: x, y, w, h; stacked
 //                         one below the other in the frames), the size of
@@ -39,6 +40,7 @@ use crate::stream::{self, Control, Format, Options};
 use crate::sync;
 use crate::template::{AdMatcher, ClipContext, ShowMatcher, js_string};
 use crate::vizrs::ChannelEvents;
+use crate::yuva::ffmpeg_matrix;
 
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
 // A channel served by the ffmpeg overlay holds its script packets this long
@@ -384,6 +386,7 @@ impl Server {
             ("width", u64::from(layout.width).into()),
             ("height", u64::from(layout.height).into()),
             ("fps", script.fps.into()),
+            ("matrix", ffmpeg_matrix(script.ctx.height).into()),
         ]);
         if let (true, Value::Object(members)) = (placed, &mut reply) {
             let (first, _) = layout.parts[0];

@@ -467,6 +467,8 @@ pub struct Frames {
     pub width: u32,
     pub height: u32,
     pub rate: String,
+    /// ffmpeg's name of the colour matrix of the frames; empty = not declared.
+    pub matrix: String,
     /// Graphics areas of the channel and their rows in the frames (stacked);
     /// empty = the frames are the whole channel.
     pub areas: Vec<(Area, u32)>,
@@ -486,8 +488,14 @@ pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames
         i += 1;
     }
     let size = format!("{}x{}", frames.width, frames.height);
-    let raw = ["-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", &size, "-framerate", &frames.rate, "-i", &format!("pipe:{fd}")];
+    let raw = ["-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", &size, "-framerate", &frames.rate];
     out.extend(raw.iter().map(OsString::from));
+    // Undeclared, the overlay negotiates an unknown colour space for the whole
+    // chain and swscale sends every scaled frame of the media through RGB.
+    if !frames.matrix.is_empty() {
+        out.extend(["-colorspace", &frames.matrix, "-color_range", "tv"].iter().map(OsString::from));
+    }
+    out.extend(["-i".into(), format!("pipe:{fd}").into()]);
     out.extend_from_slice(&args[canvas.index + 2..]);
     // Frames of graphics areas: each overlaid at its place (checked by `with_position` beforehand).
     let at_origin = matches!(frames.areas.as_slice(), [(a, _)] if (a.x, a.y) == (0, 0));
@@ -628,7 +636,8 @@ fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool)
             areas.push((Area { x: size("x")?, y: size("y")?, w: size("width")?, h: size("height")? }, 0));
         }
     }
-    let frames = Frames { width: size("width")?, height: size("height")?, rate, areas };
+    let matrix = info.get("matrix").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let frames = Frames { width: size("width")?, height: size("height")?, rate, matrix, areas };
     let path = format!("/ffmpeg/frames?session={}&fps={}{area}", quote_plus(&session), quote_plus(&frames.rate));
     Ok((frames, open_frames(&settings.sidecar, &path)?))
 }
@@ -702,6 +711,20 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn frames_declare_their_colour_matrix() {
+        let input = args(&["-i", "media", "-i", "http://localhost/internal/graphics/4/1", "-f", "hls", "o"]);
+        let canvas = Canvas { start: 2, index: 2, channel: "4".into() };
+        let mut frames = Frames { width: 8, height: 4, rate: "25".into(), matrix: "bt709".into(), areas: vec![] };
+        let raw = ["-i", "media", "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25"];
+        let tail = ["-i", "pipe:5", "-f", "hls", "o"];
+        let declared = [&raw[..], &["-colorspace", "bt709", "-color_range", "tv"], &tail].concat();
+        assert_eq!(overlay_args(&input, &canvas, 5, &frames), args(&declared));
+        // An older sidecar names no matrix: nothing is declared.
+        frames.matrix.clear();
+        assert_eq!(overlay_args(&input, &canvas, 5, &frames), args(&[&raw[..], &tail].concat()));
     }
 
     #[test]

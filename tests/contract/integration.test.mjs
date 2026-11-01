@@ -428,7 +428,7 @@ test("ffmpeg overlay: raw frames from the sidecar, the script session stops its 
   const pipe = first.args.find((arg) => arg.startsWith("pipe:"));
   assert.deepEqual(first.args, [
     "-threads", "1", "-i", "/m/News.mp4",
-    "-t", "44000ms", "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25/1", "-i", pipe,
+    "-t", "44000ms", "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25/1", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
     "-filter_complex", "[1:0]format=yuva420p[g]", "-f", "null", "-",
   ]);
   assert.equal(first.read, 3 * yuvaSize(8, 4));
@@ -494,7 +494,7 @@ test("ffmpeg overlay at a forced rate, blending, preset and catch-up: the media 
   const pipe = overlay.args.find((arg) => arg.startsWith("pipe:"));
   assert.deepEqual(overlay.args, [
     "-i", "/m/News.mp4",
-    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "50", "-i", pipe,
+    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "50", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
     "-filter_complex", "[0:0]framerate=fps=50,scale=8:4[v_m0];[1:0]format=yuva420p[v_s0];[v_m0]fps=50[v_m0_fps];[v_m0_fps][v_s0]overlay=x=0:y=0[v_o0]",
     "-map", "[v_o0]", "-vcodec", "libx264", "-preset:v", "superfast", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8",
   ]);
@@ -562,7 +562,7 @@ test("graphics area: frames of the area overlaid at its place; full frames when 
   const pipe = placed.args.find((arg) => arg.startsWith("pipe:"));
   assert.deepEqual(placed.args, [
     "-i", "/m/News.mp4",
-    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "4x2", "-framerate", "25/1", "-i", pipe,
+    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "4x2", "-framerate", "25/1", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
     "-filter_complex", "[1:0]format=yuva420p[v_s0];[0:0][v_s0]overlay=x=4:y=2[v_o0]", "-map", "[v_o0]", "-f", "hls", "/t/ffmpeg.m3u8",
   ]);
   assert.equal(placed.read, 2 * yuvaSize(4, 2));
@@ -605,7 +605,7 @@ test("two graphics areas: stacked in one frame, split, cropped and overlaid each
   // The strip (4x2) on rows 0-1 of the frame, the corner (2x2) on rows 2-3.
   assert.deepEqual(overlay.args, [
     "-i", "/m/News.mp4",
-    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "4x4", "-framerate", "25/1", "-i", pipe,
+    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "4x4", "-framerate", "25/1", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
     "-filter_complex",
     "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=4:2:0:0,format=yuva420p[vz_g0];[vz_s1]crop=2:2:0:2,format=yuva420p[vz_g1];"
       + "[0:0][vz_g0]overlay=x=0:y=2[vz_o0];[vz_o0][vz_g1]overlay=x=6:y=0[v_o0]",
@@ -670,7 +670,7 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
     const pipe = result.args.find((arg) => arg.startsWith("pipe:"));
     assert.deepEqual(result.args, [
       ...input, "-i", "/m/News.mp4", "-t", "44000ms",
-      "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "50", "-i", pipe,
+      "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "50", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
       "-filter_complex", expected, "-map", "[v_o0]", "-vcodec", encoder, "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8",
     ], encoder);
     assert.equal(result.read, 2 * yuvaSize(8, 4), encoder);

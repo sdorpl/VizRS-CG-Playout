@@ -369,6 +369,16 @@ Warunki i różnice:
 - Kolory: klatki są w BT.709 (od 720 linii) albo BT.601, w zakresie
   ograniczonym, z alfą prostą (nie premultiplikowaną). Ścieżka ErsatzTV
   konwertowała zawsze w BT.601, więc w HD kolory grafiki są teraz wierniejsze.
+  Sidecar podaje macierz w odpowiedzi `/ffmpeg` (`matrix`), a nakładka deklaruje
+  ją na wejściu klatek (`-colorspace`, `-color_range tv`). Bez tej deklaracji
+  `overlay` wynegocjowałby nieznaną przestrzeń kolorów dla całego łańcucha,
+  a `scale` w ffmpeg przepuszczałby każdą skalowaną klatkę materiału przez
+  RGB (BT.709 → BT.601): ok. 0,3 rdzenia A1, przesunięte kolory filmu i brak
+  `color_space` w strumieniu. Pomiar 2026-10-31 (A1, 1600×900@25, x264
+  `superfast`, 30 s): materiał 1080p30 12,6 Mb/s 1,50 → 1,21 rdzenia
+  i +0,47 dB SSIM, 1080p60 1,46 → 1,21, 720p30 0,82 → 0,70, materiał już
+  w 1600×900 0,95 → 0,90. Materiał w innej macierzy niż kanał nadal idzie
+  przez RGB, bo tam konwersja jest potrzebna.
 - Kanał musi mieć silnik strumieniowania, który podaje ffmpeg płótno grafiki
   przez HTTP (`/internal/graphics/…`) – jak kanał 1 z bazy startowej
   (`Channel.StreamingEngine = 1`). Przy drugim silniku ErsatzTV podaje
@@ -864,9 +874,14 @@ o nienarysowanych klatkach w logu oznaczają, że A1 nie nadąża – wtedy
 wyższe `CG_CPUS`, niższe `VIZRS_MAX_FPS`, `VIZRS_RENDER_SIZE=720p` albo
 `VIZRS_CAPTURE_MODE=screencast`.
 
-Limity darmowego planu (Always Free): 4 OCPU i 24 GB łącznie na wszystkie
-instancje A1, 200 GB dysków, 10 TB ruchu wychodzącego miesięcznie – średnio
-ok. 31 Mb/s, czyli ok. 7 widzów HLS 4 Mb/s oglądających non stop. Oracle
+Limity darmowego planu (Always Free, dokumentacja Oracle, stan 2026-10-31):
+1500 OCPU-godzin i 9000 GB-godzin A1 miesięcznie, czyli 2 OCPU i 12 GB łącznie
+na wszystkie instancje (do czerwca 2026: 4 OCPU i 24 GB), 200 GB dysków, 10 TB
+ruchu wychodzącego miesięcznie – średnio
+ok. 31 Mb/s, czyli ok. 7 widzów HLS 4 Mb/s oglądających non stop. Instancji
+większej niż limit po usunięciu może nie dać się odtworzyć. Budżet na 2 OCPU,
+pomiary i odrzucone wymiany składników:
+[docs/plany/PLAN-ampere.md](plany/PLAN-ampere.md). Oracle
 odzyskuje darmowe instancje bezczynne przez 7 dni (jednocześnie CPU
 w 95. percentylu, sieć i pamięć poniżej 20%); kanał na żądanie bez widzów
 tak wygląda. Konto Pay As You Go z tymi samymi
