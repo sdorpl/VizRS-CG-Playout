@@ -35,6 +35,7 @@ use crate::frames::{Empty, Source};
 use crate::http::{self, Request};
 use crate::json::{self, Value};
 use crate::native::{self, Renderer};
+use crate::overlay::quote_plus;
 use crate::scale::render_size;
 use crate::stream::{self, Control, Format, Options};
 use crate::sync;
@@ -99,6 +100,9 @@ struct Script {
     channel: String,
     ctx: ClipContext,
     fps: f64,
+    /// `render` and `area` of the session, for `/ffmpeg/resume`.
+    render: String,
+    area: String,
     capture: Option<Arc<Capture>>,
     /// The session as a reader of `capture`.
     reader: u64,
@@ -282,6 +286,7 @@ impl Server {
             ("GET", "/health") => http::respond(&mut stream, 200, Some("application/json"), self.health().to_string().as_bytes()),
             ("GET", "/etv/pages") => self.pages_request(&request, stream),
             ("GET", "/ffmpeg") => self.claim_request(&request, stream),
+            ("GET", "/ffmpeg/resume") => self.resume_request(&request, stream),
             ("GET", "/ffmpeg/frames") => {
                 self.frames_request(&request, stream);
                 Ok(())
@@ -391,6 +396,18 @@ impl Server {
             ("height", u64::from(layout.height).into()),
             ("fps", script.fps.into()),
             ("matrix", ffmpeg_matrix(script.ctx.height).into()),
+            (
+                "resume",
+                format!(
+                    "channel={}&width={}&height={}&render={}&graphics={}",
+                    quote_plus(&channel),
+                    script.ctx.width,
+                    script.ctx.height,
+                    quote_plus(&script.render),
+                    quote_plus(&script.area)
+                )
+                .into(),
+            ),
         ]);
         if let (true, Value::Object(members)) = (placed, &mut reply) {
             let (first, _) = layout.parts[0];
@@ -442,6 +459,43 @@ impl Server {
         capture.release(reader);
         // The transcode is over: the script ends with it, as without the overlay.
         script.stream.close();
+    }
+
+    /// The frames of an overlay whose sidecar restarted: its ffmpeg runs on, the
+    /// script session is gone, so the stream stands on its own until ffmpeg ends.
+    fn resume_request(&self, request: &Request, mut stream: TcpStream) -> std::io::Result<()> {
+        let channel = request.param("channel").unwrap_or("1");
+        let (width, height) = (js_number(request.param("width").unwrap_or("")), js_number(request.param("height").unwrap_or("")));
+        let fps = parse_rate(request.param("fps"));
+        if !(width >= 1.0 && height >= 1.0 && fps > 0.0) {
+            return http::respond(&mut stream, 400, None, b"");
+        }
+        let (width, height) = (width as u32, height as u32);
+        let url = self.config.for_channel(channel).output_url;
+        let spec = request.param("render").unwrap_or("");
+        let area = request.param("graphics").unwrap_or("");
+        let Graphics::Capture(capture) = self.capture_for(&url, width, height, fps, spec, area) else {
+            return http::respond(&mut stream, 404, None, b"");
+        };
+        crate::info!("channel {channel}: ffmpeg overlay reconnected");
+        let reader = capture.acquire(fps);
+        let control = Control::new(false);
+        watch_close(&stream, &control);
+        if let Ok(mut out) = http::Stream::start(stream, request) {
+            let layout = match capture.areas() {
+                areas if request.param("area") == Some("1") && !areas.is_empty() => Layout::atlas(areas),
+                _ => Layout::whole(width, height),
+            };
+            let format = Format::Yuva { layout, hd: height >= 720 };
+            stream::stream_frames(
+                &*capture,
+                &mut out,
+                &Options { fps, lead_seconds: self.config.lead_seconds, format, air: None },
+                &control,
+            );
+        }
+        capture.release(reader);
+        Ok(())
     }
 
     /// A script element session: commands in the background, frames at once,
@@ -506,6 +560,8 @@ impl Server {
                     channel: channel.clone(),
                     ctx: ctx.clone(),
                     fps,
+                    render: spec.clone(),
+                    area: area.clone(),
                     capture: capture.clone(),
                     reader,
                     stream: Arc::clone(&control),

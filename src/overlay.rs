@@ -52,7 +52,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 use regex::Regex;
@@ -66,6 +66,7 @@ use crate::sys;
 const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
 const CLAIM_WAIT_MS: u32 = 2000;
 const SCRIPT_END: Duration = Duration::from_millis(500);
+const RECONNECT: Duration = Duration::from_secs(1);
 /// A probe without a result this long ago (failed, or still running) is run again.
 const PROBE_RETRY: Duration = Duration::from_secs(60);
 /// Read timeout of a probe of an http input, in microseconds.
@@ -472,6 +473,54 @@ pub struct Frames {
     /// Graphics areas of the channel and their rows in the frames (stacked);
     /// empty = the frames are the whole channel.
     pub areas: Vec<(Area, u32)>,
+    /// Query of `/ffmpeg/resume` after a restart of the sidecar; empty = an older sidecar.
+    pub resume: String,
+}
+
+/// Bytes of one yuva420p frame.
+fn frame_bytes(width: u32, height: u32) -> usize {
+    let (w, h) = (width as usize, height as usize);
+    2 * w * h + 2 * w.div_ceil(2) * h.div_ceil(2)
+}
+
+/// Frames from the sidecar -> ffmpeg's input. The sidecar gone (a new version
+/// of the stack), ffmpeg gets transparent frames, as fast as it reads them, so
+/// the channel goes on; a thread reconnects and the frames follow. Without a
+/// way back (`resume` empty) ffmpeg sees the end of its input, as before.
+fn relay(socket: TcpStream, mut pipe: impl Write, frame: usize, reconnect: Option<&dyn Fn() -> mpsc::Receiver<TcpStream>>) {
+    let mut buffer = vec![0u8; 1 << 20];
+    let blank = vec![0u8; frame];
+    let mut source = socket;
+    let mut partial = 0;
+    loop {
+        loop {
+            match source.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if pipe.write_all(&buffer[..n]).is_err() {
+                        return;
+                    }
+                    partial = (partial + n) % frame;
+                }
+            }
+        }
+        let Some(reconnect) = reconnect else { return };
+        log("frame stream lost; transparent frames until the sidecar is back");
+        if pipe.write_all(&blank[..(frame - partial) % frame]).is_err() {
+            return;
+        }
+        partial = 0;
+        let back = reconnect();
+        source = loop {
+            if pipe.write_all(&blank).is_err() {
+                return;
+            }
+            if let Ok(socket) = back.try_recv() {
+                log("frame stream back");
+                break socket;
+            }
+        };
+    }
 }
 
 /// The command with the canvas input replaced by raw frames from `pipe:<fd>`.
@@ -637,7 +686,8 @@ fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool)
         }
     }
     let matrix = info.get("matrix").and_then(Value::as_str).unwrap_or_default().to_owned();
-    let frames = Frames { width: size("width")?, height: size("height")?, rate, matrix, areas };
+    let resume = info.get("resume").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let frames = Frames { width: size("width")?, height: size("height")?, rate, matrix, areas, resume };
     let path = format!("/ffmpeg/frames?session={}&fps={}{area}", quote_plus(&session), quote_plus(&frames.rate));
     Ok((frames, open_frames(&settings.sidecar, &path)?))
 }
@@ -668,7 +718,15 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
         }
     };
 
-    let fd = socket.as_raw_fd();
+    let (reader, writer) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(e) => {
+            log(format_args!("pipe: {e}; ErsatzTV graphics instead"));
+            drain.close();
+            plain(settings, args)
+        }
+    };
+    let fd = reader.as_raw_fd();
     // Forwarded to ffmpeg from here on; ffmpeg_child_setup unblocks them in the child.
     sys::block_signals(&FORWARDED);
     let mut command = Command::new(&settings.ffmpeg);
@@ -685,7 +743,29 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
             return 127;
         }
     };
-    drop(socket);
+    drop(reader);
+    let frame = frame_bytes(frames.width, frames.height);
+    let area = if place { "&area=1" } else { "" };
+    let resume = (!frames.resume.is_empty()).then(|| format!("/ffmpeg/resume?{}&fps={}{area}", frames.resume, quote_plus(&frames.rate)));
+    let sidecar = settings.sidecar.clone();
+    std::thread::spawn(move || {
+        let reconnect = |path: &str| {
+            let (sender, receiver) = mpsc::channel();
+            let (sidecar, path) = (sidecar.clone(), path.to_owned());
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(RECONNECT);
+                    if let Ok(socket) = open_frames(&sidecar, &path) {
+                        let _ = sender.send(socket);
+                        return;
+                    }
+                }
+            });
+            receiver
+        };
+        let again = resume.as_deref().map(|path| move || reconnect(path));
+        relay(socket, writer, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<TcpStream>));
+    });
 
     let pid = child.id();
     std::thread::spawn(move || {
@@ -714,10 +794,52 @@ mod tests {
     }
 
     #[test]
+    fn relay_keeps_whole_frames_and_comes_back() {
+        use std::net::TcpListener;
+        struct Tap(Arc<Mutex<Vec<u8>>>);
+        impl Write for Tap {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                let mut seen = self.0.lock().unwrap();
+                // Enough seen: ffmpeg is gone.
+                if seen.len() > 4000 && seen.contains(&2) {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                seen.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let first = TcpStream::connect(address).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        // One and a half frames of 4 bytes, then the sidecar is gone.
+        server.write_all(&[1; 6]).unwrap();
+        drop(server);
+        let reconnect = || {
+            let (sender, receiver) = mpsc::channel();
+            let socket = TcpStream::connect(address).unwrap();
+            let (mut back, _) = listener.accept().unwrap();
+            back.write_all(&[2; 4]).unwrap();
+            drop(back);
+            sender.send(socket).unwrap();
+            receiver
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        relay(first, Tap(Arc::clone(&seen)), 4, Some(&reconnect));
+        let seen = seen.lock().unwrap();
+        assert_eq!(&seen[..8], &[1, 1, 1, 1, 1, 1, 0, 0], "the broken frame is filled");
+        let at = seen.iter().position(|b| *b == 2).unwrap();
+        assert_eq!(at % 4, 0, "the frames stay aligned");
+    }
+
+    #[test]
     fn frames_declare_their_colour_matrix() {
         let input = args(&["-i", "media", "-i", "http://localhost/internal/graphics/4/1", "-f", "hls", "o"]);
         let canvas = Canvas { start: 2, index: 2, channel: "4".into() };
-        let mut frames = Frames { width: 8, height: 4, rate: "25".into(), matrix: "bt709".into(), areas: vec![] };
+        let mut frames = Frames { width: 8, height: 4, rate: "25".into(), matrix: "bt709".into(), areas: vec![], resume: String::new() };
         let raw = ["-i", "media", "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25"];
         let tail = ["-i", "pipe:5", "-f", "hls", "o"];
         let declared = [&raw[..], &["-colorspace", "bt709", "-color_range", "tv"], &tail].concat();

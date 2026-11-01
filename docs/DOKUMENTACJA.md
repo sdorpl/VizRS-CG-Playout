@@ -214,6 +214,7 @@ Sidecar to jeden plik binarny `vizrs-cg` (Rust) obok bezgłowego Chromium:
 | `GET /ffmpeg?channel=1[&wait=2000][&area=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki |
 | `GET /ffmpeg/frames?session=N[&fps=25/1][&area=1]` | surowe klatki `yuva420p` przejętej sesji dla ffmpeg, z `area=1` w rozmiarze obszaru grafiki (Nakładka ffmpeg, niżej) |
 | `GET /etv/pages[?channel=1]` | strony VizRS kanału (lista elementów, §3) |
+| `GET /ffmpeg/resume?channel=1&width=…&height=…&fps=…` | klatki dla nakładki po restarcie sidecara, bez sesji elementu; parametry z pola `resume` odpowiedzi `/ffmpeg` |
 | `GET /health` | liczba sesji, stan przechwytywania (`size` kanału, `render`, `area`, `fps`, `mode`: `screencast` albo `frames`, `status`: `capturing`, `paused`, `restarting`…, `seq`) i kanały z nakładką ffmpeg (`overlay`) |
 
 Chromium wysyła PNG tylko przy zmianie strony. Sidecar dekoduje klatkę
@@ -358,6 +359,13 @@ dawniej.
 Ten sam pomiar z nakładką: transkodowanie 1× (na początku kawałka szybciej,
 o zapas `lead_seconds`), CPU kontenera ErsatzTV ok. 20–30% zamiast ok. 360%,
 sidecar ok. 15%.
+
+Restart sidecara nie przerywa kanału. `vizrs-ffmpeg` trwa przez całą pozycję i
+przekazuje klatki przez rurę do ffmpeg. Gdy strumień zniknie, dopełnia klatkę,
+wysyła przezroczyste klatki i co sekundę łączy się ponownie (`/ffmpeg/resume`),
+po czym grafika wraca na tym samym ffmpeg. Tak działa aktualizacja `cg` bez
+restartu ErsatzTV; komendy kanału wrócą z następną pozycją, a stan anteny zostaje w
+VizRS. Po powrocie obraz idzie z czasu bieżącego, nie z osi czasu pozycji.
 
 Warunki i różnice:
 

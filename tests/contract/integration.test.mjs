@@ -120,6 +120,22 @@ test("channels: each channel commands its own VizRS, the others the main one", a
   assert.deepEqual(second.received, ["TAKE 2 headline=Two", "TAKE 3"]);
 });
 
+test("ffmpeg resume: frames for an overlay without a session; bad requests refused", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const cg = await sidecar(t, { vizrs: { address: vizrs.address }, output_url: "http://127.0.0.1:9/output" });
+  assert.equal((await fetch(`${cg.url}/ffmpeg/resume?channel=2`)).status, 400);
+  const abort = new AbortController();
+  const reply = await fetch(`${cg.url}/ffmpeg/resume?channel=2&width=8&height=4&fps=25&render=&graphics=`, { signal: abort.signal });
+  assert.equal(reply.status, 200);
+  const { value } = await reply.body.getReader().read();
+  assert.ok(value.length > 0);
+  const blank = blankYuva(8, 4);
+  const size = Math.min(value.length, blank.length);
+  assert.ok(Buffer.from(value.subarray(0, size)).equals(blank.subarray(0, size)), "transparent");
+  abort.abort();
+});
+
 test("sync: ErsatzTV's channels get antennas and names, the programs reach the volume", async (t) => {
   const seen = [];
   const fake = http.createServer((request, response) => {
