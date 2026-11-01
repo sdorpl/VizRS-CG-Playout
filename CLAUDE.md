@@ -66,7 +66,7 @@ Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu
 | `src/net.rs` | wspólny klient HTTP programów ErsatzTV (URL, połączenia z limitami czasu) |
 | `src/overlay.rs`, `src/bin/vizrs-ffmpeg.rs` | nakładka ffmpeg ErsatzTV (binarka `vizrs-ffmpeg`): płótno grafiki zastąpione klatkami `yuva420p` z sidecara (DOKUMENTACJA §1) |
 | `etv/templates/…/vizrs.yml` | definicja elementu grafiki „VizRS” dla ErsatzTV |
-| `Dockerfile` | obraz sidecara: binarka (arm64 krzyżowo) + `chromium-headless-shell` |
+| `Dockerfile` | obraz sidecara: binarka i `vizrs-render` z wydania VizRS (`VIZRS_REF`; arm64 krzyżowo) + `chromium-headless-shell` |
 | `tests/*.rs`, `tests/vectors/` | testy Rusta, wektory referencyjne |
 | `tests/contract/` | testy kontraktu w Node.js (`npm test`) |
 | `seed/` | dane startowe stosu: show VizRS, baza ErsatzTV (kanał 1), media testowe; obraz `seed/Dockerfile` (z `vizrs.yml` oraz `vizrs-etv-client` i `vizrs-ffmpeg` kompilowanymi w etapie budowy) – `init.sh` kopiuje je do wolumenów, stos bez plików z hosta (Portainer z GitHuba; DOKUMENTACJA §4) |

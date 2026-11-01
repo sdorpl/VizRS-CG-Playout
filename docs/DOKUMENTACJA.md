@@ -201,10 +201,8 @@ wymaga renderera 0.3: starszy wziąłby tylko ostatni `--area`.
 Koszt (x86, kanał 1280×720 25 kl./s, crawl VizRS, sidecar razem z rysującym):
 Chromium ok. 56% rdzenia, renderer natywny ok. 14%. Pomiar na Ampere A1
 i stan obsługiwanych elementów: VizRS `docs/plany/PLAN-native.md`.
-Domyślny obraz Dockera nie zawiera `vizrs-render`. Ma go `Dockerfile.render`;
-obraz `ghcr.io/sdorpl/virtrs-cg:render-native` (amd64 i arm64) buduje workflow
-`render-image.yml` po pushu na gałąź `render-native` (każda architektura
-natywnie). Na A1: `CG_IMAGE` na ten obraz. Bez `vizrs-render` tryb `auto` rysuje Chromium.
+Obraz Dockera zawiera `vizrs-render`: `Dockerfile` buduje go z wydania VizRS CG
+System wskazanego przez `VIZRS_REF` (na arm64 także krzyżowo).
 
 Pomiar: §8 (Taśma crawla).
 

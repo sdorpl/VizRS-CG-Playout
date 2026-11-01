@@ -1,4 +1,5 @@
-# VizRS CG Playout sidecar: Rust binary + headless Chromium (no GPU), amd64 and arm64.
+# VizRS CG Playout sidecar: Rust binary + vizrs-render + headless Chromium (no GPU),
+# amd64 and arm64. vizrs-render comes from the VizRS CG System release VIZRS_REF.
 # The binary is built on the build host's platform and cross-compiled for the
 # target (pure Rust, no C libraries): no emulation, minutes instead of an hour
 # under QEMU. chromium-headless-shell renders /output with about half the CPU
@@ -29,14 +30,22 @@ COPY src src
 RUN cargo build --release --locked --target "$(cat /target)" \
     && cp "target/$(cat /target)/release/virtrs-cg" /virtrs-cg
 
+ARG VIZRS_REF=v2.0.10
+RUN git clone --depth 1 --branch "$VIZRS_REF" https://github.com/sdorpl/VizRS-CG-System.git /vizrs \
+    && cd /vizrs/source/render \
+    && cargo build --release --locked --target "$(cat /target)" \
+    && cp "target/$(cat /target)/release/vizrs-render" /vizrs-render
+
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium-headless-shell fonts-dejavu-core fonts-noto-core tzdata \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /virtrs-cg /usr/local/bin/virtrs-cg
+COPY --from=build /vizrs-render /usr/local/bin/vizrs-render
 WORKDIR /app
 COPY etv etv
 
+ENV VIZRS_RENDERER_BIN=/usr/local/bin/vizrs-render
 # Chromium needs a writable HOME (crashpad) for the unprivileged user. The
 # browser binary itself, not Debian's /usr/bin wrapper: the wrapper runs it as
 # a child of sh, so stopping and the parent-death signal would only reach sh.
