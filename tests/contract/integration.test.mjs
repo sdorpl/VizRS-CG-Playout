@@ -193,6 +193,8 @@ test("page elements: TAKE in_seconds after the item's start, OUT out_seconds bef
     on_clip: "TAKE 4001",
     lead_seconds: 0,
     in_seconds: 0.8,
+    // The short item's gap would count as an ad (STATE) right at the last check.
+    ad_without_element: false,
   }, { VIZRS_OUT_SECONDS: "0.3" });
   const now = Date.now();
   const timed = (path, length) => ({
