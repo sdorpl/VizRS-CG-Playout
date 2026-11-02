@@ -4,6 +4,8 @@
 //   name: "Ticker (7303)"
 //   args:
 //     - http://cg:7700/etv?channel=1&page=7303
+// A page with times on the channel (`playout` of the VizRS page, set in Trio)
+// carries them in the URL: `&page=1405&at=-60&out=5&ref=programme`.
 //
 // ErsatzTV drops an element whose file is missing at a refresh, and with it the
 // element's places in schedules, decos and playout items. So files are replaced
@@ -15,6 +17,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::config::MAX_SECONDS;
 use crate::json::{self, Value};
 use crate::net::{self, Url, error};
 
@@ -25,13 +28,56 @@ const GONE: &str = "[brak w VizRS] ";
 /// Inside the ErsatzTV configuration folder.
 const SCRIPT_TEMPLATES: &str = "templates/graphics-elements/script";
 /// What is specific to one element in its URL; the rest holds for all of the channel's.
-const ELEMENT_PARAMS: [&str; 5] = ["page", "take", "cmd", "command", "fields"];
+const ELEMENT_PARAMS: [&str; 8] = ["page", "take", "cmd", "command", "fields", "at", "out", "ref"];
+/// The element's times, from its page in VizRS.
+const TIME_PARAMS: [&str; 3] = ["at", "out", "ref"];
 
 /// A page fetched from VizRS.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageInfo {
     pub number: u64,
     pub name: String,
+    pub playout: Playout,
+}
+
+/// When the page's element goes on air and out (`Timing` of `vizrs.rs`);
+/// `None` = the sidecar's default.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Playout {
+    /// Seconds after the start, negative before the end.
+    pub at: Option<f64>,
+    /// Seconds before the end.
+    pub out: Option<f64>,
+    /// "item" or "programme".
+    pub end_ref: Option<String>,
+}
+
+impl Playout {
+    /// From `playout` of a VizRS page; values out of range are left out.
+    fn parse(value: Option<&Value>) -> Playout {
+        let number = |key, low: f64| value?.get(key)?.as_f64().filter(|n| (low..=MAX_SECONDS).contains(n));
+        Playout {
+            at: number("at", -MAX_SECONDS),
+            out: number("out", 0.0),
+            end_ref: value.and_then(|v| v.get("ref")?.as_str()).filter(|r| matches!(*r, "item" | "programme")).map(str::to_owned),
+        }
+    }
+
+    /// `at=-60&out=5&ref=programme`, the parameters given.
+    fn params(&self) -> Vec<String> {
+        let mut params: Vec<String> =
+            [("at", self.at), ("out", self.out)].into_iter().filter_map(|(key, value)| Some(format!("{key}={}", value?))).collect();
+        params.extend(self.end_ref.as_ref().map(|r| format!("ref={r}")));
+        params
+    }
+
+    fn to_json(&self) -> Value {
+        let mut members = Vec::new();
+        members.extend(self.at.map(|at| ("at".to_owned(), at.into())));
+        members.extend(self.out.map(|out| ("out".to_owned(), out.into())));
+        members.extend(self.end_ref.as_deref().map(|r| ("ref".to_owned(), r.into())));
+        Value::Object(members)
+    }
 }
 
 /// How to treat the existing files.
@@ -110,9 +156,37 @@ pub fn channel_url(base: &str) -> String {
     if shared.is_empty() { path.to_owned() } else { format!("{path}?{}", shared.join("&")) }
 }
 
-fn page_url(element_url: &str, number: u64) -> String {
+fn page_url(element_url: &str, page: &PageInfo) -> String {
     let separator = if element_url.contains('?') { '&' } else { '?' };
-    format!("{element_url}{separator}page={number}")
+    let times: String = page.playout.params().iter().map(|p| format!("&{p}")).collect();
+    format!("{element_url}{separator}page={}{times}", page.number)
+}
+
+/// The element's text with the page's times in its URL instead of the ones it had.
+fn with_times(text: &str, page: &PageInfo) -> String {
+    let mut done = false;
+    let mut out = String::with_capacity(text.len() + 32);
+    for line in text.lines() {
+        match line.split_once("- ").filter(|(indent, _)| !done && indent.trim().is_empty()) {
+            Some((indent, url)) => {
+                done = true;
+                let (path, query) = url.split_once('?').unwrap_or((url, ""));
+                let mut params: Vec<String> = query
+                    .split('&')
+                    .filter(|p| !p.is_empty() && !TIME_PARAMS.contains(&p.split('=').next().unwrap_or("")))
+                    .map(str::to_owned)
+                    .collect();
+                params.extend(page.playout.params());
+                out.push_str(&format!("{indent}- {path}"));
+                if !params.is_empty() {
+                    out.push_str(&format!("?{}", params.join("&")));
+                }
+            }
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// A double-quoted YAML string. ErsatzTV runs the whole file through Scriban
@@ -152,7 +226,7 @@ pub fn generate_template_yaml(page: &PageInfo, element_url: &str) -> String {
          format: packet\n",
         number = page.number,
         name = name_line(page),
-        url = page_url(element_url, page.number),
+        url = page_url(element_url, page),
     )
 }
 
@@ -172,14 +246,23 @@ pub fn parse_pages(json_text: &str) -> Result<Vec<PageInfo>, String> {
             continue;
         }
         let name = p.get("name").and_then(Value::as_str).unwrap_or("Strona").trim().to_owned();
-        pages.push(PageInfo { number, name });
+        pages.push(PageInfo { number, name, playout: Playout::parse(p.get("playout")) });
     }
     Ok(pages)
 }
 
 /// The pages for the sidecar's `/etv/pages`, in the format of `parse_pages`.
 pub fn pages_json(pages: &[PageInfo]) -> String {
-    let pages = pages.iter().map(|p| json::object([("number", p.number.into()), ("name", p.name.as_str().into())]));
+    let pages = pages.iter().map(|p| {
+        let page = json::object([("number", p.number.into()), ("name", p.name.as_str().into())]);
+        match (page, p.playout == Playout::default()) {
+            (Value::Object(mut members), false) => {
+                members.push(("playout".into(), p.playout.to_json()));
+                Value::Object(members)
+            }
+            (page, _) => page,
+        }
+    });
     json::object([("pages", Value::Array(pages.collect()))]).to_string()
 }
 
@@ -260,7 +343,7 @@ pub fn sync_templates(pages: &[PageInfo], dir: &Path, options: SyncOptions) -> i
             let text = if options.rewrite {
                 generate_template_yaml(page, options.element_url)
             } else {
-                with_name(&element.text, |_| name_line(page))
+                with_times(&with_name(&element.text, |_| name_line(page)), page)
             };
             if text != element.text {
                 write_atomic(&element.path, &text)?;
@@ -298,7 +381,7 @@ mod tests {
     const KEEP: SyncOptions = SyncOptions { element_url: URL, rewrite: false, prune: false };
 
     fn page(number: u64, name: &str) -> PageInfo {
-        PageInfo { number, name: name.into() }
+        PageInfo { number, name: name.into(), ..PageInfo::default() }
     }
 
     /// An empty folder, deleted with the value.
@@ -380,7 +463,8 @@ mod tests {
         let element = "http://cg:7700/etv?channel=4&render=720p&area=10x10+0+0&page=3001&fields=a=b";
         assert_eq!(channel_url(element), "http://cg:7700/etv?channel=4&render=720p&area=10x10+0+0");
         assert_eq!(channel_url("http://cg:7700/etv?take=1"), "http://cg:7700/etv");
-        assert_eq!(page_url("http://cg:7700/etv", 1), "http://cg:7700/etv?page=1");
+        assert_eq!(page_url("http://cg:7700/etv", &page(1, "")), "http://cg:7700/etv?page=1");
+        assert_eq!(channel_url("http://cg:7700/etv?channel=4&page=1405&at=-60&out=5&ref=item"), "http://cg:7700/etv?channel=4");
     }
 
     #[test]
@@ -404,6 +488,36 @@ mod tests {
         let rewrite = SyncOptions { rewrite: true, ..other };
         sync_templates(&[page(3001, "Pasek"), page(4001, "Tytuł")], &folder.0, rewrite).unwrap();
         assert!(folder.read("page-3001.yml").contains("channel=9&page=3001"));
+    }
+
+    #[test]
+    fn page_times_from_vizrs_go_into_the_url() {
+        let json = r#"{"pages":[
+            {"number":1405,"name":"Za chwilę","playout":{"at":-60,"out":5,"ref":"programme"}},
+            {"number":1406,"name":"Zła","playout":{"at":"x","out":-5,"ref":"show"}},
+            {"number":1407,"name":"Za długo","playout":{"at":-100000,"out":2.5}}
+        ]}"#;
+        let pages = parse_pages(json).unwrap();
+        assert_eq!(pages[0].playout, Playout { at: Some(-60.0), out: Some(5.0), end_ref: Some("programme".into()) });
+        assert_eq!(pages[1].playout, Playout::default());
+        assert_eq!(pages[2].playout, Playout { out: Some(2.5), ..Playout::default() });
+        assert_eq!(parse_pages(&pages_json(&pages)).unwrap(), pages);
+
+        let folder = Folder::new("times");
+        sync_templates(&pages[..1], &folder.0, KEEP).unwrap();
+        assert!(folder.read("page-1405.yml").contains("  - http://cg:7700/etv?channel=4&page=1405&at=-60&out=5&ref=programme\n"));
+
+        // Changed in Trio: the element follows, the rest of its URL stays.
+        let text = folder.read("page-1405.yml").replace("channel=4&", "channel=4&render=720p&");
+        fs::write(folder.0.join("page-1405.yml"), text).unwrap();
+        let later = PageInfo { playout: Playout { at: Some(-90.0), ..Playout::default() }, ..pages[0].clone() };
+        let report = sync_templates(std::slice::from_ref(&later), &folder.0, KEEP).unwrap();
+        assert_eq!(report, SyncReport { updated: 1, ..SyncReport::default() });
+        assert!(folder.read("page-1405.yml").contains("  - http://cg:7700/etv?channel=4&render=720p&page=1405&at=-90\n"));
+        assert!(!sync_templates(&[later], &folder.0, KEEP).unwrap().changed());
+        // Times gone from the page: gone from the URL.
+        sync_templates(&[page(1405, "Za chwilę")], &folder.0, KEEP).unwrap();
+        assert!(folder.read("page-1405.yml").contains("  - http://cg:7700/etv?channel=4&render=720p&page=1405\n"));
     }
 
     #[test]

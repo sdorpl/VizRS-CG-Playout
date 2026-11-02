@@ -647,8 +647,9 @@ Służy do tego tablica `shows` w pliku konfiguracyjnym:
 
 - `show_title` to wyrażenie regularne (case-insensitive) dopasowywane do
   tytułu audycji (`MediaItem_ShowTitle` z danych ErsatzTV, symbol `{show_title}`).
-- Pierwsza pasująca reguła z listy `shows` zastępuje domyślne `on_clip`, `on_ad`
-  i/lub `ad_match` (pola pominięte przyjmują wartości globalne z konfiguracji).
+- Pierwsza pasująca reguła z listy `shows` zastępuje domyślne `on_clip`, `on_ad`,
+  `ad_match`, `on_end` i/lub `end_seconds` (pola pominięte przyjmują wartości
+  globalne z konfiguracji; `"on_end": ""` wyłącza belkę przed końcem tej audycji).
 - Jeśli audycja nie pasuje do żadnego wpisu z `shows`, stosowane są ustawienia
   globalne.
 
@@ -679,6 +680,7 @@ odświeżeniu; wymaga to, by na kanale grał jakikolwiek element VizRS. Na
 |---|---|
 | nowa strona | nowy plik `page-<ID>.yml`: URL sesji, która go utworzyła (kanał, `render`, `area`) plus `page=<ID>` |
 | zmieniona nazwa | zmienia się tylko `name:`, plik i przypisania zostają |
+| czas strony na kanale (Trio, `playout` strony) | w URL zmieniają się tylko `at=`, `out=`, `ref=` (§3, Grafika przed końcem audycji) |
 | strona znika (usunięta, inny show) | zostaje z nazwą `[brak w VizRS] Ticker (3001)`; `TAKE` da `ERR` w logu; znacznik znika, gdy strona wróci |
 
 **Pliki nie są kasowane**, bo ErsatzTV usuwa element, którego plik brakuje przy
@@ -689,8 +691,8 @@ stroną elementu jest parametr `page=` (lub `take=`) w jego URL. Plik bez
 pierwszej linii `# Generated from VizRS CG System page …` jest ręczny:
 synchronizacja go nie zmienia, a jego strona nie dostaje drugiego elementu.
 
-Automat zostawia URL istniejącego pliku, więc element raz utworzony trzyma swój
-kanał. Elementy są wspólne dla całego ErsatzTV: przy kilku kanałach na jednym
+Automat zostawia URL istniejącego pliku (poza czasem strony: `at`, `out`,
+`ref`), więc element raz utworzony trzyma swój kanał. Elementy są wspólne dla całego ErsatzTV: przy kilku kanałach na jednym
 sidecarze `page-<ID>.yml` należy do kanału, który utworzył go pierwszy, a dla
 pozostałych skopiuj plik z innym `channel=` (bez pierwszej linii). Elementy
 utworzone przez klienta bez `channel=` są go pozbawione i działają na każdym kanale.
@@ -748,7 +750,67 @@ nie jest już wysyłana. `out_seconds` ujemne = bez `OUT` (grafika zostaje do
 reklamy); razem z `in_seconds: 0` to dawne zachowanie (komendy od razu, bez
 zejścia).
 
-## 4. Uruchamianie w Dockerze
+### Grafika przed końcem audycji (`on_end`, `at=-N`)
+
+Belka typu „Za chwilę: *następna audycja* o *godzina*” wchodzi określoną liczbę
+sekund **przed końcem** audycji i schodzi tuż przed nim. Czas liczy się tak
+jak `in_seconds`/`out_seconds` – w osi wideo pozycji, z poprawką na transkodowanie
+z wyprzedzeniem.
+
+**Dla każdej audycji (`on_end`).** Elementy ogólne **VizRS** (bez `page=`)
+wysyłają w każdej zwykłej pozycji, niezależnie od `on_clip`:
+
+```json
+"on_end": "TAKE 1405 next=Za chwilę|programs={next_title}|times={next_start}",
+"end_seconds": 60,
+"end_out_seconds": 5,
+"end_ref": "programme",
+"shows": [
+  { "show_title": "^Wiadomości", "end_seconds": 30 },
+  { "show_title": "^Zapowiedź", "on_end": "" }
+]
+```
+
+- `on_end` – komendy (symbole jak w `on_clip`), puste = brak; nadpisywane w
+  `shows` i `channels` (tam też `end_seconds`);
+- `end_seconds` (60) – `TAKE` tyle sekund przed końcem;
+- `end_out_seconds` (5) – `OUT` stron z linii `TAKE` tyle sekund przed końcem;
+- `end_ref` – od którego końca: `programme` (domyślnie) – koniec wpisu EPG, w
+  którym zaczyna się pozycja (`Epg[].Stop`), czyli całej audycji, także gdy
+  przerwy dzielą ją na kilka pozycji; bez EPG – koniec pozycji; `item` – koniec
+  pozycji (`MediaItem_Stop`).
+
+**Dla wybranych pozycji (element strony).** Adres elementu strony przyjmuje czas:
+
+| Parametr | Znaczenie |
+|---|---|
+| `at=10` / `at=-60` | `TAKE` 10 s po starcie pozycji / 60 s przed końcem (domyślnie `in_seconds` po starcie) |
+| `out=5` | `OUT` 5 s przed końcem (domyślnie `out_seconds`, a przy `at=-N` – `end_out_seconds`); `out=-1` – bez `OUT` (nie dla `at=-N`) |
+| `ref=programme` / `ref=item` | koniec audycji z EPG albo pozycji (domyślnie: `item`, a przy `at=-N` – `end_ref`) |
+
+np. `http://cg:7700/etv?channel=1&page=1405&at=-60&out=5`. Element zaznacza się
+w ErsatzTV tylko przy wybranych pozycjach. Czas można też ustawić w **Trio**
+(edytor strony → **⏱ kanał**): zapisuje się w stronie (`playout`), a
+synchronizacja elementów (§3) przepisuje go do URL pliku `page-<ID>.yml`.
+Błędne wartości trafiają do logu jako ostrzeżenie i są pomijane.
+
+Zasady:
+
+- moment `TAKE` przed końcem musi wypaść w tej pozycji: w audycji pociętej
+  przerwami belkę dostaje tylko część, w której wypada (inne nic nie wysyłają),
+  a pozycja krótsza niż `end_seconds` (bez EPG) – wcale;
+- grafika przed końcem **zawsze ma `OUT`**, najpóźniej `out` przed końcem
+  pozycji – inaczej przerwa zdjęłaby ją przez `STATE`, a pierwsza pozycja
+  następnej audycji przywróciłaby ją;
+- widz dołączający między `TAKE` a `OUT` wywołuje `TAKE` od razu, później nic;
+- reklama po zaplanowaniu anuluje plan tak jak przy `on_clip`;
+- belka na tej samej warstwie co strona z `on_clip` ją zastępuje (późniejsze
+  `OUT` tamtej strony daje tylko `ERR` w logu); osobna warstwa – obie naraz.
+
+Czas na ekranie = moment komendy + animacja wejścia sceny (Artist: `delay`,
+`dur` presetu IN). Animacja wyjścia powinna być krótsza niż `end_out_seconds`.
+
+## 4. Uruchamianie w Dockerze## 4. Uruchamianie w Dockerze
 
 ```sh
 docker compose up -d
@@ -1055,6 +1117,10 @@ vizrs-cg config.json      # albo CONFIG=config.json vizrs-cg
   "ad_without_element": true,
   "in_seconds": 5,
   "out_seconds": 5,
+  "on_end": "",
+  "end_seconds": 60,
+  "end_out_seconds": 5,
+  "end_ref": "programme",
   "lead_seconds": 4,
   "render_size": "",
   "area": "",
@@ -1074,15 +1140,22 @@ Opcje `etv_config`, `etv_url`, `client_source`, `client_dir`, `sync_seconds`
 Obiekt `channels` (opcjonalny, env `VIZRS_CHANNELS` z tym samym JSON-em; błędny
 JSON w env trafia do logu i jest pomijany) daje kanałowi własny VizRS (§3).
 
-Tablica `shows` (opcjonalna) pozwala nadpisać `on_clip`, `on_ad` i `ad_match`
-dla wybranych audycji (§3, Elementy graficzne per audycja).
+Tablica `shows` (opcjonalna) pozwala nadpisać `on_clip`, `on_ad`, `ad_match`,
+`on_end` i `end_seconds` dla wybranych audycji (§3, Elementy graficzne per audycja).
+
+`on_end`, `end_seconds`, `end_out_seconds`, `end_ref`: belka przed końcem
+audycji (§3, Grafika przed końcem audycji). `end_seconds` i `end_out_seconds`
+to 0–86 400 s, `end_ref` – `programme` albo `item`; inna wartość w pliku
+zatrzymuje start z nazwą opcji.
 Pusty `output_url` = tylko komendy, bez wtapiania. Wzór: `config.example.json`.
 
 Zmienne środowiskowe (nadpisują plik): `LISTEN`, `VIZRS_ADDRESS`,
 `VIZRS_TOKEN`, `VIZRS_OUTPUT_URL`, `VIZRS_ON_CLIP`, `VIZRS_ON_AD`
 (`\n` rozdziela linie), `VIZRS_AD_PATH`, `VIZRS_AD_TITLE`, `VIZRS_AD_WITHOUT_ELEMENT=0`
 (wyłącza reklamę po braku elementu), `VIZRS_IN_SECONDS`,
-`VIZRS_OUT_SECONDS` (wejście i zejście grafiki, §3), `LEAD_SECONDS`, `VIZRS_RENDER_SIZE`
+`VIZRS_OUT_SECONDS` (wejście i zejście grafiki, §3), `VIZRS_ON_END`
+(`\n` rozdziela linie), `VIZRS_END_SECONDS`, `VIZRS_END_OUT_SECONDS`,
+`VIZRS_END_REF` (grafika przed końcem audycji, §3), `LEAD_SECONDS`, `VIZRS_RENDER_SIZE`
 (`720p`, `1280x720`, puste = rozmiar kanału; §1), `VIZRS_AREA` (obszary
 grafiki `SZERxWYS+X+Y` po przecinku, np. `1920x140+0+930,160x160+1690+30`,
 puste = cały kanał; §1), `VIZRS_MAX_FPS`
@@ -1101,7 +1174,8 @@ Nieznana opcja w pliku trafia do logu jako ostrzeżenie. Zły typ wartości
 (np. `"no_sandbox": "yes"`) zatrzymuje start z nazwą opcji; liczbę można
 podać także jako tekst (`"lead_seconds": "6"`). `LEAD_SECONDS`,
 `VIZRS_IN_SECONDS`, `VIZRS_OUT_SECONDS`, `VIZRS_MAX_FPS` i `VIZRS_CLOCK_OFFSET`, które nie są liczbą, dają ostrzeżenie i zostawiają
-poprzednią wartość.
+poprzednią wartość; tak samo `VIZRS_END_SECONDS` i `VIZRS_END_OUT_SECONDS`
+spoza 0–86 400 s oraz `VIZRS_END_REF` inne niż `programme`/`item`.
 
 `max_fps` ogranicza, ile klatek na sekundę Chromium wysyła ze screencastu
 (co n-ta klatka z 60 na sekundę, §1): przy `25` kanał 50 kl./s dostaje

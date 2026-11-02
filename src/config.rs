@@ -5,6 +5,9 @@ use std::path::Path;
 
 use crate::json::{self, Value};
 
+/// Longest time of a graphics element in an item (a day).
+pub const MAX_SECONDS: f64 = 86_400.0;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Vizrs {
     pub address: String,
@@ -31,6 +34,10 @@ pub struct ShowOverride {
     pub on_ad: Option<String>,
     /// Override for `ad_match`; `None` = use the global value.
     pub ad_match: Option<AdMatch>,
+    /// Override for `on_end`; `Some("")` = no graphics before the end of this show.
+    pub on_end: Option<String>,
+    /// Override for `end_seconds`.
+    pub end_seconds: Option<f64>,
 }
 
 /// What one ErsatzTV channel has of its own: another VizRS means other
@@ -44,6 +51,8 @@ pub struct ChannelOverride {
     pub output_url: Option<String>,
     pub on_clip: Option<String>,
     pub on_ad: Option<String>,
+    pub on_end: Option<String>,
+    pub end_seconds: Option<f64>,
     pub shows: Option<Vec<ShowOverride>>,
 }
 
@@ -80,6 +89,15 @@ pub struct Config {
     pub in_seconds: f64,
     /// …and out (`OUT` of the pages taken) this long before its stop; < 0 = no `OUT`.
     pub out_seconds: f64,
+    /// Commands for the end of an item (e.g. "Za chwilę" with `{next_title}`);
+    /// "" = none. They go on air `end_seconds` before the end…
+    pub on_end: String,
+    pub end_seconds: f64,
+    /// …and their pages out `end_out_seconds` before it.
+    pub end_out_seconds: f64,
+    /// The end `on_end` counts from: "programme" (the guide entry, over the
+    /// parts of an item cut by breaks) or "item" (`MediaItem_Stop`).
+    pub end_ref: String,
     /// How far the packet stream may run ahead of real time (ErsatzTV burst).
     pub lead_seconds: f64,
     /// Size Chromium renders /output at: "" = channel size, "720p", "1280x720".
@@ -128,6 +146,10 @@ impl Default for Config {
             ad_without_element: true,
             in_seconds: 5.0,
             out_seconds: 5.0,
+            on_end: String::new(),
+            end_seconds: 60.0,
+            end_out_seconds: 5.0,
+            end_ref: "programme".into(),
             lead_seconds: 4.0,
             render_size: String::new(),
             area: String::new(),
@@ -162,6 +184,20 @@ fn number(value: &Value, name: &str) -> Result<f64, String> {
     }
 }
 
+/// Seconds of a time before the end: a number from 0 to a day.
+fn seconds(value: &Value, name: &str) -> Result<f64, String> {
+    let n = number(value, name)?;
+    if (0.0..=MAX_SECONDS).contains(&n) { Ok(n) } else { Err(format!("{name}: expected 0 to {MAX_SECONDS} seconds")) }
+}
+
+/// "item" or "programme".
+fn end_ref(value: &str, name: &str) -> Result<String, String> {
+    match value {
+        "item" | "programme" => Ok(value.to_owned()),
+        _ => Err(format!("{name}: expected \"item\" or \"programme\"")),
+    }
+}
+
 fn boolean(value: &Value, name: &str) -> Result<bool, String> {
     value.as_bool().ok_or_else(|| format!("{name}: expected true or false"))
 }
@@ -186,7 +222,9 @@ fn show_overrides(value: &Value, name: &str) -> Result<Vec<ShowOverride>, String
         } else {
             None
         };
-        shows.push(ShowOverride { show_title, on_clip, on_ad, ad_match });
+        let on_end = item.get("on_end").map(|v| string(v, &format!("{prefix}.on_end"))).transpose()?;
+        let end_seconds = item.get("end_seconds").map(|v| seconds(v, &format!("{prefix}.end_seconds"))).transpose()?;
+        shows.push(ShowOverride { show_title, on_clip, on_ad, ad_match, on_end, end_seconds });
     }
     Ok(shows)
 }
@@ -209,6 +247,8 @@ fn channel_overrides(value: &Value) -> Result<Vec<ChannelOverride>, String> {
             output_url: field(item.get("output_url"), "output_url")?,
             on_clip: field(item.get("on_clip"), "on_clip")?,
             on_ad: field(item.get("on_ad"), "on_ad")?,
+            on_end: field(item.get("on_end"), "on_end")?,
+            end_seconds: item.get("end_seconds").map(|v| seconds(v, &format!("{prefix}.end_seconds"))).transpose()?,
             shows: item.get("shows").map(|v| show_overrides(v, &format!("{prefix}.shows"))).transpose()?,
         });
     }
@@ -265,6 +305,10 @@ impl Config {
                     "ad_without_element" => config.ad_without_element = boolean(value, key)?,
                     "in_seconds" => config.in_seconds = number(value, key)?,
                     "out_seconds" => config.out_seconds = number(value, key)?,
+                    "on_end" => config.on_end = string(value, key)?,
+                    "end_seconds" => config.end_seconds = seconds(value, key)?,
+                    "end_out_seconds" => config.end_out_seconds = seconds(value, key)?,
+                    "end_ref" => config.end_ref = end_ref(&string(value, key)?, key)?,
                     "lead_seconds" => config.lead_seconds = number(value, key)?,
                     "render_size" => config.render_size = string(value, key)?,
                     "area" => config.area = string(value, key)?,
@@ -354,6 +398,23 @@ impl Config {
                 }
             }
         }
+        if let Some(v) = env("VIZRS_ON_END") {
+            config.on_end = unescape(&v);
+        }
+        for (name, target) in [("VIZRS_END_SECONDS", &mut config.end_seconds), ("VIZRS_END_OUT_SECONDS", &mut config.end_out_seconds)] {
+            if let Some(v) = env(name).filter(|v| !v.is_empty()) {
+                match seconds(&Value::String(v.clone()), name) {
+                    Ok(value) => *target = value,
+                    Err(_) => warnings.push(format!("{name}=\"{v}\" is not 0 to {MAX_SECONDS} seconds; using {target}")),
+                }
+            }
+        }
+        if let Some(v) = env("VIZRS_END_REF").filter(|v| !v.is_empty()) {
+            match end_ref(v.trim(), "VIZRS_END_REF") {
+                Ok(value) => config.end_ref = value,
+                Err(error) => warnings.push(format!("{error}; using {}", config.end_ref)),
+            }
+        }
         if let Some(v) = env("VIZRS_RENDER_SIZE") {
             config.render_size = v;
         }
@@ -416,11 +477,15 @@ impl Config {
                 (&own.output_url, &mut config.output_url),
                 (&own.on_clip, &mut config.on_clip),
                 (&own.on_ad, &mut config.on_ad),
+                (&own.on_end, &mut config.on_end),
             ];
             for (value, target) in fields {
                 if let Some(value) = value {
                     target.clone_from(value);
                 }
+            }
+            if let Some(seconds) = own.end_seconds {
+                config.end_seconds = seconds;
             }
             if let Some(shows) = &own.shows {
                 config.shows.clone_from(shows);
@@ -507,6 +572,43 @@ mod tests {
         let (config, warnings) = Config::from_values(None, &env(&[("VIZRS_CLOCK_OFFSET", "x")])).unwrap();
         assert_eq!(config.clock_offset_seconds, 0.0);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn graphics_before_the_end() {
+        let defaults = Config::default();
+        assert_eq!((defaults.on_end.as_str(), defaults.end_seconds, defaults.end_out_seconds), ("", 60.0, 5.0));
+        assert_eq!(defaults.end_ref, "programme");
+
+        let file = json::parse(
+            r#"{"on_end":"TAKE 1405 programs={next_title}","end_seconds":"90","end_out_seconds":3,"end_ref":"item",
+                "shows":[{"show_title":"^Wiadomości","end_seconds":30},{"show_title":"^Reklama","on_end":""}],
+                "channels":{"2":{"on_end":"TAKE 7505","end_seconds":45}}}"#,
+        )
+        .unwrap();
+        let (config, warnings) = Config::from_values(Some(&file), &env(&[])).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!((config.end_seconds, config.end_out_seconds, config.end_ref.as_str()), (90.0, 3.0, "item"));
+        assert_eq!((config.shows[0].end_seconds, config.shows[0].on_end.as_deref()), (Some(30.0), None));
+        assert_eq!(config.shows[1].on_end.as_deref(), Some(""));
+        let channel = config.for_channel("2");
+        assert_eq!((channel.on_end.as_str(), channel.end_seconds), ("TAKE 7505", 45.0));
+        assert_eq!(config.for_channel("1").on_end, "TAKE 1405 programs={next_title}");
+
+        for bad in [r#"{"end_ref":"show"}"#, r#"{"end_seconds":-5}"#, r#"{"end_out_seconds":100000}"#] {
+            assert!(Config::from_values(Some(&json::parse(bad).unwrap()), &env(&[])).is_err(), "{bad}");
+        }
+
+        let vars = [
+            ("VIZRS_ON_END", "TAKE 1405\\nUPDATE 1 a=b"),
+            ("VIZRS_END_SECONDS", "120"),
+            ("VIZRS_END_OUT_SECONDS", "x"),
+            ("VIZRS_END_REF", "show"),
+        ];
+        let (config, warnings) = Config::from_values(None, &env(&vars)).unwrap();
+        assert_eq!((config.on_end.as_str(), config.end_seconds), ("TAKE 1405\nUPDATE 1 a=b", 120.0));
+        assert_eq!((config.end_out_seconds, config.end_ref.as_str()), (5.0, "programme"));
+        assert_eq!(warnings.len(), 2);
     }
 
     #[test]

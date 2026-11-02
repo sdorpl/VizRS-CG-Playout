@@ -126,6 +126,9 @@ pub struct ClipContext {
     pub next_title: String,
     pub next_start_full: String,
     pub next_duration: f64,
+    /// Stop of the guide entry the item starts in: the end of the programme
+    /// when breaks cut it into several items ("" without a guide).
+    pub programme_stop: String,
     pub width: u32,
     pub height: u32,
     pub fps: f64,
@@ -156,6 +159,10 @@ impl ClipContext {
         let epg = data.get("Epg").and_then(Value::as_array).unwrap_or(&[]);
         let next = epg.iter().find(|entry| date(entry.get("Start")).is_some_and(|s| s > after));
         let next_span = next.and_then(|n| Some((date(n.get("Start"))?, date(n.get("Stop"))?)));
+        let programme = start.and_then(|start| {
+            epg.iter()
+                .find(|entry| matches!((date(entry.get("Start")), date(entry.get("Stop"))), (Some(s), Some(e)) if s <= start && start < e))
+        });
 
         let size = |key| {
             let value = data.get("Resolution").and_then(|r| r.get(key)).and_then(Value::as_f64).unwrap_or(0.0);
@@ -176,6 +183,7 @@ impl ClipContext {
             next_title: next.map(|n| text(n, "Title")).unwrap_or_default(),
             next_start_full: next.and_then(|n| n.get("Start")).and_then(Value::as_str).map(local_time).unwrap_or_default(),
             next_duration: next_span.map_or(0.0, |(s, e)| (e - s) as f64 / 1000.0),
+            programme_stop: programme.map(|p| text(p, "Stop")).unwrap_or_default(),
             width: size("Width"),
             height: size("Height"),
             fps: js_number(data.get("FrameRate")).filter(|f| *f != 0.0).unwrap_or(0.0),
@@ -252,6 +260,8 @@ pub struct CompiledShow {
     pub on_clip: Option<String>,
     pub on_ad: Option<String>,
     pub ad_matcher: Option<AdMatcher>,
+    pub on_end: Option<String>,
+    pub end_seconds: Option<f64>,
 }
 
 impl CompiledShow {
@@ -297,7 +307,14 @@ impl ShowMatcher {
                 None
             };
 
-            compiled.push(CompiledShow { pattern, on_clip: show.on_clip.clone(), on_ad: show.on_ad.clone(), ad_matcher });
+            compiled.push(CompiledShow {
+                pattern,
+                on_clip: show.on_clip.clone(),
+                on_ad: show.on_ad.clone(),
+                ad_matcher,
+                on_end: show.on_end.clone(),
+                end_seconds: show.end_seconds,
+            });
         }
         (ShowMatcher { shows: compiled }, warnings)
     }
@@ -369,12 +386,14 @@ mod tests {
                 on_clip: Some("TAKE 1001".into()),
                 on_ad: Some("TAKE 2001".into()),
                 ad_match: Some(AdMatch { path: "reklama_news".into(), title: "".into() }),
+                ..ShowOverride::default()
             },
             ShowOverride {
                 show_title: "[bad".into(),
                 on_clip: None,
                 on_ad: None,
                 ad_match: Some(AdMatch { path: "(".into(), title: "".into() }),
+                ..ShowOverride::default()
             },
         ]);
 

@@ -1,7 +1,8 @@
 // VizRS TCP client (line protocol, default port 6100) and the per-channel
 // logic of clip and ad events: ads are played without graphics, the pages
 // taken out come back with the first regular clip. The graphics of an item
-// go on air `in_seconds` after its start and out `out_seconds` before its end.
+// go on air `in_seconds` after its start and out `out_seconds` before its end;
+// `on_end` (and elements with `at=-N`) go on air before the end (`Timing`).
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -11,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{Config, MAX_SECONDS};
 use crate::json::{self, Value};
 use crate::stream;
 use crate::template::{AdMatcher, ClipContext, ShowMatcher, js_string, render_commands};
@@ -23,6 +24,102 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 const GAP_GRACE_MS: f64 = 2000.0;
 // Items remembered as sent when they have no stop time.
 const MAX_SENT: usize = 64;
+
+/// The end an element's times before the end count from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum End {
+    /// `MediaItem_Stop`.
+    Item,
+    /// Stop of the guide entry the item starts in (the item's stop without a guide).
+    Programme,
+}
+
+impl End {
+    pub fn parse(text: &str) -> Option<End> {
+        match text {
+            "item" => Some(End::Item),
+            "programme" => Some(End::Programme),
+            _ => None,
+        }
+    }
+}
+
+/// When an element's commands go on air in an item, and when their pages go out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timing {
+    /// `seconds` count back from the end, not from the start.
+    pub from_end: bool,
+    pub seconds: f64,
+    /// `OUT` this long before the end; `None` = no `OUT`.
+    pub out: Option<f64>,
+    pub end: End,
+}
+
+impl Timing {
+    /// `on_clip` and elements without times: `in_seconds` after the start,
+    /// out `out_seconds` before the item's stop.
+    pub fn of_clip(config: &Config) -> Timing {
+        Timing {
+            from_end: false,
+            seconds: config.in_seconds,
+            out: (config.out_seconds >= 0.0).then_some(config.out_seconds),
+            end: End::Item,
+        }
+    }
+
+    /// `on_end`: `end_seconds` before the end, out `end_out_seconds` before it.
+    pub fn of_end(config: &Config, seconds: f64) -> Timing {
+        Timing {
+            from_end: true,
+            seconds,
+            out: Some(config.end_out_seconds.max(0.0)),
+            end: End::parse(&config.end_ref).unwrap_or(End::Programme),
+        }
+    }
+
+    /// The times in an element's URL: `at` (seconds after the start, `-N` before
+    /// the end), `out` (before the end, `-1` = no `OUT`) and `ref` (`item` or
+    /// `programme`). `None` without them; warnings for values left out.
+    pub fn from_params(at: Option<&str>, out: Option<&str>, end: Option<&str>, config: &Config) -> (Option<Timing>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let mut number = |name: &str, value: Option<&str>| {
+            let value = value?.trim();
+            match value.parse::<f64>() {
+                Ok(n) if n.abs() <= MAX_SECONDS => Some((n, value.starts_with('-'))),
+                _ => {
+                    warnings.push(format!("{name}=\"{value}\" is not -{MAX_SECONDS} to {MAX_SECONDS} seconds; ignored"));
+                    None
+                }
+            }
+        };
+        let (at, out) = (number("at", at), number("out", out));
+        let end = end.and_then(|text| {
+            let end = End::parse(text.trim());
+            if end.is_none() {
+                warnings.push(format!("ref=\"{text}\" is not item or programme; ignored"));
+            }
+            end
+        });
+        let mut timing = match at {
+            Some((seconds, true)) => Timing::of_end(config, seconds.abs()),
+            Some((seconds, false)) => Timing { seconds, ..Timing::of_clip(config) },
+            None if out.is_none() && end.is_none() => return (None, warnings),
+            None => Timing::of_clip(config),
+        };
+        if let Some((seconds, minus)) = out {
+            timing.out = (!minus).then_some(seconds);
+        }
+        if let Some(end) = end {
+            timing.end = end;
+        }
+        if timing.from_end && timing.out.is_none() {
+            // On air until the break would bring it back in the next programme.
+            warnings.push("an element before the end must go out; out ignored".into());
+            timing.out = Some(config.end_out_seconds.max(0.0));
+        }
+        (Some(timing), warnings)
+    }
+}
 
 /// The pages the `TAKE` lines of `commands` put on air, for their `OUT`.
 pub fn taken_pages(commands: &[String]) -> Vec<String> {
@@ -207,15 +304,16 @@ impl ChannelEvents {
     }
 
     /// A script session of the channel starts; call `ended` when it is over.
-    /// `custom_commands` overrides on_clip for this specific session (e.g. from ?take=ID&fields=...).
-    pub fn session(&self, ctx: &ClipContext, custom_commands: Option<&[String]>) {
+    /// `custom_commands` overrides on_clip for this specific session (e.g. from
+    /// ?take=ID&fields=...), `timing` its times (`at=`, `out=`, `ref=`).
+    pub fn session(&self, ctx: &ClipContext, custom_commands: Option<&[String]>, timing: Option<Timing>) {
         {
             let mut state = self.state();
             state.active += 1;
             state.gap_generation += 1;
             state.last_item = Some(format!("{}|{}", ctx.source, ctx.start));
         }
-        self.clip(ctx, custom_commands);
+        self.clip(ctx, custom_commands, timing);
     }
 
     /// A session ended. When no session follows by the item's stop (ErsatzTV
@@ -265,46 +363,60 @@ impl ChannelEvents {
     /// Events for a clip that starts (or is joined) now. ErsatzTV starts the
     /// script again when a new session joins the same item; that does not send
     /// the commands twice (and does not restart the animations).
-    fn clip(&self, ctx: &ClipContext, custom_commands: Option<&[String]>) {
+    fn clip(&self, ctx: &ClipContext, custom_commands: Option<&[String]>, timing: Option<Timing>) {
         let key = match custom_commands {
-            Some(cmds) => format!("{}|{}|{}", ctx.source, ctx.start, cmds.join(";")),
+            Some(cmds) => format!("{}|{}|{}|{timing:?}", ctx.source, ctx.start, cmds.join(";")),
             None => format!("{}|{}", ctx.source, ctx.start),
         };
-        let stop = time::parse_iso(&ctx.stop);
-        let generation = {
-            let mut state = self.state();
-            // Items that ended before this one started are over.
-            let start = time::parse_iso(&ctx.start).unwrap_or_else(time::now_ms);
-            state.sent.retain(|(_, stop)| *stop > start);
-            if state.sent.iter().any(|(k, _)| *k == key) {
-                return;
-            }
-            if state.sent.len() >= MAX_SENT {
-                state.sent.remove(0);
-            }
-            state.sent.push((key, stop.unwrap_or(i64::MAX)));
-            self.ad_generation.load(Ordering::Relaxed)
-        };
+        let Some(generation) = self.first(ctx, key) else { return };
         let show = self.shows.find(&ctx.show_title);
         if self.ads_for(ctx) {
             let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&self.config.on_ad);
             return self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, ctx) });
         }
-        let commands = match custom_commands {
-            Some(custom) => custom.iter().flat_map(|c| render_commands(c, ctx)).collect(),
-            None => render_commands(show.and_then(|s| s.on_clip.as_deref()).unwrap_or(&self.config.on_clip), ctx),
+        let Some(custom) = custom_commands else {
+            let on_clip = render_commands(show.and_then(|s| s.on_clip.as_deref()).unwrap_or(&self.config.on_clip), ctx);
+            self.timed(ctx, on_clip, Timing::of_clip(&self.config), generation);
+            // "Za chwilę" before the end, scheduled on its own.
+            let on_end = render_commands(show.and_then(|s| s.on_end.as_deref()).unwrap_or(&self.config.on_end), ctx);
+            let seconds = show.and_then(|s| s.end_seconds).unwrap_or(self.config.end_seconds);
+            if !on_end.is_empty() && self.first(ctx, format!("{}|{}|end", ctx.source, ctx.start)).is_some() {
+                self.timed(ctx, on_end, Timing::of_end(&self.config, seconds), generation);
+            }
+            return;
         };
-        self.timed(ctx, stop, commands, generation);
+        let commands = custom.iter().flat_map(|c| render_commands(c, ctx)).collect();
+        self.timed(ctx, commands, timing.unwrap_or_else(|| Timing::of_clip(&self.config)), generation);
     }
 
-    /// The commands `in_seconds` after the item's start (joined late: at once)
-    /// and `OUT` of their pages `out_seconds` before its stop. An item shorter
-    /// than both, or already in its last `out_seconds`, gets no graphics.
+    /// The ad generation when `key` of the item is new, `None` when its
+    /// commands were sent or scheduled already.
+    fn first(&self, ctx: &ClipContext, key: String) -> Option<u64> {
+        let mut state = self.state();
+        // Items that ended before this one started are over.
+        let start = time::parse_iso(&ctx.start).unwrap_or_else(time::now_ms);
+        state.sent.retain(|(_, stop)| *stop > start);
+        if state.sent.iter().any(|(k, _)| *k == key) {
+            return None;
+        }
+        if state.sent.len() >= MAX_SENT {
+            state.sent.remove(0);
+        }
+        state.sent.push((key, time::parse_iso(&ctx.stop).unwrap_or(i64::MAX)));
+        Some(self.ad_generation.load(Ordering::Relaxed))
+    }
+
+    /// The commands at `timing` (e.g. `in_seconds` after the item's start;
+    /// joined late: at once) and `OUT` of their pages before its stop. An item
+    /// shorter than both, or already past the `OUT`, gets no graphics.
+    /// Times before the end count from the item's stop or the programme's
+    /// (`End`); their moment must fall in this item, which ends with their
+    /// `OUT` at the latest (a break after it would bring the pages back).
     /// Times follow the session's frame timeline, not the clock: ErsatzTV
     /// transcodes an item up to ~30 s ahead of its schedule, and its frames
     /// show the graphics of the moment they are made (`lead_seconds` back), so
     /// the animations land at those times in the item's video.
-    fn timed(&self, ctx: &ClipContext, stop: Option<i64>, commands: Vec<String>, generation: u64) {
+    fn timed(&self, ctx: &ClipContext, commands: Vec<String>, timing: Timing, generation: u64) {
         let ms = |s: f64| (s.max(0.0) * 1000.0) as i64;
         let now = time::now_ms();
         let lead = self.config.lead_seconds.max(0.0);
@@ -312,11 +424,24 @@ impl ChannelEvents {
         let air = ctx.air_ms();
         let base = air.filter(|&air| stream::air_is_timeline(air, now as f64, lead)).unwrap_or(now as f64);
         let made_at = |item_ms: i64| (base + (item_ms as f64 - air.unwrap_or(base)) - lead * 1000.0) as i64;
-        let start = time::parse_iso(&ctx.start);
-        let take_at = start.map(|start| made_at(start + ms(self.config.in_seconds)));
+        let (start, stop) = (time::parse_iso(&ctx.start), time::parse_iso(&ctx.stop));
+        let end = match timing.end {
+            End::Programme => time::parse_iso(&ctx.programme_stop).or(stop),
+            End::Item => stop,
+        };
+        let take_item =
+            if timing.from_end { end.map(|end| end - ms(timing.seconds)) } else { start.map(|start| start + ms(timing.seconds)) };
+        if timing.from_end {
+            let inside = take_item.zip(start).zip(stop).is_some_and(|((take, start), stop)| start <= take && take < stop);
+            if !inside {
+                crate::debug!("VizRS: {} does not hold the moment {} s before its end", ctx.title, timing.seconds);
+                return;
+            }
+        }
+        let take_at = take_item.map(made_at);
         let pages = taken_pages(&commands);
         let out_at =
-            stop.filter(|_| self.config.out_seconds >= 0.0 && !pages.is_empty()).map(|stop| made_at(stop - ms(self.config.out_seconds)));
+            timing.out.filter(|_| !pages.is_empty()).and_then(|out| Some(end?.min(stop.unwrap_or(i64::MAX)) - ms(out))).map(made_at);
         if let Some(out_at) = out_at {
             if now >= out_at || take_at.is_some_and(|take_at| take_at >= out_at) {
                 crate::debug!("VizRS: {} too short or ending, graphics not taken", ctx.title);
@@ -514,6 +639,7 @@ mod tests {
             on_clip: Some("TAKE news {title}".into()),
             on_ad: Some("TAKE ad_news".into()),
             ad_match: Some(AdMatch { path: "ad_news".into(), title: "".into() }),
+            ..ShowOverride::default()
         }];
 
         let config = Arc::new(config);
@@ -529,7 +655,7 @@ mod tests {
             start: "2026-10-25T12:00:00Z".into(),
             ..ClipContext::default()
         };
-        events.clip(&ctx_news, None);
+        events.clip(&ctx_news, None, None);
 
         // Clip not matching any show (uses global)
         let ctx_other = ClipContext {
@@ -539,7 +665,7 @@ mod tests {
             start: "2026-10-25T13:00:00Z".into(),
             ..ClipContext::default()
         };
-        events.clip(&ctx_other, None);
+        events.clip(&ctx_other, None, None);
 
         // Ad matching show's ad_match
         let ctx_news_ad = ClipContext {
@@ -549,7 +675,7 @@ mod tests {
             start: "2026-10-25T12:15:00Z".into(),
             ..ClipContext::default()
         };
-        events.clip(&ctx_news_ad, None);
+        events.clip(&ctx_news_ad, None, None);
 
         thread::sleep(Duration::from_millis(300));
         let received = server.join().unwrap();
@@ -580,12 +706,126 @@ mod tests {
             stop: time::iso_time(now + 31_600),
             ..ClipContext::default()
         };
-        events.clip(&ctx, Some(&["TAKE 3003".into()]));
+        events.clip(&ctx, Some(&["TAKE 3003".into()]), None);
         thread::sleep(Duration::from_millis(150));
         assert!(!server.is_finished(), "TAKE in_seconds - lead_seconds into the transcode");
         assert_eq!(server.join().unwrap(), ["TAKE 3003", "OUT 3003"]);
         let elapsed = time::now_ms() - now;
         assert!((800..2000).contains(&elapsed), "OUT 0.9 s into the transcode, not 30 s: {elapsed} ms");
+    }
+
+    fn events(config: Config) -> Arc<ChannelEvents> {
+        let config = Arc::new(config);
+        let (ads, _) = AdMatcher::new(&config.ad_match);
+        let (shows, _) = ShowMatcher::new(&config.shows);
+        ChannelEvents::new(config, Arc::new(ads), Arc::new(shows))
+    }
+
+    #[test]
+    fn on_end_goes_on_air_before_the_end() {
+        let (address, server) = fake_multi(4);
+        let mut config = Config::default();
+        config.vizrs.address = address;
+        config.on_clip = "TAKE 4001".into();
+        config.on_end = "TAKE 1405 programs={next_title}".into();
+        config.in_seconds = 0.0;
+        config.out_seconds = 0.1;
+        config.end_seconds = 0.6;
+        config.end_out_seconds = 0.3;
+        config.lead_seconds = 0.0;
+        let events = events(config);
+
+        let now = time::now_ms();
+        let ctx = ClipContext {
+            source: "/m/a.mp4".into(),
+            next_title: "Pogoda".into(),
+            start: time::iso_time(now),
+            stop: time::iso_time(now + 1200),
+            ..ClipContext::default()
+        };
+        events.clip(&ctx, None, None);
+        // The next piece of the item: scheduled already.
+        events.clip(&ctx, None, None);
+        let received = server.join().unwrap();
+        let elapsed = time::now_ms() - now;
+        assert_eq!(received, ["TAKE 4001", "TAKE 1405 programs=Pogoda", "OUT 1405", "OUT 4001"]);
+        assert!((1000..1600).contains(&elapsed), "OUT 4001 0.1 s before the stop: {elapsed} ms");
+    }
+
+    #[test]
+    fn before_the_end_of_the_programme_only_in_its_last_part() {
+        let (address, server) = fake_multi(2);
+        let mut config = Config::default();
+        config.vizrs.address = address;
+        config.on_end = "TAKE 1405".into();
+        config.end_seconds = 0.5;
+        config.end_out_seconds = 0.1;
+        config.lead_seconds = 0.0;
+        let events = events(config);
+
+        let now = time::now_ms();
+        let part = |source: &str, from: i64, to: i64| ClipContext {
+            source: source.into(),
+            start: time::iso_time(now + from),
+            stop: time::iso_time(now + to),
+            programme_stop: time::iso_time(now + 1000),
+            ..ClipContext::default()
+        };
+        // The programme's first part ends in a break: its moment is in the last part.
+        events.clip(&part("/m/a1.mp4", -5000, 300), None, None);
+        // Shorter than end_seconds before the stop: the moment is before it.
+        events.clip(&ClipContext { programme_stop: String::new(), ..part("/m/b.mp4", 0, 300) }, None, None);
+        events.clip(&part("/m/a2.mp4", 300, 1000), None, None);
+        assert_eq!(server.join().unwrap(), ["TAKE 1405", "OUT 1405"]);
+        let elapsed = time::now_ms() - now;
+        assert!((800..1300).contains(&elapsed), "OUT 0.1 s before the programme's end: {elapsed} ms");
+    }
+
+    #[test]
+    fn element_times_from_the_url() {
+        let config = Config { in_seconds: 5.0, out_seconds: 5.0, end_out_seconds: 3.0, ..Config::default() };
+        let timing = |at, out, end| Timing::from_params(at, out, end, &config);
+        assert_eq!(timing(None, None, None), (None, vec![]));
+        assert_eq!(timing(Some("-60"), None, None).0, Some(Timing { from_end: true, seconds: 60.0, out: Some(3.0), end: End::Programme }));
+        assert_eq!(
+            timing(Some("10"), Some("-1"), Some("item")).0,
+            Some(Timing { from_end: false, seconds: 10.0, out: None, end: End::Item })
+        );
+        assert_eq!(
+            timing(Some("-0"), Some("2"), Some("item")).0,
+            Some(Timing { from_end: true, seconds: 0.0, out: Some(2.0), end: End::Item })
+        );
+        // Before the end without OUT: the break would bring it back.
+        let (forced, warnings) = timing(Some("-30"), Some("-1"), None);
+        assert_eq!(forced.unwrap().out, Some(3.0));
+        assert_eq!(warnings.len(), 1);
+        let (bad, warnings) = timing(Some("x"), Some("100000"), Some("show"));
+        assert_eq!(bad, None);
+        assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn an_element_before_the_end_joined_late_goes_on_air_at_once() {
+        let (address, server) = fake_multi(2);
+        let mut config = Config::default();
+        config.vizrs.address = address;
+        config.lead_seconds = 0.0;
+        let events = events(config);
+
+        let now = time::now_ms();
+        let ctx = ClipContext {
+            source: "/m/a.mp4".into(),
+            start: time::iso_time(now - 100_000),
+            // Joined 100 s into the item.
+            seek: 100.0,
+            stop: time::iso_time(now + 700),
+            ..ClipContext::default()
+        };
+        let timing = Timing { from_end: true, seconds: 60.0, out: Some(0.2), end: End::Item };
+        events.clip(&ctx, Some(&["TAKE 1405".into()]), Some(timing));
+        assert_eq!(server.join().unwrap(), ["TAKE 1405", "OUT 1405"]);
+        let elapsed = time::now_ms() - now;
+        assert!((400..900).contains(&elapsed), "OUT 0.2 s before the stop: {elapsed} ms");
     }
 
     #[test]
@@ -617,14 +857,14 @@ mod tests {
         };
         let take = |page: &str| vec![format!("TAKE {page}")];
         let clip = ClipContext { title: "A".into(), ..item("/m/a.mp4", 1200) };
-        events.clip(&clip, None);
-        events.clip(&clip, Some(&take("3001")));
-        events.clip(&clip, Some(&take("7303")));
+        events.clip(&clip, None, None);
+        events.clip(&clip, Some(&take("3001")), None);
+        events.clip(&clip, Some(&take("7303")), None);
         // The next piece of the same item: scheduled already.
-        events.clip(&clip, Some(&take("3001")));
-        events.clip(&clip, None);
+        events.clip(&clip, Some(&take("3001")), None);
+        events.clip(&clip, None, None);
         // Shorter than in + out: never on air.
-        events.clip(&item("/m/b.mp4", 500), Some(&take("5001")));
+        events.clip(&item("/m/b.mp4", 500), Some(&take("5001")), None);
 
         thread::sleep(Duration::from_millis(150));
         assert!(!server.is_finished(), "nothing before in_seconds");

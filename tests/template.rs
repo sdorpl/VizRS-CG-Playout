@@ -33,6 +33,7 @@ fn context(v: &Value) -> ClipContext {
         next_title: text(v, "next_title"),
         next_start_full: text(v, "next_start_full"),
         next_duration: n("next_duration"),
+        programme_stop: String::new(),
         width: n("width") as u32,
         height: n("height") as u32,
         fps: n("fps"),

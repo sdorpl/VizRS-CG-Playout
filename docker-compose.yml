@@ -87,6 +87,13 @@ services:
       # taken this long before its end (negative = no OUT).
       VIZRS_IN_SECONDS: ${VIZRS_IN_SECONDS:-5}
       VIZRS_OUT_SECONDS: ${VIZRS_OUT_SECONDS:-5}
+      # Graphics before the end of a programme ("Za chwilę: {next_title}"), "" = none:
+      # TAKE this long before the end, OUT of its pages this long before it;
+      # the end of the guide entry (programme) or of the item (item).
+      VIZRS_ON_END: ${VIZRS_ON_END:-}
+      VIZRS_END_SECONDS: ${VIZRS_END_SECONDS:-60}
+      VIZRS_END_OUT_SECONDS: ${VIZRS_END_OUT_SECONDS:-5}
+      VIZRS_END_REF: ${VIZRS_END_REF:-programme}
       # Player buffer vs. graphics delay: ErsatzTV may run this far ahead of the clock.
       LEAD_SECONDS: ${LEAD_SECONDS:-4}
       # Graphics render size, scaled to the channel: "" = channel size (default: no

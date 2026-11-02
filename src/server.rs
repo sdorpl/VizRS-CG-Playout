@@ -40,7 +40,7 @@ use crate::scale::render_size;
 use crate::stream::{self, Control, Format, Options};
 use crate::sync;
 use crate::template::{AdMatcher, ClipContext, ShowMatcher, js_string};
-use crate::vizrs::ChannelEvents;
+use crate::vizrs::{ChannelEvents, Timing};
 use crate::yuva::ffmpeg_matrix;
 
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
@@ -532,7 +532,11 @@ impl Server {
         };
 
         let events = self.events_for(&channel);
-        events.session(&ctx, custom_commands.as_deref());
+        let (timing, warnings) = Timing::from_params(request.param("at"), request.param("out"), request.param("ref"), &self.config);
+        for warning in warnings {
+            crate::warn!("channel {channel}: {warning}");
+        }
+        events.session(&ctx, custom_commands.as_deref(), timing);
 
         let piece = format!("{channel}|{}|{}", ctx.start, ctx.seek);
         let carrier = lock(&self.sessions).carriers.insert(piece.clone());

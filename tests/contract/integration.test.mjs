@@ -212,6 +212,36 @@ test("page elements: TAKE in_seconds after the item's start, OUT out_seconds bef
   assert.deepEqual(vizrs.received.slice(2).sort(), ["OUT 1001", "OUT 7303"]);
 });
 
+test("before the end: on_end and page elements with at=-N go on air before the programme's end and out before it", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const cg = await sidecar(t, {
+    vizrs: { address: vizrs.address, token: "" },
+    on_end: "TAKE 1405 programs={next_title}",
+    end_seconds: 1.2,
+    end_out_seconds: 0.4,
+    lead_seconds: 0,
+  });
+  const now = Date.now();
+  const iso = (ms) => new Date(now + ms).toISOString();
+  const clip = {
+    ...item("/m/Program.mp4", iso(0)),
+    MediaItem_Stop: iso(2500),
+    Epg: [
+      { Title: "Program", Start: iso(0), Stop: iso(2500) },
+      { Title: "Pogoda", Start: iso(2500), Stop: iso(4000) },
+    ],
+  };
+  await runClient(`${cg.url}/etv?channel=1`, clip, 100);
+  await runClient(`${cg.url}/etv?channel=1&page=1406&at=-0.8&out=0.2&ref=item`, clip, 100);
+  await sleep(now + 1000 - Date.now());
+  assert.deepEqual(vizrs.received, [], "nothing before the end");
+  await sleep(now + 1950 - Date.now());
+  assert.deepEqual([...vizrs.received].sort(), ["TAKE 1405 programs=Pogoda", "TAKE 1406"]);
+  await sleep(now + 2450 - Date.now());
+  assert.deepEqual(vizrs.received.slice(2).sort(), ["OUT 1405", "OUT 1406"]);
+});
+
 test("page elements follow the VizRS show through the client, on the client's channel", async (t) => {
   let pages = [{ number: 3001, name: "Ticker" }, { number: 4001, name: "Tytuł" }];
   const tokens = [];
