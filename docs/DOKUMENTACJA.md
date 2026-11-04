@@ -559,8 +559,14 @@ wysyła `AUTH <token>`.
 | `{next_title}` | tytuł następnego programu |
 | `{next_start}` / `{next_start_full}` | start następnego, `hh:mm` / `hh:mm:ss` |
 | `{next_duration}` | długość następnego `hh:mm:ss` |
+| `{next2_title}`, `{next2_start}` / `{next2_start_full}`, `{next2_duration}` | to samo dla programu po następnym (trzeci wpis EPG, `epg_entries: 3`) |
 
 `|` w wartościach zamienia się na `/`, a znaki końca linii są usuwane.
+Pola strony można też podać jako JSON (`TAKE 1406 {"programs":"{next_title}\n{next2_title}"}`,
+składnia VizRS): tylko tak wartość ma kilka linii, np. dla rotacji wierszy
+(`cycle`) w tekście sceny. W takiej linii (`TAKE`/`UPDATE`/`LIVE`, także z `@N`)
+wartości symboli są wstawiane ze znakami JSON (`"` → `\"`), więc tytuł
+z cudzysłowem nie psuje komendy.
 Gdy kilku widzów dołącza do tej samej pozycji, ErsatzTV uruchamia skrypt
 ponownie – komendy nie są wysyłane drugi raz.
 
@@ -806,6 +812,18 @@ Zasady:
 - reklama po zaplanowaniu anuluje plan tak jak przy `on_clip`;
 - belka na tej samej warstwie co strona z `on_clip` ją zastępuje (późniejsze
   `OUT` tamtej strony daje tylko `ERR` w logu); osobna warstwa – obie naraz.
+
+Zapowiedź w dwóch „slajdach” („Za chwilę: *następny*”, potem „Następnie:
+*kolejny*”) daje scena z dwoma tekstami z `cycle` (rotacja co N s,
+zsynchronizowana w scenie) i pola po dwie linie, np. strona 1406
+„Za chwilę – belka” na kanale 5:
+
+```json
+"channels": { "5": { "on_end": "TAKE 1406 {\"heads\":\"Za chwilę\\nNastępnie\",\"programs\":\"{next_title}\\n{next2_title}\",\"times\":\"{next_start}\\n{next2_start}\"}" } }
+```
+
+Bez trzeciego wpisu EPG `{next2_*}` są puste, a VizRS pomija pustą linię:
+program stoi, a nagłówki dalej się zmieniają.
 
 Czas na ekranie = moment komendy + animacja wejścia sceny (Artist: `delay`,
 `dur` presetu IN). Animacja wyjścia powinna być krótsza niż `end_out_seconds`.

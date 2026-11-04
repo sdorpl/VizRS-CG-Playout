@@ -710,6 +710,13 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(config.for_channel("3").vizrs.address, "c:6100");
 
+        // The two-slide bar of DOKUMENTACJA §3: "\n" stays inside the JSON fields, one command.
+        let channels = r#"{"5":{"on_end":"TAKE 1406 {\"programs\":\"{next_title}\\n{next2_title}\"}"}}"#;
+        let (config, _) = Config::from_values(None, &|name| (name == "VIZRS_CHANNELS").then(|| channels.to_owned())).unwrap();
+        let ctx = crate::template::ClipContext { next_title: "A".into(), next2_title: "B \"C\"".into(), ..Default::default() };
+        let commands = crate::template::render_commands(&config.for_channel("5").on_end, &ctx);
+        assert_eq!(commands, [r#"TAKE 1406 {"programs":"A\nB \"C\""}"#]);
+
         let (config, warnings) = Config::from_values(None, &|name| (name == "VIZRS_CHANNELS").then(|| "{".to_owned())).unwrap();
         assert!(config.channels.is_empty());
         assert_eq!(warnings.len(), 1);

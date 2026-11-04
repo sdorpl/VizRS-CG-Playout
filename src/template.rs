@@ -126,6 +126,10 @@ pub struct ClipContext {
     pub next_title: String,
     pub next_start_full: String,
     pub next_duration: f64,
+    /// The programme after the next one (`{next2_*}`).
+    pub next2_title: String,
+    pub next2_start_full: String,
+    pub next2_duration: f64,
     /// Stop of the guide entry the item starts in: the end of the programme
     /// when breaks cut it into several items ("" without a guide).
     pub programme_stop: String,
@@ -158,7 +162,14 @@ impl ClipContext {
         let after = start.unwrap_or_else(time::now_ms) + 1000;
         let epg = data.get("Epg").and_then(Value::as_array).unwrap_or(&[]);
         let next = epg.iter().find(|entry| date(entry.get("Start")).is_some_and(|s| s > after));
-        let next_span = next.and_then(|n| Some((date(n.get("Start"))?, date(n.get("Stop"))?)));
+        let span = |entry: Option<&Value>| entry.and_then(|n| Some((date(n.get("Start"))?, date(n.get("Stop"))?)));
+        let next_span = span(next);
+        let next2 = next
+            .and_then(|n| date(n.get("Start")))
+            .and_then(|after| epg.iter().find(|entry| date(entry.get("Start")).is_some_and(|s| s > after)));
+        let next2_span = span(next2);
+        let start_time =
+            |entry: Option<&Value>| entry.and_then(|n| n.get("Start")).and_then(Value::as_str).map(local_time).unwrap_or_default();
         let programme = start.and_then(|start| {
             epg.iter()
                 .find(|entry| matches!((date(entry.get("Start")), date(entry.get("Stop"))), (Some(s), Some(e)) if s <= start && start < e))
@@ -181,8 +192,11 @@ impl ClipContext {
             },
             seek: time_span_seconds(data.get("MediaItem_StreamSeek")),
             next_title: next.map(|n| text(n, "Title")).unwrap_or_default(),
-            next_start_full: next.and_then(|n| n.get("Start")).and_then(Value::as_str).map(local_time).unwrap_or_default(),
+            next_start_full: start_time(next),
             next_duration: next_span.map_or(0.0, |(s, e)| (e - s) as f64 / 1000.0),
+            next2_title: next2.map(|n| text(n, "Title")).unwrap_or_default(),
+            next2_start_full: start_time(next2),
+            next2_duration: next2_span.map_or(0.0, |(s, e)| (e - s) as f64 / 1000.0),
             programme_stop: programme.map(|p| text(p, "Stop")).unwrap_or_default(),
             width: size("Width"),
             height: size("Height"),
@@ -328,18 +342,44 @@ impl ShowMatcher {
     }
 }
 
+/// Fields given as JSON (`TAKE 1406 {"a":"x\ny"}`), where values can carry
+/// line breaks for the rotation of text lines (`cycle`).
+fn json_fields(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let mut verb = words.next().unwrap_or("");
+    if verb.starts_with('@') {
+        verb = words.next().unwrap_or("");
+    }
+    ["TAKE", "UPDATE", "LIVE"].iter().any(|v| verb.eq_ignore_ascii_case(v)) && words.nth(1).is_some_and(|w| w.starts_with('{'))
+}
+
 fn render_line(line: &str, ctx: &ClipContext) -> String {
+    // Inside JSON fields a title must not end the string: escaped as JSON.
+    let json = json_fields(line);
+    let value = |text: &str| {
+        let clean = clean_value(text);
+        if json {
+            let quoted = Value::String(clean).to_string();
+            quoted[1..quoted.len() - 1].to_owned()
+        } else {
+            clean
+        }
+    };
+    let hh_mm = |full: &str| full.chars().take(5).collect::<String>();
     // Replaced one after another, as the Node.js build does.
-    let next_start: String = ctx.next_start_full.chars().take(5).collect();
     [
-        ("{title}", clean_value(&ctx.title)),
-        ("{show_title}", clean_value(&ctx.show_title)),
-        ("{source}", clean_value(&ctx.source)),
+        ("{title}", value(&ctx.title)),
+        ("{show_title}", value(&ctx.show_title)),
+        ("{source}", value(&ctx.source)),
         ("{duration}", clock(ctx.duration)),
-        ("{next_title}", clean_value(&ctx.next_title)),
-        ("{next_start}", next_start),
+        ("{next_title}", value(&ctx.next_title)),
+        ("{next_start}", hh_mm(&ctx.next_start_full)),
         ("{next_start_full}", ctx.next_start_full.clone()),
         ("{next_duration}", clock(ctx.next_duration)),
+        ("{next2_title}", value(&ctx.next2_title)),
+        ("{next2_start}", hh_mm(&ctx.next2_start_full)),
+        ("{next2_start_full}", ctx.next2_start_full.clone()),
+        ("{next2_duration}", clock(ctx.next2_duration)),
     ]
     .iter()
     .fold(line.to_owned(), |acc, (key, value)| acc.replace(key, value))
@@ -365,6 +405,35 @@ mod tests {
         assert_eq!(warnings.len(), 2);
         assert!(warnings[0].starts_with("ad_match.path \"(\" is not a valid regular expression"), "{}", warnings[0]);
         assert!(!matcher.is_ad(&ClipContext { source: "(".into(), title: "x".into(), ..ClipContext::default() }));
+    }
+
+    #[test]
+    fn programme_after_next_and_json_fields() {
+        let data = json::parse(
+            r#"{"MediaItem_Title":"Teraz","MediaItem_Start":"2026-11-04T20:00:00+01:00","Epg":[
+                {"Title":"Teraz","Start":"2026-11-04T20:00:00+01:00","Stop":"2026-11-04T20:30:00+01:00"},
+                {"Title":"Serwis","Start":"2026-11-04T20:30:00+01:00","Stop":"2026-11-04T20:45:00+01:00"},
+                {"Title":"Film \"Noc\"","Start":"2026-11-04T20:45:00+01:00","Stop":"2026-11-04T22:15:00+01:00"}]}"#,
+        )
+        .unwrap();
+        let ctx = ClipContext::from_data(&data);
+        assert_eq!(
+            (ctx.next_title.as_str(), ctx.next2_title.as_str(), ctx.next2_start_full.as_str()),
+            ("Serwis", "Film \"Noc\"", "20:45:00")
+        );
+        assert_eq!(ctx.next2_duration, 5400.0);
+
+        let template = "TAKE 1406 next={next_title} {next_start}|then={next2_title} {next2_start}\n\
+                        @5 TAKE 1406 {\"programs\":\"{next_title}\\n{next2_title}\",\"times\":\"{next_start}\\n{next2_start}\"}";
+        assert_eq!(
+            render_commands(template, &ctx),
+            [
+                "TAKE 1406 next=Serwis 20:30|then=Film \"Noc\" 20:45",
+                r#"@5 TAKE 1406 {"programs":"Serwis\nFilm \"Noc\"","times":"20:30\n20:45"}"#,
+            ]
+        );
+        let fields = json::parse(render_commands(template, &ctx)[1].splitn(4, ' ').nth(3).unwrap()).unwrap();
+        assert_eq!(fields.get("programs").and_then(Value::as_str), Some("Serwis\nFilm \"Noc\""));
     }
 
     #[test]
