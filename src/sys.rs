@@ -32,6 +32,22 @@ struct Timespec {
     nsec: i64,
 }
 
+/// `struct tm` of glibc and musl.
+#[repr(C)]
+struct Tm {
+    sec: c_int,
+    min: c_int,
+    hour: c_int,
+    mday: c_int,
+    mon: c_int,
+    year: c_int,
+    wday: c_int,
+    yday: c_int,
+    isdst: c_int,
+    gmtoff: std::os::raw::c_long,
+    zone: *const std::os::raw::c_char,
+}
+
 /// `sigset_t` of glibc and musl: 1024 bits.
 #[repr(C)]
 struct SigSet([u64; 16]);
@@ -48,6 +64,17 @@ unsafe extern "C" {
     fn pthread_sigmask(how: c_int, set: *const SigSet, old: *mut SigSet) -> c_int;
     fn sigwait(set: *const SigSet, signal: *mut c_int) -> c_int;
     fn clock_gettime(clock: c_int, time: *mut Timespec) -> c_int;
+    fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
+}
+
+/// Wall clock `hh:mm:ss` of an epoch time in the process's time zone (`TZ`,
+/// e.g. Europe/Warsaw in the stack; UTC without it).
+pub fn local_clock(epoch_ms: i64) -> Option<String> {
+    let seconds = epoch_ms.div_euclid(1000);
+    let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() };
+    // SAFETY: both pointers are valid for the call; `localtime_r` is the reentrant form.
+    let result = unsafe { localtime_r(&seconds, &mut tm) };
+    (!result.is_null()).then(|| format!("{:02}:{:02}:{:02}", tm.hour, tm.min, tm.sec))
 }
 
 /// A TCP connection whose peer vanished without closing it (its container gone

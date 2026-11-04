@@ -57,8 +57,20 @@ pub fn clock(seconds: f64) -> String {
     format!("{:02}:{:02}:{:02}", total / 3600 % 24, total / 60 % 60, total % 60)
 }
 
-/// Wall clock `hh:mm:ss` in the offset ErsatzTV sent ("2026-10-24T20:15:00+02:00").
+/// Wall clock `hh:mm:ss` of a guide time. ErsatzTV sends UTC ("…Z",
+/// "…+00:00") whatever its own time zone: that one is shown in the time zone
+/// of this process (`TZ`, Europe/Warsaw in the stack). Another offset
+/// ("2026-10-24T20:15:00+02:00") is the clock of the text.
 fn local_time(iso: &str) -> String {
+    let utc = iso.ends_with(['Z', 'z']) || ["+00:00", "-00:00", "+0000", "-0000"].iter().any(|o| iso.ends_with(o));
+    if let Some(clock) = utc.then(|| time::parse_iso(iso)).flatten().and_then(crate::sys::local_clock) {
+        return clock;
+    }
+    text_clock(iso)
+}
+
+/// The `hh:mm:ss` written in an ISO time.
+fn text_clock(iso: &str) -> String {
     let bytes = iso.as_bytes();
     (0..bytes.len())
         .filter(|&i| bytes[i] == b'T' && i + 9 <= bytes.len())
@@ -405,6 +417,20 @@ mod tests {
         assert_eq!(warnings.len(), 2);
         assert!(warnings[0].starts_with("ad_match.path \"(\" is not a valid regular expression"), "{}", warnings[0]);
         assert!(!matcher.is_ad(&ClipContext { source: "(".into(), title: "x".into(), ..ClipContext::default() }));
+    }
+
+    #[test]
+    fn guide_times_in_utc_follow_the_time_zone() {
+        // The process's zone (UTC in CI); an offset of its own keeps its clock.
+        let utc = time::parse_iso("2026-11-04T22:00:54Z").unwrap();
+        assert_eq!(local_time("2026-11-04T22:00:54Z"), crate::sys::local_clock(utc).unwrap());
+        assert_eq!(local_time("2026-11-04T22:00:54.5000000+00:00"), crate::sys::local_clock(utc).unwrap());
+        assert_eq!(local_time("2026-11-04T23:00:54+01:00"), "23:00:54");
+        assert_eq!(text_clock("2026-11-04T22:00:54Z"), "22:00:54");
+        if std::env::var("TZ").as_deref() == Ok("Europe/Warsaw") {
+            assert_eq!(local_time("2026-11-04T22:00:54Z"), "23:00:54");
+            assert_eq!(local_time("2026-07-04T22:00:54Z"), "00:00:54");
+        }
     }
 
     #[test]

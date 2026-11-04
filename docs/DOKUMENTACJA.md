@@ -557,11 +557,14 @@ wysyła `AUTH <token>`.
 | `{source}` | ścieżka pliku |
 | `{duration}` | długość klipu `hh:mm:ss` |
 | `{next_title}` | tytuł następnego programu |
-| `{next_start}` / `{next_start_full}` | start następnego, `hh:mm` / `hh:mm:ss` |
+| `{next_start}` / `{next_start_full}` | start następnego, `hh:mm` / `hh:mm:ss`, w strefie `TZ` (niżej) |
 | `{next_duration}` | długość następnego `hh:mm:ss` |
 | `{next2_title}`, `{next2_start}` / `{next2_start_full}`, `{next2_duration}` | to samo dla programu po następnym (trzeci wpis EPG, `epg_entries: 3`) |
 
 `|` w wartościach zamienia się na `/`, a znaki końca linii są usuwane.
+Godziny programów ErsatzTV podaje w UTC (`…Z`, `…+00:00`), niezależnie od własnej
+strefy. Takie przelicza się na strefę procesu VizRS CG Playout (`TZ`, w stosie
+`Europe/Warsaw`). Godzina z inną strefą (`…+01:00`) zostaje taka, jak w danych.
 Pola strony można też podać jako JSON (`TAKE 1406 {"programs":"{next_title}\n{next2_title}"}`,
 składnia VizRS): tylko tak wartość ma kilka linii, np. dla rotacji wierszy
 (`cycle`) w tekście sceny. W takiej linii (`TAKE`/`UPDATE`/`LIVE`, także z `@N`)
@@ -741,10 +744,16 @@ klatki pokazują grafikę z chwili, w której powstają (`lead_seconds` wstecz,
 `in_seconds` pozycji, a `OUT` – gdy dochodzi do `out_seconds` przed jej końcem.
 Animacje wejścia i zejścia trafiają w te miejsca wideo, zamiast wypaść poza
 nie (grafika ucięta na końcu pozycji i wskakująca na ostro na początku
-następnej). Oś bierze się z pierwszej sesji pozycji: czas emisji
+następnej). Oś bierze się z sesji pozycji: czas emisji
 (`MediaItem_Start` + `MediaItem_StreamSeek`), gdy sesja przyszła najwyżej
 `lead_seconds` + 2 s przed nim, inaczej chwila startu sesji – tak jak tempo
-strumienia klatek.
+strumienia klatek. ErsatzTV transkoduje pozycję kawałkami (na s2 po ok. 44 s,
+każdy to osobna sesja), a wyprzedzenie zmienia się między nimi: na starcie
+pozycji do ok. 30 s, później transkodowanie dogania emisję. Zaplanowany, a
+jeszcze niewysłany `TAKE` lub `OUT` idzie więc według osi **najnowszej** sesji
+pozycji, czyli kawałka, który robi klatki tej chwili. Z osią tylko pierwszej
+sesji (do 2.7.1) belka przed końcem długiej pozycji mijała się z obrazem
+o kilkadziesiąt sekund.
 
 Kolejne sesje tej samej pozycji (ErsatzTV transkoduje ją kawałkami, widzowie
 dołączają) nie wysyłają komend ponownie; kilka elementów na jednej pozycji

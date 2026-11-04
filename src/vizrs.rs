@@ -24,6 +24,8 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 const GAP_GRACE_MS: f64 = 2000.0;
 // Items remembered as sent when they have no stop time.
 const MAX_SENT: usize = 64;
+// How often a pending `TAKE` or `OUT` looks at the item's latest timeline.
+const FOLLOW_TICK_MS: i64 = 100;
 
 /// The end an element's times before the end count from.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -254,6 +256,31 @@ struct State {
     /// Bumped by every session start and end: a pending gap check of an older
     /// generation does nothing (the `clearTimeout` of the Node.js build).
     gap_generation: u64,
+    /// The frame timeline of each item's latest session, with the item's stop.
+    timelines: Vec<(String, Arc<Mutex<Timeline>>, i64)>,
+}
+
+/// Item time `air` is the session's frame 0, made at `base` (epoch ms), as in
+/// `stream::stream_frames`. ErsatzTV transcodes an item in pieces, each a
+/// session of its own; how far its transcode runs ahead of the schedule
+/// changes from piece to piece (up to ~30 s at the start, catching up later).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Timeline {
+    air: f64,
+    base: f64,
+}
+
+impl Timeline {
+    fn of(ctx: &ClipContext, now: f64, lead: f64) -> Timeline {
+        let air = ctx.air_ms();
+        let base = air.filter(|&air| stream::air_is_timeline(air, now, lead)).unwrap_or(now);
+        Timeline { air: air.unwrap_or(base), base }
+    }
+
+    /// When the picture of item time `item_ms` is made, less the lead.
+    fn made_at(&self, item_ms: i64, lead: f64) -> i64 {
+        (self.base + (item_ms as f64 - self.air) - lead * 1000.0) as i64
+    }
 }
 
 /// Clip events of one channel, sent in order.
@@ -364,6 +391,7 @@ impl ChannelEvents {
     /// script again when a new session joins the same item; that does not send
     /// the commands twice (and does not restart the animations).
     fn clip(&self, ctx: &ClipContext, custom_commands: Option<&[String]>, timing: Option<Timing>) {
+        self.follow(ctx);
         let key = match custom_commands {
             Some(cmds) => format!("{}|{}|{}|{timing:?}", ctx.source, ctx.start, cmds.join(";")),
             None => format!("{}|{}", ctx.source, ctx.start),
@@ -389,6 +417,26 @@ impl ChannelEvents {
         self.timed(ctx, commands, timing.unwrap_or_else(|| Timing::of_clip(&self.config)), generation);
     }
 
+    /// The item's timeline follows its latest session: graphics planned by an
+    /// earlier piece go on air and out by the piece that makes those frames.
+    fn follow(&self, ctx: &ClipContext) -> Arc<Mutex<Timeline>> {
+        let timeline = Timeline::of(ctx, time::now_ms() as f64, self.config.lead_seconds.max(0.0));
+        let key = format!("{}|{}", ctx.source, ctx.start);
+        let mut state = self.state();
+        let start = time::parse_iso(&ctx.start).unwrap_or_else(time::now_ms);
+        state.timelines.retain(|(_, _, stop)| *stop > start);
+        if let Some((_, shared, _)) = state.timelines.iter().find(|(k, _, _)| *k == key) {
+            *shared.lock().unwrap_or_else(|e| e.into_inner()) = timeline;
+            return Arc::clone(shared);
+        }
+        if state.timelines.len() >= MAX_SENT {
+            state.timelines.remove(0);
+        }
+        let shared = Arc::new(Mutex::new(timeline));
+        state.timelines.push((key, Arc::clone(&shared), time::parse_iso(&ctx.stop).unwrap_or(i64::MAX)));
+        shared
+    }
+
     /// The ad generation when `key` of the item is new, `None` when its
     /// commands were sent or scheduled already.
     fn first(&self, ctx: &ClipContext, key: String) -> Option<u64> {
@@ -412,18 +460,17 @@ impl ChannelEvents {
     /// Times before the end count from the item's stop or the programme's
     /// (`End`); their moment must fall in this item, which ends with their
     /// `OUT` at the latest (a break after it would bring the pages back).
-    /// Times follow the session's frame timeline, not the clock: ErsatzTV
-    /// transcodes an item up to ~30 s ahead of its schedule, and its frames
-    /// show the graphics of the moment they are made (`lead_seconds` back), so
-    /// the animations land at those times in the item's video.
+    /// Times follow the frame timeline, not the clock: ErsatzTV transcodes an
+    /// item up to ~30 s ahead of its schedule, and its frames show the graphics
+    /// of the moment they are made (`lead_seconds` back), so the animations
+    /// land at those times in the item's video. A pending `TAKE` or `OUT`
+    /// follows the timeline of the item's latest session (`follow`).
     fn timed(&self, ctx: &ClipContext, commands: Vec<String>, timing: Timing, generation: u64) {
         let ms = |s: f64| (s.max(0.0) * 1000.0) as i64;
         let now = time::now_ms();
         let lead = self.config.lead_seconds.max(0.0);
-        // Frame 0 of the session is item time `air`; it is made at `base`, less the lead.
-        let air = ctx.air_ms();
-        let base = air.filter(|&air| stream::air_is_timeline(air, now as f64, lead)).unwrap_or(now as f64);
-        let made_at = |item_ms: i64| (base + (item_ms as f64 - air.unwrap_or(base)) - lead * 1000.0) as i64;
+        let timeline = self.follow(ctx);
+        let made_at = |item_ms: i64| timeline.lock().unwrap_or_else(|e| e.into_inner()).made_at(item_ms, lead);
         let (start, stop) = (time::parse_iso(&ctx.start), time::parse_iso(&ctx.stop));
         let end = match timing.end {
             End::Programme => time::parse_iso(&ctx.programme_stop).or(stop),
@@ -440,8 +487,8 @@ impl ChannelEvents {
         }
         let take_at = take_item.map(made_at);
         let pages = taken_pages(&commands);
-        let out_at =
-            timing.out.filter(|_| !pages.is_empty()).and_then(|out| Some(end?.min(stop.unwrap_or(i64::MAX)) - ms(out))).map(made_at);
+        let out_item = timing.out.filter(|_| !pages.is_empty()).and_then(|out| Some(end?.min(stop.unwrap_or(i64::MAX)) - ms(out)));
+        let out_at = out_item.map(made_at);
         if let Some(out_at) = out_at {
             if now >= out_at || take_at.is_some_and(|take_at| take_at >= out_at) {
                 crate::debug!("VizRS: {} too short or ending, graphics not taken", ctx.title);
@@ -464,15 +511,22 @@ impl ChannelEvents {
         let current = move || ads.load(Ordering::Relaxed);
         let out = Batch { ad: false, restore: false, commands: vec![format!("OUT {}", pages.join(","))] };
         let _ = thread::Builder::new().name("vizrs-timed".into()).spawn(move || {
-            let wait_until = |at: i64| thread::sleep(Duration::from_millis((at - time::now_ms()).max(0) as u64));
+            // Until the item time is made by the latest timeline (a later piece moves it).
+            let wait_until = |item_ms: i64| loop {
+                let left = timeline.lock().unwrap_or_else(|e| e.into_inner()).made_at(item_ms, lead) - time::now_ms();
+                if left <= 0 {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(left.min(FOLLOW_TICK_MS) as u64));
+            };
             if let Some(take) = take {
-                wait_until(take_at.unwrap_or(0));
+                wait_until(take_item.unwrap_or(i64::MIN));
                 if current() != generation || queue.send(take).is_err() {
                     return;
                 }
             }
-            if let Some(out_at) = out_at {
-                wait_until(out_at);
+            if let Some(out_item) = out_item {
+                wait_until(out_item);
                 if current() == generation {
                     let _ = queue.send(out);
                 }
@@ -712,6 +766,35 @@ mod tests {
         assert_eq!(server.join().unwrap(), ["TAKE 3003", "OUT 3003"]);
         let elapsed = time::now_ms() - now;
         assert!((800..2000).contains(&elapsed), "OUT 0.9 s into the transcode, not 30 s: {elapsed} ms");
+    }
+
+    #[test]
+    fn pending_graphics_follow_the_latest_piece_of_the_item() {
+        let (address, server) = fake_multi(2);
+        let mut config = Config::default();
+        config.vizrs.address = address;
+        config.in_seconds = 0.4;
+        config.out_seconds = 0.6;
+        config.lead_seconds = 0.0;
+        let events = events(config);
+
+        // Piece 1 is made 30 s ahead of the schedule (frame 0 now); piece 2,
+        // 0.2 s into the item, starts 0.5 s later: the transcode slowed down,
+        // so the frames of the item's end are made 0.3 s later than planned.
+        let now = time::now_ms();
+        let piece = |seek: f64| ClipContext {
+            source: "/m/a.mp4".into(),
+            start: time::iso_time(now + 30_000),
+            stop: time::iso_time(now + 32_000),
+            seek,
+            ..ClipContext::default()
+        };
+        events.clip(&piece(0.0), Some(&["TAKE 3003".into()]), None);
+        thread::sleep(Duration::from_millis(500));
+        events.clip(&piece(0.2), Some(&["TAKE 3003".into()]), None);
+        assert_eq!(server.join().unwrap(), ["TAKE 3003", "OUT 3003"]);
+        let elapsed = time::now_ms() - now;
+        assert!((1650..2100).contains(&elapsed), "OUT by piece 2 (1.7 s), not by piece 1 (1.4 s): {elapsed} ms");
     }
 
     fn events(config: Config) -> Arc<ChannelEvents> {
