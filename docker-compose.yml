@@ -132,6 +132,11 @@ services:
       VIZRS_SYNC_SECONDS: ${VIZRS_SYNC_SECONDS:-60}
       # Live ingest: shared secret of the ingest listeners; empty = live ingest off.
       VIZRS_INGEST_TOKEN: ${VIZRS_INGEST_TOKEN:-}
+      # 1 = a live source takes any piece over; 0 = only live programmes of the schedule.
+      VIZRS_INGEST_ANYTIME: ${VIZRS_INGEST_ANYTIME:-1}
+      # Live programmes as Remote Streams for the ErsatzTV schedule (/config/vizrs-live), JSON:
+      # [{"channel":"1","title":"Wiadomości","duration":"00:30:00","plot":"…"}]
+      VIZRS_LIVE_SHOWS: ${VIZRS_LIVE_SHOWS:-}
     volumes:
       - ersatztv-config:/etv-config
       - vizrs-client:/vizrs-client
@@ -171,6 +176,9 @@ services:
       # 1 = a live source of the channel (sidecar, live ingest) takes the transcode
       # over; nothing changes while the sidecar has ingest off. Empty = never.
       VIZRS_FFMPEG_INGEST: ${VIZRS_FFMPEG_INGEST-1}
+      # Picture of a live programme while the studio is not on (path in this container,
+      # e.g. /media/plansza.png); empty = black.
+      VIZRS_FFMPEG_STANDBY: ${VIZRS_FFMPEG_STANDBY:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config

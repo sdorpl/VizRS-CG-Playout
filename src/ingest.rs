@@ -8,8 +8,13 @@
 //                              until the connection closes
 //   GET  /ingest?channel=1     the live source: PAT, PMT and the stream from
 //                              its last keyframe on; ends with the source
+//   GET  /ingest?channel=1&slot=1
+//                              the live slot of a scheduled live programme
+//                              (src/live_shows.rs): the source while live, else
+//                              a second of black and silence without a length,
+//                              so that ErsatzTV's ffprobe of the item works
 //   GET  /ingest/state?channel=1
-//                              {"enabled":…,"live":…,"audio":…,"video":…}
+//                              {"enabled":…,"anytime":…,"live":…,"audio":…,"video":…}
 //
 // The channel is live from the first video keyframe of the source until its
 // connection ends or sends nothing for `IDLE`. One source per channel: a
@@ -32,6 +37,8 @@ pub const IDLE: Duration = Duration::from_secs(5);
 const MAX_BUFFER: usize = 32 * 1024 * 1024;
 /// A reader that cannot take the stream this long is dropped.
 const READER_TIMEOUT: Duration = Duration::from_secs(5);
+/// A second of black 320x180 H.264 and silent AAC in MPEG-TS: the live slot without a source.
+pub const STANDBY: &[u8] = include_bytes!("standby.ts");
 
 /// Video codec of a PMT stream type.
 fn video_codec(stream_type: u8) -> Option<&'static str> {
@@ -329,12 +336,14 @@ impl Feed {
 /// The live sources of the sidecar, by channel.
 pub struct Ingest {
     token: String,
+    /// A source takes any piece over, not only live programmes.
+    anytime: bool,
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
 }
 
 impl Ingest {
-    pub fn new(token: &str) -> Ingest {
-        Ingest { token: token.to_owned(), feeds: Mutex::new(HashMap::new()) }
+    pub fn new(token: &str, anytime: bool) -> Ingest {
+        Ingest { token: token.to_owned(), anytime, feeds: Mutex::new(HashMap::new()) }
     }
 
     pub fn enabled(&self) -> bool {
@@ -398,6 +407,7 @@ impl Ingest {
         };
         if let Value::Object(members) = &mut state {
             members.insert(0, ("enabled".into(), self.enabled().into()));
+            members.insert(1, ("anytime".into(), self.anytime.into()));
         }
         http::respond(&mut stream, 200, Some("application/json"), state.to_string().as_bytes())
     }
@@ -458,6 +468,11 @@ impl Ingest {
     pub fn read_request(&self, request: &Request, mut stream: TcpStream) -> io::Result<()> {
         let channel = request.param("channel").unwrap_or("");
         let Some(feed) = self.feed(channel).filter(|f| f.is_live()) else {
+            if request.param("slot") == Some("1") {
+                // No Content-Length: ffprobe gives no length, ErsatzTV takes the programme's.
+                stream.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
+                return stream.write_all(STANDBY);
+            }
             return http::respond(&mut stream, 404, None, b"");
         };
         stream.set_write_timeout(Some(READER_TIMEOUT))?;
@@ -590,13 +605,18 @@ mod tests {
 
     #[test]
     fn one_source_per_channel() {
-        let ingest = Ingest::new("t");
+        let ingest = Ingest::new("t", true);
         let first = ingest.start("1").unwrap();
         assert!(ingest.start("1").is_none(), "an active source is not pre-empted");
         assert!(ingest.start("2").is_some());
         ingest.finish("1", &first);
         assert!(ingest.start("1").is_some());
-        assert!(!Ingest::new("").enabled());
+        assert!(!Ingest::new("", true).enabled());
+        // The standby second is MPEG-TS with H.264 and audio.
+        let mut scanner = Scanner::default();
+        let runs = scanner.push(STANDBY);
+        assert_eq!(scanner.streams, Streams { video: Some("h264"), audio: true });
+        assert!(runs.iter().any(|r| r.key));
         assert!(constant_eq(b"abc", b"abc") && !constant_eq(b"abc", b"abd") && !constant_eq(b"ab", b"abc"));
     }
 }

@@ -67,6 +67,23 @@ pub struct Job {
     pub duration: f64,
     /// Its `-output_ts_offset`, seconds.
     pub offset: f64,
+    /// A live programme of the schedule (its media is the live slot of the
+    /// sidecar, src/live_shows.rs): live or the standby picture, never the media.
+    pub slot: bool,
+}
+
+/// Channel of a live slot input (`…/ingest?channel=N&slot=1`) of `args`.
+pub fn slot_channel(args: &[OsString]) -> Option<String> {
+    let input = (0..args.len().saturating_sub(1)).find(|&i| args[i] == "-i").map(|i| arg(args, i + 1))?;
+    let url = net::Url::split(input)?;
+    let params: Vec<(String, String)> = url
+        .query
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (crate::http::percent_decode(k), crate::http::percent_decode(v)))
+        .collect();
+    let param = |name: &str| params.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+    (url.path.ends_with("/ingest") && param("slot").as_deref() == Some("1")).then(|| param("channel")).flatten().filter(|c| !c.is_empty())
 }
 
 fn arg(args: &[OsString], i: usize) -> &str {
@@ -100,8 +117,9 @@ fn ms(seconds: f64) -> OsString {
 
 impl Job {
     /// The HLS transcode in `args`: one output (the playlist, last), its `-t`,
-    /// video encoded (not copied). The channel is `channel` (from the canvas)
-    /// or the playlist's folder (ErsatzTV: `/transcode/<channel>/`).
+    /// video encoded (not copied). The channel is that of a live slot input,
+    /// `channel` (from the canvas) or the playlist's folder (ErsatzTV:
+    /// `/transcode/<channel>/`).
     pub fn of(args: &[OsString], channel: Option<&str>) -> Option<Job> {
         let hls = (0..args.len().saturating_sub(1)).find(|&i| args[i] == "-f" && args[i + 1] == "hls")?;
         let last = last_input(args)?;
@@ -115,8 +133,9 @@ impl Job {
         let offset = value("-output_ts_offset").and_then(parse_time).unwrap_or(0.0);
         let playlist = PathBuf::from(args.last()?);
         let folder = playlist.parent().and_then(Path::file_name).and_then(|n| n.to_str()).unwrap_or("");
-        let channel = channel.unwrap_or(folder).to_owned();
-        (duration > 0.0 && !channel.is_empty()).then_some(Job { channel, playlist, duration, offset })
+        let slot = slot_channel(args);
+        let channel = slot.clone().unwrap_or_else(|| channel.unwrap_or(folder).to_owned());
+        (duration > 0.0 && !channel.is_empty()).then_some(Job { channel, playlist, duration, offset, slot: slot.is_some() })
     }
 
     /// The output options of a run that starts `elapsed` into the piece.
@@ -195,6 +214,15 @@ pub struct Source {
     pub audio: bool,
 }
 
+/// What a run of a live slot or takeover shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Picture<'a> {
+    /// The live source.
+    Live(&'a Source),
+    /// No source in a live programme: an image (path) or black, with silence.
+    Standby(Option<&'a str>),
+}
+
 /// Size from `pad=W:H` or `scale=W:H` in ErsatzTV's filters (the picture is
 /// scaled to the channel when it is not its size).
 pub fn filter_size(args: &[OsString]) -> Option<(u32, u32)> {
@@ -215,14 +243,14 @@ fn encoder(args: &[OsString]) -> &str {
         .map_or("", |i| arg(output, i + 1))
 }
 
-/// The live run: `source` in place of the piece's media, scaled and padded to
-/// the channel, at its rate, graphics overlaid as the piece overlays them, with
-/// the piece's global, encoder and HLS options; starts `elapsed` into the piece.
+/// The live run: `picture` in place of the piece's media, scaled and padded
+/// to the channel, at its rate, graphics overlaid as the piece overlays them,
+/// with the piece's global, encoder and HLS options; starts `elapsed` into the piece.
 pub fn live_args(
     args: &[OsString],
     job: &Job,
     elapsed: f64,
-    source: &Source,
+    picture: Picture,
     format: &Format,
     graphics: Option<&Graphics>,
 ) -> Vec<OsString> {
@@ -238,18 +266,52 @@ pub fn live_args(
         }
         i += 1;
     }
-    let live =
-        ["-fflags", "+genpts+discardcorrupt", "-thread_queue_size", "1024", "-f", "mpegts", "-rw_timeout", "5000000", "-i", &source.url];
-    out.extend(live.iter().map(OsString::from));
-    let mut inputs = 1;
-    let audio_input = if source.audio {
-        "0:a:0".to_owned()
-    } else {
-        out.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"].iter().map(OsString::from));
-        inputs += 1;
-        format!("{}:a", inputs - 1)
-    };
     let (w, h) = (format.width, format.height);
+    let silence = |out: &mut Vec<OsString>, realtime: bool| {
+        let pace: &[&str] = if realtime { &["-re"] } else { &[] };
+        let input = pace.iter().chain(&["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]);
+        out.extend(input.map(OsString::from));
+    };
+    let mut inputs = 1;
+    let audio_input = match picture {
+        Picture::Live(source) => {
+            // The sidecar starts the stream at a keyframe, PAT and PMT first: 1 s of
+            // analysis is enough (ffmpeg's 5 s would stall the piece as long).
+            let live = [
+                "-fflags",
+                "+genpts+discardcorrupt",
+                "-analyzeduration",
+                "1000000",
+                "-thread_queue_size",
+                "1024",
+                "-f",
+                "mpegts",
+                "-rw_timeout",
+                "5000000",
+                "-i",
+                &source.url,
+            ];
+            out.extend(live.iter().map(OsString::from));
+            if source.audio {
+                "0:a:0".to_owned()
+            } else {
+                silence(&mut out, false);
+                inputs += 1;
+                "1:a".to_owned()
+            }
+        }
+        Picture::Standby(image) => {
+            // Generated pictures come as fast as asked: `-re` keeps them at the clock, as live.
+            let video: Vec<String> = match image {
+                Some(path) => ["-re", "-loop", "1", "-framerate", &format.rate, "-i", path].map(str::to_owned).to_vec(),
+                None => ["-re", "-f", "lavfi", "-i", &format!("color=c=black:s={w}x{h}:r={}", format.rate)].map(str::to_owned).to_vec(),
+            };
+            out.extend(video.into_iter().map(OsString::from));
+            silence(&mut out, true);
+            inputs += 1;
+            "1:a".to_owned()
+        }
+    };
     let mut video = format!(
         "[0:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color=black,setsar=1,fps={},format=yuv420p",
         format.rate
@@ -257,7 +319,7 @@ pub fn live_args(
     if let Some(graphics) = graphics {
         out.extend(graphics.input.iter().cloned());
         let number = inputs;
-        // `shortest`: the graphics never end; the run ends with the source.
+        // `shortest`: the graphics never end; the run ends with the picture.
         let base =
             format!("{video}[vz_live];[{number}:0]format=yuva420p[vz_gfx];[vz_live][vz_gfx]overlay=x=0:y=0:format=auto:shortest=1[vz_ov]");
         let at_origin = matches!(graphics.areas, [(a, _)] if (a.x, a.y) == (0, 0));
@@ -387,12 +449,21 @@ pub fn channel_format(
     Format { width: width & !1, height: height & !1, rate }
 }
 
-/// `GET /ingest/state` of the channel: (ingest enabled, live, audio).
-pub fn state(sidecar: &str, channel: &str) -> Option<(bool, bool, bool)> {
+/// `GET /ingest/state` of a channel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct State {
+    pub enabled: bool,
+    /// Takeover of any piece; false = only live programmes. An older sidecar: true.
+    pub anytime: bool,
+    pub live: bool,
+    pub audio: bool,
+}
+
+pub fn state(sidecar: &str, channel: &str) -> Option<State> {
     let body = net::get(&format!("{sidecar}/ingest/state?channel={}", quote_plus(channel)), "").ok()?;
     let value = json::parse(&body).ok()?;
-    let flag = |key| value.get(key).and_then(json::Value::as_bool).unwrap_or(false);
-    Some((flag("enabled"), flag("live"), flag("audio")))
+    let flag = |key, default| value.get(key).and_then(json::Value::as_bool).unwrap_or(default);
+    Some(State { enabled: flag("enabled", false), anytime: flag("anytime", true), live: flag("live", false), audio: flag("audio", false) })
 }
 
 /// Live state of the channel, asked every `POLL` in the background.
@@ -410,7 +481,7 @@ impl Poller {
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(POLL);
-                let (on, sound) = state(&sidecar, &channel).map_or((false, false), |(_, l, a)| (l, a));
+                let (on, sound) = state(&sidecar, &channel).map_or((false, false), |s| (s.live, s.audio));
                 live.store(on, Ordering::Relaxed);
                 audio.store(sound, Ordering::Relaxed);
             }
@@ -670,7 +741,7 @@ mod tests {
     #[test]
     fn job_of_a_piece() {
         let job = Job::of(&piece(), None).unwrap();
-        assert_eq!(job, Job { channel: "1".into(), playlist: "/transcode/1/live.m3u8".into(), duration: 44.0, offset: 0.0 });
+        assert_eq!(job, Job { channel: "1".into(), playlist: "/transcode/1/live.m3u8".into(), duration: 44.0, offset: 0.0, slot: false });
         assert_eq!(Job::of(&piece(), Some("7")).unwrap().channel, "7");
         // Copied video, no length, not HLS: not taken over.
         let mut copy = piece();
@@ -714,8 +785,10 @@ mod tests {
         let job = Job::of(&piece(), None).unwrap();
         let format = Format { width: 1280, height: 720, rate: "25".into() };
         let source = Source { url: "http://cg:7700/ingest?channel=1".into(), audio: true };
-        let live: Vec<String> =
-            live_args(&piece(), &job, 4.0, &source, &format, None).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        let live: Vec<String> = live_args(&piece(), &job, 4.0, Picture::Live(&source), &format, None)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         let expected = [
             "-threads",
             "1",
@@ -725,6 +798,8 @@ mod tests {
             "error",
             "-fflags",
             "+genpts+discardcorrupt",
+            "-analyzeduration",
+            "1000000",
             "-thread_queue_size",
             "1024",
             "-f",
@@ -790,8 +865,10 @@ mod tests {
             input: args(&["-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "1920x140", "-framerate", "50", "-i", "pipe:5"]),
             areas: &area,
         };
-        let live: Vec<String> =
-            live_args(&piece, &job, 0.0, &source, &format, Some(&graphics)).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        let live: Vec<String> = live_args(&piece, &job, 0.0, Picture::Live(&source), &format, Some(&graphics))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             &live[..4],
             ["-init_hw_device", "vaapi=hw:/dev/dri/renderD128", "-filter_hw_device", "hw"],
@@ -808,6 +885,45 @@ mod tests {
         );
         assert!(filter.ends_with("[1:a]aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo[vz_a]"), "{filter}");
         assert!(!live.iter().any(|a| a == "-output_ts_offset"), "a piece starting at 0 has none");
+    }
+
+    #[test]
+    fn live_slot_and_standby() {
+        let mut list = vec!["-reconnect", "1", "-i", "http://cg:7700/ingest?channel=2&slot=1", "-c:v", "libx264", "-t", "1800000ms"];
+        list.extend(&HLS[..15]);
+        let slot = args(&list);
+        assert_eq!(slot_channel(&slot).as_deref(), Some("2"));
+        let job = Job::of(&slot, Some("9")).unwrap();
+        assert_eq!((job.channel.as_str(), job.slot), ("2", true), "the slot names the channel");
+        assert_eq!(slot_channel(&args(&["-i", "http://cg:7700/ingest?channel=2", "x"])), None);
+        assert_eq!(slot_channel(&piece()), None);
+
+        let format = Format { width: 1280, height: 720, rate: "25".into() };
+        let black: Vec<String> =
+            live_args(&slot, &job, 60.0, Picture::Standby(None), &format, None).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            &black[..10],
+            [
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1280x720:r=25",
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=48000"
+            ]
+        );
+        assert!(black.iter().any(|a| a.contains("[1:a]aresample")), "{black:?}");
+        assert!(!black.iter().any(|a| a == "-reconnect"), "options of the slot input are not kept");
+        assert!(black.windows(2).any(|w| w == ["-t", "1740000ms"]));
+        let image: Vec<String> = live_args(&slot, &job, 0.0, Picture::Standby(Some("/media/slate.png")), &format, None)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&image[..7], ["-re", "-loop", "1", "-framerate", "25", "-i", "/media/slate.png"]);
     }
 
     #[test]

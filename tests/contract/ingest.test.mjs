@@ -104,7 +104,7 @@ async function state(cg, channel) {
 
 test("ingest API: token, live from the first keyframe, readers join there, one source per channel", async (t) => {
   const cg = await sidecar(t, { ingest_token: TOKEN });
-  assert.deepEqual(await state(cg, "1"), { enabled: true, live: false, audio: false, video: null, seconds: null });
+  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, live: false, audio: false, video: null, seconds: null });
 
   const refused = await postSource(cg, "1", "wrong");
   assert.equal(refused.status, 401);
@@ -119,7 +119,7 @@ test("ingest API: token, live from the first keyframe, readers join there, one s
 
   source.socket.write(Buffer.concat([video(true, 2), video(false, 3)]));
   for (let i = 0; i < 40 && !(await state(cg, "1")).live; i++) await sleep(50);
-  assert.deepEqual(await state(cg, "1"), { enabled: true, live: true, audio: true, video: "h264", seconds: 0 });
+  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, live: true, audio: true, video: "h264", seconds: 0 });
   assert.equal((await cg.health()).ingest[0].channel, "1");
 
   const second = await postSource(cg, "1", TOKEN);
@@ -259,4 +259,99 @@ test("live takes a piece over: RTMP listener, overlay with graphics, the piece g
   const last = grey.lastIndexOf(true);
   assert.ok(first > 0 && last < grey.length - 1, `live in the middle: ${JSON.stringify(colours)}\n${log}\n${Buffer.concat(listenerLog)}\n${playlist}\n${cg.logs()}`);
   assert.ok(grey.slice(first, last + 1).every(Boolean), "one live stretch");
+});
+
+/** Segments of a playlist: names, lengths and the colour at 10,10 of their first frame. */
+function playlistSegments(dir) {
+  const playlist = readFileSync(path.join(dir, "live.m3u8"), "utf8");
+  return [...playlist.matchAll(/#EXTINF:([\d.]+),\s*\n(?:#.*\n)*(live\d+\.ts)/g)].map((m) => ({
+    name: m[2],
+    length: Number(m[1]),
+    colour: pixel(path.join(dir, m[2]), 10, 10),
+  }));
+}
+
+test("live programme in the schedule: Remote Stream definition, standby without the studio, studio on air", { skip: !FFMPEG && "no ffmpeg" }, async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "vizrs-slot-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const etvConfig = path.join(dir, "etv-config");
+  mkdirSync(etvConfig);
+  const cg = await sidecar(t, {
+    ingest_token: TOKEN,
+    ingest_anytime: false,
+    etv_config: etvConfig,
+    live_shows: [{ channel: "1", title: "Wiadomości na żywo", duration: "00:30:00", plot: "Ze studia" }],
+  });
+
+  // The definition for a Remote Streams library of ErsatzTV.
+  const definition = path.join(etvConfig, "vizrs-live", "1-wiadomosci-na-zywo.yml");
+  for (let i = 0; i < 50 && !readdirSync(etvConfig).includes("vizrs-live"); i++) await sleep(100);
+  assert.equal(
+    readFileSync(definition, "utf8"),
+    "# VizRS CG Playout: live programme of channel 1 (sidecar live_shows); changes here are overwritten.\n" +
+      'title: "Wiadomości na żywo"\nplot: "Ze studia"\nurl: "http://cg:7700/ingest?channel=1&slot=1"\nis_live: true\nduration: "00:30:00"\n',
+  );
+  assert.equal((await state(cg, "1")).anytime, false);
+
+  // Without the studio the slot answers ErsatzTV's ffprobe: H.264 and AAC, no length (the programme's counts).
+  const slot = `${cg.url}/ingest?channel=1&slot=1`;
+  const probe = execFileSync(FFPROBE, ["-v", "error", "-show_entries", "format=duration:stream=codec_name", "-of", "default=nw=1", slot]).toString();
+  assert.match(probe, /codec_name=h264/);
+  assert.match(probe, /codec_name=aac/);
+  assert.match(probe, /duration=N\/A/);
+
+  const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  const listener = spawn(WRAPPER, ["vizrs-ingest"], {
+    env: { PATH: process.env.PATH, VIZRS_CG_URL: cg.url, VIZRS_INGEST_TOKEN: TOKEN, VIZRS_FFMPEG: FFMPEG, VIZRS_INGEST: `1=${rtmp}` },
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  t.after(() => listener.kill("SIGKILL"));
+
+  const hls = (out) => [
+    "-f", "hls", "-hls_time", "2", "-hls_list_size", "0", "-hls_segment_filename", path.join(out, "live%06d.ts"), "-hls_segment_type", "mpegts",
+    "-hls_flags", "program_date_time+omit_endlist+append_list+independent_segments", path.join(out, "live.m3u8"),
+  ];
+  const env = { PATH: process.env.PATH, VIZRS_FFMPEG: FFMPEG, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_INGEST: "1" };
+  const run = (args) => {
+    const child = spawn(WRAPPER, args, { env, stdio: ["ignore", "ignore", "pipe"] });
+    const log = [];
+    child.stderr.on("data", (chunk) => log.push(chunk));
+    return new Promise((resolve) => child.once("exit", (code) => resolve({ code, log: Buffer.concat(log).toString() })));
+  };
+
+  // The live programme, as ErsatzTV Next runs a live Remote Stream: its URL, no seek, the slot's length.
+  const programme = path.join(dir, "transcode", "1");
+  mkdirSync(programme, { recursive: true });
+  const live = run([
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-reconnect", "1", "-i", slot, "-map", "0:0", "-map", "0:1",
+    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-r", "25", "-t", "12000ms", "-g", "50", ...hls(programme),
+  ]);
+  // At the same time a piece of the schedule of the same channel: only live programmes are taken over.
+  const media = path.join(dir, "news.mp4");
+  execFileSync(FFMPEG, ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25", "-f", "lavfi", "-i", "sine", "-t", "10", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", media]);
+  const other = path.join(dir, "other", "1");
+  mkdirSync(other, { recursive: true });
+  const piece = run(["-nostdin", "-readrate", "1.0", "-i", media, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-t", "9000ms", ...hls(other)]);
+
+  await sleep(3000);
+  const publisher = spawn(FFMPEG, [
+    "-v", "error", "-re", "-f", "lavfi", "-i", "smptebars=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=880",
+    "-t", "4", "-c:v", "libx264", "-preset", "ultrafast", "-g", "15", "-c:a", "aac", "-f", "flv", rtmp,
+  ], { stdio: "ignore" });
+  t.after(() => publisher.kill("SIGKILL"));
+
+  const [done, schedule] = await Promise.all([live, piece]);
+  assert.equal(done.code, 0, done.log);
+  assert.match(done.log, /channel 1: live from \d+\.\d s of the piece/);
+  assert.equal(schedule.code, 0, schedule.log);
+  assert.doesNotMatch(schedule.log, /live from/, "ingest_anytime off: the schedule's piece plays on");
+
+  const segments = playlistSegments(programme);
+  const total = segments.reduce((sum, s) => sum + s.length, 0);
+  assert.ok(Math.abs(total - 12) < 0.3, `the programme fills its slot: ${total}`);
+  const kind = segments.map(({ colour: [r, g, b] }) => (Math.max(r, g, b) < 24 ? "black" : Math.abs(r - 191) < 12 && Math.abs(g - 191) < 12 ? "studio" : "other"));
+  assert.equal(kind[0], "black", `standby before the studio: ${kind}`);
+  assert.equal(kind.at(-1), "black", `standby after it: ${kind}`);
+  assert.ok(kind.includes("studio") && !kind.includes("other"), `${kind}`);
+  assert.ok(playlistSegments(other).every(({ colour: [r, g, b] }) => !(Math.abs(r - 191) < 12 && Math.abs(g - 191) < 12 && Math.abs(b - 191) < 12)));
 });

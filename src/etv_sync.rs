@@ -97,6 +97,17 @@ fn sync_pages(config: &Config, elements: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The live programmes as Remote Streams, at the sidecar's address in the graphics element.
+fn sync_live_shows(config: &Config, elements: &Path) {
+    let general = fs::read_to_string(elements.join("vizrs.yml")).unwrap_or_default();
+    let sidecar = element_url(&general).and_then(crate::live_shows::origin).unwrap_or_else(|| "http://cg:7700".into());
+    match crate::live_shows::write(&config.live_shows, &crate::live_shows::folder(&config.etv_config), &sidecar) {
+        Ok(0) => {}
+        Ok(n) => crate::info!("{n} live programmes written for ErsatzTV (vizrs-live)"),
+        Err(e) => crate::warn!("live programmes: {e}"),
+    }
+}
+
 /// At the start of the sidecar; each part is on only when configured.
 pub fn start(config: &Config) {
     if !config.client_dir.is_empty() {
@@ -118,6 +129,7 @@ pub fn start(config: &Config) {
     let _ = thread::Builder::new().name("etv-sync".into()).spawn(move || {
         let mut named = Vec::new();
         loop {
+            sync_live_shows(&config, &elements);
             if config.channel_buses && !config.etv_url.is_empty() {
                 if let Err(e) = name_channels(&config, &folder, &mut named) {
                     crate::warn!("channel names: {e}");

@@ -171,7 +171,7 @@ impl Server {
             crate::warn!("{warning}");
         }
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
-        let ingest = Ingest::new(&config.ingest_token);
+        let ingest = Ingest::new(&config.ingest_token, config.ingest_anytime);
         Arc::new(Server {
             ingest,
             config: Arc::new(config),

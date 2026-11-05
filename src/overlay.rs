@@ -42,6 +42,7 @@
 //     VIZRS_FFMPEG_READRATE_CATCHUP  catch-up rate of HLS inputs, e.g. 2 (empty: none)
 //     VIZRS_FFMPEG_FPS_BLEND  1 = blend frames when converting the media's rate
 //     VIZRS_FFMPEG_INGEST  1 = live ingest of the sidecar takes the channel over
+//     VIZRS_FFMPEG_STANDBY image of a live programme without its source (empty: black)
 //
 // With VIZRS_FFMPEG_INGEST=1 a transcode to HLS of a channel whose live
 // source is on (sidecar `/ingest/state`) plays that source in its place
@@ -117,6 +118,8 @@ pub struct Settings {
     pub blend: bool,
     /// Live ingest of the sidecar takes transcodes to HLS over (src/takeover.rs).
     pub ingest: bool,
+    /// Picture of a live programme without its source; empty = black.
+    pub standby: String,
 }
 
 impl Settings {
@@ -130,6 +133,7 @@ impl Settings {
             catchup: var("VIZRS_FFMPEG_READRATE_CATCHUP").trim().to_owned(),
             blend: var("VIZRS_FFMPEG_FPS_BLEND").trim() == "1",
             ingest: var("VIZRS_FFMPEG_INGEST").trim() == "1",
+            standby: var("VIZRS_FFMPEG_STANDBY").trim().to_owned(),
         }
     }
 }
@@ -717,14 +721,19 @@ fn plain(settings: &Settings, args: Vec<OsString>) -> ! {
 
 /// The transcode to HLS that live ingest can take over, with the channel's
 /// live state then (`/ingest/state`: on, audio); None without
-/// `VIZRS_FFMPEG_INGEST=1` or with ingest off in the sidecar.
+/// `VIZRS_FFMPEG_INGEST=1`, with ingest off in the sidecar, or for a piece of
+/// the schedule while the sidecar takes over only live programmes
+/// (`ingest_anytime` off). A live programme (slot) always goes this way, even
+/// with the sidecar away: its media is the sidecar.
 fn live_job(settings: &Settings, args: &[OsString], channel: Option<&str>) -> Option<(Job, bool, bool)> {
     if !settings.ingest || settings.sidecar.is_empty() {
         return None;
     }
     let job = Job::of(args, channel)?;
-    let (enabled, on, audio) = takeover::state(&settings.sidecar, &job.channel)?;
-    enabled.then_some((job, on, audio))
+    match takeover::state(&settings.sidecar, &job.channel) {
+        Some(state) => (state.enabled && (job.slot || state.anytime)).then_some((job, state.live, state.audio)),
+        None => job.slot.then_some((job, false, false)),
+    }
 }
 
 /// The real ffmpeg with `args`, graphics at `fd`, the forwarded signals unblocked.
@@ -739,20 +748,38 @@ fn spawn(settings: &Settings, args: Vec<OsString>, fd: Option<i32>) -> io::Resul
     command.spawn()
 }
 
-/// The live run of the piece (src/takeover.rs), adjusted as every command.
+/// The live run of the piece (src/takeover.rs), adjusted as every command;
+/// without a source the standby picture of a live programme.
 fn live_command(
     settings: &Settings,
     args: &[OsString],
     job: &Job,
     elapsed: f64,
-    source: &takeover::Source,
+    source: Option<&takeover::Source>,
     graphics: Option<(&Frames, i32)>,
 ) -> Vec<OsString> {
     let full = graphics.filter(|(f, _)| f.areas.is_empty()).map(|(f, _)| (f.width, f.height));
     let rate = graphics.map_or("", |(f, _)| f.rate.as_str());
     let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, full, rate);
     let input = graphics.map(|(frames, fd)| takeover::Graphics { input: raw_input(frames, fd), areas: &frames.areas });
-    adjusted(takeover::live_args(args, job, elapsed, source, &format, input.as_ref()), settings)
+    let picture = match source {
+        Some(source) => takeover::Picture::Live(source),
+        None => takeover::Picture::Standby(standby_image(settings)),
+    };
+    adjusted(takeover::live_args(args, job, elapsed, picture, &format, input.as_ref()), settings)
+}
+
+/// `VIZRS_FFMPEG_STANDBY` when the file is there; else black.
+fn standby_image(settings: &Settings) -> Option<&str> {
+    let path = settings.standby.as_str();
+    if path.is_empty() {
+        return None;
+    }
+    if Path::new(path).is_file() {
+        return Some(path);
+    }
+    log(format_args!("VIZRS_FFMPEG_STANDBY {path}: no such file; black instead"));
+    None
 }
 
 /// Runs the piece through `takeover::sequence`, the signals of ErsatzTV forwarded to the run of the moment.
@@ -821,7 +848,8 @@ fn with_graphics(
         let (reader, writer) = io::pipe()?;
         let fd = reader.as_raw_fd();
         let command = match source {
-            Some(source) => live_command(settings, args, job, elapsed, source, Some((&frames, fd))),
+            Some(source) => live_command(settings, args, job, elapsed, Some(source), Some((&frames, fd))),
+            None if job.slot => live_command(settings, args, job, elapsed, None, Some((&frames, fd))),
             None => adjusted(job.program(&overlay_args(args, canvas, fd, &frames), elapsed), settings),
         };
         let child = spawn(settings, command, Some(fd))?;
@@ -847,7 +875,8 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
             Some((job, on, audio)) => {
                 let program = |elapsed: f64| adjusted(job.program(&args, elapsed), settings);
                 sequence(settings, &job, on, audio, &|elapsed, source| match source {
-                    Some(source) => spawn(settings, live_command(settings, &args, &job, elapsed, source, None), None),
+                    Some(source) => spawn(settings, live_command(settings, &args, &job, elapsed, Some(source), None), None),
+                    None if job.slot => spawn(settings, live_command(settings, &args, &job, elapsed, None, None), None),
                     None => spawn(settings, program(elapsed), None),
                 })
             }

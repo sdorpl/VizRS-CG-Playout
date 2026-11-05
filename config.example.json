@@ -36,5 +36,9 @@
   "tape": false,
   "renderer": "auto",
   "renderer_bin": "",
-  "ingest_token": ""
+  "ingest_token": "",
+  "ingest_anytime": true,
+  "live_shows": [
+    { "channel": "1", "title": "Wiadomości na żywo", "duration": "00:30:00", "plot": "Serwis ze studia" }
+  ]
 }

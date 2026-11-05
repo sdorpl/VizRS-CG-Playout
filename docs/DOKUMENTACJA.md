@@ -415,6 +415,7 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_FFMPEG_PRESET` | – (compose A1: `veryfast`) | preset kodera programowego (libx264, libx265), np. `superfast`; puste = preset ErsatzTV |
 | `VIZRS_FFMPEG_READRATE_CATCHUP` | – (compose: `2`) | tempo nadrabiania strumienia MPEG-TS kanału po przestoju (`-readrate_catchup`); puste = bez nadrabiania |
 | `VIZRS_FFMPEG_FPS_BLEND` | – (compose: `1`) | `1` = zmiana klatkażu materiału szybszego od kanału z mieszaniem klatek (`framerate` zamiast `fps`; klatkaż z `ffprobe`); puste = `fps` |
+| `VIZRS_FFMPEG_STANDBY` | – | obraz audycji na żywo bez sygnału studia (§1, Audycje na żywo w ramówce); puste = czerń |
 | `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
 
 #### Nadrabianie strumienia MPEG-TS (`VIZRS_FFMPEG_READRATE_CATCHUP`)
@@ -613,6 +614,68 @@ przykładowy klucz `change-me`), najlepiej tylko dla zaufanych adresów.
 `GET /ingest` i `/ingest/state` nie wymagają tokenu, jak reszta API sidecara
 (`/ffmpeg/frames`): portu 7700 nie wystawiaj publicznie.
 
+### Audycje na żywo w ramówce (`live_shows`)
+
+Studio może mieć w ramówce ErsatzTV własne pozycje: audycja na żywo ma tytuł
+i opis w EPG, stałą godzinę i długość, a w tym czasie kanał nadaje sygnał
+ze studia (live ingest, wyżej). Bez sygnału idzie plansza zastępcza, a nie
+program. Pozycja to **Remote Stream** ErsatzTV, którego adres wskazuje
+sidecara:
+
+```yaml
+# /config/vizrs-live/1-wiadomosci-na-zywo.yml – pisze go sidecar
+title: "Wiadomości na żywo"
+plot: "Serwis ze studia"
+url: "http://cg:7700/ingest?channel=1&slot=1"
+is_live: true
+duration: "00:30:00"
+```
+
+1. **Definicje** ([src/live_shows.rs](../src/live_shows.rs)): każdy wpis
+   `live_shows` (`VIZRS_LIVE_SHOWS`, JSON) sidecar zapisuje przy starcie i co
+   `sync_seconds` do `<etv_config>/vizrs-live/<kanał>-<tytuł>.yml` (albo
+   `<file>.yml`), tylko gdy plik się zmienił. Pól `channel`, `title`,
+   `duration` (`"HH:MM:SS"`, `"MM:SS"` albo sekundy, do 23:59:59) nie można
+   pominąć; `plot` i `file` są opcjonalne. Adres sidecara pochodzi z adresu
+   elementu `vizrs.yml` (domyślnie `http://cg:7700`). Usunięty wpis zostawia
+   plik: ErsatzTV usunąłby wtedy pozycję z harmonogramów. Plik usuwa się ręcznie,
+   tak jak elementy stron (§3). Własne pliki `.yml` w tym formacie też działają.
+2. **Biblioteka w ErsatzTV**, raz: **Media → Local Libraries → Add Local
+   Library**, rodzaj **Remote Streams**, folder `/config/vizrs-live`, skan.
+   Audycje są potem zwykłymi elementami biblioteki: kolekcja, pozycja
+   harmonogramu (np. **Fixed Start** 19:30, **Playout Mode: One**) i reset
+   playoutu. ErsatzTV bierze długość z `duration`, bo próbkowanie adresu nie
+   daje długości (niżej), a tytuł i opis idą do EPG i do `{title}` komend
+   grafiki (§3). Element **VizRS** na pozycji działa jak na każdej innej.
+3. **Adres slotu** (`GET /ingest?channel=N&slot=1`): gdy studio nadaje,
+   sidecar podaje sygnał tak jak `GET /ingest`. Bez sygnału odpowiada sekundą
+   czerni i ciszy w MPEG-TS (H.264, AAC), bez `Content-Length`, więc ffprobe
+   ErsatzTV przy skanowaniu i odtwarzaniu widzi obraz i dźwięk, ale nie
+   długość.
+4. **Odtwarzanie** (nakładka ffmpeg, `VIZRS_FFMPEG_INGEST=1`): ErsatzTV Next
+   gra pozycję live jednym ffmpeg na cały czas audycji (`-t` do jej końca, bez
+   przewijania). Nakładka rozpoznaje wejście slotu i nigdy nie uruchamia tej
+   komendy. Przez cały czas idą przebiegi jak przy przejęciu (§1, Live
+   ingest): studio, gdy nadaje, a gdy nie – plansza: `VIZRS_FFMPEG_STANDBY`
+   (obraz w kontenerze ErsatzTV, np. `/media/plansza.png`, skalowany do
+   kanału; brak pliku = czerń z wpisem w logu) albo czerń, z ciszą i grafiką
+   VizRS. Studio może więc zacząć później i skończyć wcześniej: przed
+   wejściem i po zejściu idzie plansza, a o czasie audycji decyduje ramówka.
+   Slot działa także przy sidecarze nieosiągalnym na starcie pozycji
+   (plansza, stan sprawdzany dalej) i bez względu na `ingest_anytime`.
+
+`ingest_anytime` (`VIZRS_INGEST_ANYTIME`, domyślnie `true`): czy sygnał
+przejmuje kanał także poza audycjami na żywo, jak w ffPlayout (każdy
+kawałek). `false` = studio wchodzi na antenę tylko w swoich pozycjach
+ramówki, a w pozostałym czasie jego sygnał niczego nie zmienia (`/ingest/state`:
+`"anytime"`).
+
+Bez nakładki (zwykły ffmpeg) ErsatzTV odtworzyłby adres slotu wprost: przy
+nadającym studiu działa to jak zwykły Remote Stream (bez grafiki VizRS przez
+nakładkę), ale bez studia sekunda czerni kończy źródło i ErsatzTV pokazuje
+do końca pozycji własną planszę awaryjną. Audycje na żywo wymagają więc
+nakładki z `VIZRS_FFMPEG_INGEST=1`.
+
 ## 2. Odpowiedniki w VizRS ffPlayout System
 
 VizRS ffPlayout System jest od 2026-10-24 archiwum: nie jest rozwijany i
@@ -634,6 +697,7 @@ szablony komend; nowe funkcje VizRS CG Playout nie mają już odpowiednika tam.
 | live ingest: odbiorniki RTMP/SRT kanału, przejęcie od pierwszej klatki obrazu, `idle_timeout_ms` (2 s) | `VIZRS_INGEST` (`kanał=URL`) usługi `ingest`, `VIZRS_INGEST_IDLE_MS`; przejęcie w nakładce ffmpeg (`VIZRS_FFMPEG_INGEST`, §1, Live ingest) |
 | program wstrzymany na czas live | program idzie dalej według zegara (harmonogram ErsatzTV), część zastąpiona przez live przepada |
 | priorytety odbiorników kanału | brak: pierwszy sygnał kanału trzyma antenę do końca |
+| live tylko poza playlistą (przejęcie w dowolnej chwili) | także audycje na żywo w ramówce i EPG (`live_shows`, Remote Stream ErsatzTV), `ingest_anytime: false` = live tylko w nich |
 
 ## 3. Komendy i symbole zastępcze
 
@@ -1020,6 +1084,13 @@ Synchronizacja z ErsatzTV). Odbiornik tylko przepakowuje strumień (ułamek
 rdzenia); CPU kosztuje przebieg live w ErsatzTV: dekodowanie sygnału
 w miejsce dekodowania materiału.
 
+Audycje na żywo w ramówce (§1): w `.env` np.
+`VIZRS_LIVE_SHOWS=[{"channel":"1","title":"Wiadomości","duration":"00:30:00"}]`
+(sidecar pisze je do wolumenu konfiguracji ErsatzTV, `/config/vizrs-live`),
+opcjonalnie `VIZRS_INGEST_ANYTIME=0` i `VIZRS_FFMPEG_STANDBY=/media/plansza.png`
+(plik w mediach ErsatzTV). Bibliotekę **Remote Streams** z folderem
+`/config/vizrs-live` zakłada się raz w ErsatzTV.
+
 ### Synchronizacja z ErsatzTV
 
 Sidecar sam utrzymuje integrację, więc jego wersja zawsze zgadza się z klientami:
@@ -1277,7 +1348,10 @@ vizrs-cg config.json      # albo CONFIG=config.json vizrs-cg
 
 `ingest_token` (env `VIZRS_INGEST_TOKEN`; ustawiona pusta zmienna wyłącza
 token z pliku): wspólny sekret odbiorników live ingest; puste = live ingest
-wyłączony (§1, Live ingest).
+wyłączony (§1, Live ingest). `ingest_anytime` (env `VIZRS_INGEST_ANYTIME`,
+`0`/`1`, domyślnie `true`) i `live_shows` (tablica, env `VIZRS_LIVE_SHOWS` z tym
+samym JSON-em; błędny JSON w env trafia do logu i jest pomijany, błędny wpis
+w pliku zatrzymuje start z nazwą pola): §1, Audycje na żywo w ramówce.
 
 Opcje `etv_config`, `etv_url`, `client_source`, `client_dir`, `sync_seconds`
 (env `VIZRS_ETV_CONFIG`, `VIZRS_ETV_URL`, `VIZRS_CLIENT_SOURCE`, `VIZRS_CLIENT_DIR`,
@@ -1312,7 +1386,7 @@ kanału), `VIZRS_CAPTURE_MODE` (`frames` albo `screencast`, niżej),
 `VIZRS_RENDERER` (`chromium`, `native` albo `auto` – kto rysuje grafikę, §1;
 błędna wartość = `chromium` z ostrzeżeniem), `VIZRS_RENDERER_BIN` (program
 `vizrs-render`; puste = obok sidecara albo w `PATH`),
-`VIZRS_INGEST_TOKEN` (live ingest, §1),
+`VIZRS_INGEST_TOKEN`, `VIZRS_INGEST_ANYTIME`, `VIZRS_LIVE_SHOWS` (live ingest, §1),
 `VIZRS_BROWSER`, `VIZRS_BROWSER_NO_SANDBOX=1` (root / kontenery),
 `VIZRS_BROWSER_ARGS` (dodatkowe flagi Chromium, rozdzielone spacją),
 `DEBUG=1`.
@@ -1465,7 +1539,9 @@ npm test                   # testy kontraktu na target/release/vizrs-cg, vizrs-e
   z ręcznie złożonym MPEG-TS oraz pełna ścieżka z prawdziwym ffmpeg
   (`VIZRS_TEST_FFMPEG` albo `ffmpeg` w `PATH`, bez niego pomijana): nadawca RTMP,
   odbiornik, kawałek z płótnem grafiki do HLS, w środku live; sprawdza długość
-  playlisty, rozmiar kanału, ciągłość znaczników czasu wideo i obraz w segmentach.
+  playlisty, rozmiar kanału, ciągłość znaczników czasu wideo i obraz w segmentach;
+  audycja na żywo w ramówce: plik `.yml`, odpowiedź slotu dla ffprobe, plansza
+  przed i po studiu, zwykły kawałek nieprzejęty przy `ingest_anytime: false`.
   Inną binarkę wskazuje `VIRTRS_CG_BIN`, przy
   `TRACE=1` log sidecara każdego testu trafia na stderr.
 
