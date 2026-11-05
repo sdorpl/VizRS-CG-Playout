@@ -113,11 +113,59 @@ tr.edit td { background: #1f2229; }
 .form label { color: var(--dim); }
 .form .note { grid-column: 2; color: var(--dim); font-size: 11px; margin-top: -6px; }
 .modal .f { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 8px; }
+
+/* zakładki */
+.tabs { display: flex; gap: 2px; margin-left: 18px; }
+.tabs a { padding: 5px 12px; border-radius: 4px; color: var(--dim); text-decoration: none; }
+.tabs a.sel { background: var(--panel2); color: var(--text); box-shadow: inset 0 -2px 0 var(--acc); }
+.view[hidden] { display: none; }
+
+/* plan audycji */
+.plan { padding: 14px 16px; display: grid; grid-template-columns: 1fr 330px; gap: 14px; }
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.toolbar .grow { flex: 1; }
+.week { padding: 0; overflow: hidden; }
+.wk { display: grid; grid-template-columns: 52px repeat(7, 1fr); }
+.wk .dh { padding: 7px 8px; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+.wk .dh b { color: var(--text); font-weight: 600; }
+.wk .dh.today { background: #241c10; }
+.wk .dh.today b { color: var(--acc); }
+.hours { position: relative; height: 560px; }
+.hours .hl { position: absolute; left: 0; width: 52px; font: 11px var(--mono); color: var(--dim); text-align: right; padding-right: 6px; transform: translateY(-7px); }
+.grid { position: absolute; inset: 0 0 0 52px; display: grid; grid-template-columns: repeat(7, 1fr); }
+.col { position: relative; border-left: 1px solid var(--line); background: repeating-linear-gradient(180deg, transparent 0 34px, #22252b 34px 35px); }
+.col.today { background-color: #17140e; }
+.ev { position: absolute; left: 3px; right: 3px; border-radius: 3px; padding: 3px 5px; font-size: 11px; overflow: hidden; line-height: 1.25; }
+.ev.etv { background: #23272f; color: #9aa1ad; border: 1px solid #2f343d; }
+.ev.lv { background: #4a1416; color: #ffd1cf; border: 1px solid var(--red); box-shadow: 0 0 0 1px rgba(229,50,45,.25); }
+.ev.lv b, .ev.new b { display: block; color: #fff; }
+.ev.lv.rep::after { content: "⟳"; position: absolute; right: 4px; top: 2px; color: #ff9a96; }
+.ev.new { background: repeating-linear-gradient(135deg, #4a1416 0 6px, #3a1012 6px 12px); border: 1px dashed #ff8a86; color: #ffd1cf; }
+.ev.clash { box-shadow: 0 0 0 2px var(--yellow); }
+.nowline { position: absolute; left: 0; right: 0; height: 2px; background: var(--acc); box-shadow: 0 0 6px var(--acc); }
+.nowline::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--acc); }
+.upcoming { padding: 10px; }
+.up { padding: 8px; border-radius: 5px; background: var(--panel2); margin-bottom: 8px; font-size: 12px; }
+.up .t { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 3px; }
+.up .t span { font: 600 12px var(--mono); color: #ff9a96; }
+.up .d { color: var(--dim); }
+.up .ok { color: var(--green); }
+.up .warn { color: var(--yellow); }
+.legend { display: flex; gap: 12px; font-size: 11px; color: var(--dim); align-items: center; }
+.legend i { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.days { display: flex; gap: 4px; }
+.days span { width: 30px; text-align: center; padding: 3px 0; border-radius: 3px; background: #0e0f12; border: 1px solid var(--line); font-size: 12px; }
+.days span.on { background: #3a2a10; border-color: var(--acc-d); color: var(--acc); }
+.radio { display: flex; gap: 12px; }
+.radio label { color: var(--text); display: flex; gap: 5px; align-items: center; }
+.clash-box { grid-column: 1 / -1; background: #33300f; border: 1px solid #6b5f1a; border-radius: 4px; padding: 8px 10px; font-size: 12px; color: #f3dc7c; }
+.modal.wide { width: 560px; }
 </style>
 </head>
 <body>
 <header>
   <div class="logo"><b>VizRS</b> Live Panel <span>· stos s2</span></div>
+  <nav class="tabs"><a href="#" id="t-live" class="sel">Na żywo</a><a href="#plan" id="t-plan">Plan audycji</a></nav>
   <div class="grow"></div>
   <div class="conn"><span class="dot g"></span> sidecar</div>
   <div class="conn"><span class="dot g"></span> ErsatzTV</div>
@@ -126,7 +174,7 @@ tr.edit td { background: #1f2229; }
   <div class="who">operator: <b>MCR 1</b></div>
 </header>
 
-<main>
+<main class="view" id="v-live">
   <section>
     <div class="section-h"><h3>Kanały</h3><span class="hint" style="margin:0">studio przejmuje kanał od pierwszej klatki kluczowej</span></div>
     <div class="channels">
@@ -207,6 +255,58 @@ tr.edit td { background: #1f2229; }
   </section>
 </main>
 
+<section class="view plan" id="v-plan" hidden>
+  <div>
+    <div class="toolbar">
+      <div class="ch-tabs" style="margin:0"><span class="sel">1 BTB 24</span><span>4 BTB Info</span><span>7 BTB Sport</span></div>
+      <button>‹</button><b>2–8 listopada 2026</b><button>›</button><button>Dziś</button>
+      <div class="grow"></div>
+      <div class="legend"><span><i style="background:#23272f;border:1px solid #2f343d"></i>ramówka ErsatzTV</span><span><i style="background:#4a1416;border:1px solid var(--red)"></i>audycja na żywo</span><span>⟳ cykliczna</span></div>
+      <button class="acc">＋ Zaplanuj audycję</button>
+    </div>
+    <div class="panel week">
+      <div class="wk"><div class="dh"></div><div class="dh"><b>pn</b> 2.11</div><div class="dh"><b>wt</b> 3.11</div><div class="dh"><b>śr</b> 4.11</div><div class="dh today"><b>cz</b> 5.11</div><div class="dh"><b>pt</b> 6.11</div><div class="dh"><b>sb</b> 7.11</div><div class="dh"><b>nd</b> 8.11</div></div>
+      <div class="hours"><span class="hl" style="top:0px">14:00</span><span class="hl" style="top:56px">15:00</span><span class="hl" style="top:112px">16:00</span><span class="hl" style="top:168px">17:00</span><span class="hl" style="top:224px">18:00</span><span class="hl" style="top:280px">19:00</span><span class="hl" style="top:336px">20:00</span><span class="hl" style="top:392px">21:00</span><span class="hl" style="top:448px">22:00</span><span class="hl" style="top:504px">23:00</span><div class="grid"><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div></div><div class="col today"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film: Ostatni pociąg</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div><div class="nowline" style="top:334px"></div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:22px">Film</div><div class="ev lv clash" style="top:392px;height:82px"><b>Debata wyborcza</b>21:00–22:30 · jednorazowo</div><div class="ev etv" style="top:476px;height:82px">Film</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev etv" style="top:308px;height:26px">Magazyn</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev etv" style="top:466px;height:92px">Reportaż</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev etv" style="top:308px;height:26px">Magazyn</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:22px">Film</div><div class="ev new" style="top:392px;height:54px"><b>Rozmowa dnia</b>nowa · 21:00–22:00</div><div class="ev etv" style="top:448px;height:110px">Film</div></div></div></div>
+    </div>
+  </div>
+  <aside class="side">
+    <div class="panel upcoming">
+      <div class="section-h"><h3>Najbliższe na żywo · kanał 1</h3></div>
+      <div class="up"><div class="t">Wiadomości <span>dziś 19:30</span></div><div class="d">trwa · <span class="ok">studio na antenie</span></div></div>
+      <div class="up"><div class="t">Wiadomości wieczorne <span>dziś 22:20</span></div><div class="d">za 2 h 22 min · pn–pt</div></div>
+      <div class="up"><div class="t">Debata wyborcza <span>pt 21:00</span></div><div class="d">jednorazowo · <span class="warn">przykrywa „Film” 20:35–22:30</span></div></div>
+      <div class="up"><div class="t">Rozmowa dnia <span>nd 21:00</span></div><div class="d">szkic – niezapisana</div></div>
+    </div>
+    <div class="panel log">
+      <div class="section-h"><h3>Jak to działa</h3></div>
+      W czasie audycji kanał nadaje studio (albo planszę, gdy studio nie nadaje), a ramówka ErsatzTV biegnie dalej pod spodem.<br>
+      EPG z audycjami: <b>http://cg:7700/epg.xml</b> (EPG ErsatzTV + plan panelu).
+    </div>
+  </aside>
+</section>
+
+<div class="modal-bg" id="pm" hidden>
+  <div class="panel modal wide">
+    <div class="h"><b>Zaplanuj audycję na żywo</b><button>✕</button></div>
+    <div class="form">
+      <label>Kanał</label><select><option>1 – BTB 24</option></select>
+      <label>Audycja</label><select><option>Debata wyborcza (nowa)</option><option>Wiadomości</option><option>Rozmowa dnia</option></select>
+      <div class="note">tytuł i opis trafiają do EPG; „nowa” zakłada audycję w liście</div>
+      <label>Tytuł</label><input value="Debata wyborcza">
+      <label>Opis</label><textarea rows="2">Debata kandydatów na prezydenta miasta, na żywo ze studia BTB</textarea>
+      <label>Start</label><span style="display:flex;gap:8px"><input value="pt, 6.11.2026" style="width:150px"><input value="21:00" style="width:70px;font-family:var(--mono)"></span>
+      <label>Koniec</label><span style="display:flex;gap:8px;align-items:center"><input value="22:30" style="width:70px;font-family:var(--mono)"><span style="color:var(--dim)">długość 1:30:00</span></span>
+      <label>Powtarzanie</label><div class="radio"><label><input type="radio" checked> jednorazowo</label><label><input type="radio"> co tydzień</label><label><input type="radio"> codziennie</label></div>
+      <label></label><div class="days" style="opacity:.45"><span>pn</span><span>wt</span><span>śr</span><span>cz</span><span class="on">pt</span><span>sb</span><span>nd</span></div>
+      <label>Bez studia</label><select><option>plansza „Za chwilę debata” (plansza-debata.png)</option><option>czerń</option><option>ramówka ErsatzTV (nie przejmuj kanału)</option></select>
+      <label>Po końcu</label><select><option>wróć do ramówki o 22:30, nawet gdy studio nadaje</option><option>zostań przy studiu, dopóki nadaje (najdłużej +30 min)</option></select>
+      <div class="clash-box">⚠ Audycja przykrywa w ramówce ErsatzTV: <b>Film: Wielka ucieczka</b> 20:35–22:30 (od 21:00). Po audycji kanał wróci do ramówki tam, gdzie będzie wtedy zegar.</div>
+    </div>
+    <div class="f"><button>Anuluj</button><span><button>Zapisz jako szkic</button> <button class="acc">Zaplanuj</button></span></div>
+  </div>
+</div>
+
+
 <div class="modal-bg" id="m" hidden>
   <div class="panel modal">
     <div class="h"><b>Audycja na żywo</b><button>✕</button></div>
@@ -222,6 +322,19 @@ tr.edit td { background: #1f2229; }
     <div class="f"><button class="danger">🗑 Usuń</button><span><button>Anuluj</button> <button class="acc">Zapisz i skanuj</button></span></div>
   </div>
 </div>
-<script>if (location.hash === "#edycja") document.getElementById("m").hidden = false;</script>
+<script>
+function route() {
+  const h = location.hash, plan = h.startsWith("#plan") || h === "#zaplanuj";
+  document.getElementById("v-live").hidden = plan;
+  document.getElementById("v-plan").hidden = !plan;
+  document.getElementById("t-live").classList.toggle("sel", !plan);
+  document.getElementById("t-plan").classList.toggle("sel", plan);
+  document.getElementById("m").hidden = h !== "#edycja";
+  document.getElementById("pm").hidden = h !== "#zaplanuj";
+}
+addEventListener("hashchange", route); route();
+document.querySelectorAll("#v-plan .toolbar button.acc").forEach(b => b.onclick = () => location.hash = "#zaplanuj");
+document.querySelectorAll(".modal .h button, .modal .f button:not(.acc)").forEach(b => b.onclick = () => history.back());
+</script>
 </body>
 </html>

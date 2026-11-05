@@ -136,6 +136,34 @@ Czysty JS (moduły ES), bez bibliotek i CDN, działa offline; wygląd z
   harmonogramu w ErsatzTV” z odnośnikiem.
 - Później: wersja na telefon (jak `/mobile` w VizRS) i okno `vizrs-shell`.
 
+## 6a. Planowanie audycji na żywo w panelu
+
+ErsatzTV nie ma API do wpisywania pozycji w zwykłą ramówkę (Classic, Block).
+Harmonogramy Scripted i ExternalJson budują **cały** playout kanału z
+zewnątrz, więc nie da się nimi dołożyć jednej audycji do istniejącej
+ramówki. Dlatego kalendarz audycji na żywo prowadzi panel, jak live w ffPlayout:
+
+- **Kalendarz** (`<etv_config>/vizrs-live/plan.json`): wpisy kanał, audycja
+  (tytuł, opis), start, koniec, powtarzanie (jednorazowo / co tydzień w
+  wybrane dni / codziennie, do daty), plansza bez studia, zachowanie po końcu
+  (wróć o czasie albo zostań przy studiu do +N min). Widok tygodnia z
+  ramówką ErsatzTV (EPG) pod spodem, kolizje i to, co audycja przykryje.
+- **Emisja**: w oknie wpisu `/ingest/state` kanału ma `scheduled` (tytuł,
+  koniec, plansza). Nakładka traktuje wtedy każdy kawałek kanału jak slot
+  audycji: studio albo plansza, bez względu na pozycję ErsatzTV i `anytime`.
+  Ramówka ErsatzTV biegnie pod spodem według zegara, przykryta część
+  programu przepada (jak przy przejęciu w dowolnej chwili, §1 DOKUMENTACJI).
+  Zmiana w nakładce: obsługa `scheduled` (dziś zna tylko wejście slotu).
+- **EPG**: sidecar podaje `/epg.xml` = EPG ErsatzTV z wyciętymi i
+  wstawionymi audycjami z kalendarza; odtwarzacze i Jellyfin/Plex biorą EPG
+  stąd zamiast z ErsatzTV. Bez tego EPG pokazuje program ErsatzTV.
+- **Audycje z ramówki ErsatzTV** (Remote Streams z L1) zostają jako druga
+  droga: dla stałych, codziennych pasm ułożonych w ErsatzTV, z EPG ErsatzTV
+  bez `/epg.xml`.
+
+Makieta: zakładka **Plan audycji** (`#plan`), okienko **Zaplanuj** (`#zaplanuj`).
+Etap: **L3** (zamiast samego podglądu ramówki), `/epg.xml` w L3, nakładka w L3.
+
 ## 7. Bezpieczeństwo
 
 - Własny token panelu `VIZRS_PANEL_TOKEN` (`panel_token`); puste = panel
@@ -170,7 +198,7 @@ Czysty JS (moduły ES), bez bibliotek i CDN, działa offline; wygląd z
 | L0 | szkielet: `panel.rs`, `/live` (UI wbudowane `include_str!`), token panelu, logowanie, `/api/live/state` z obecnego stanu ingest | panel pokazuje kanały i sygnał, test kontraktu |
 | L1 | audycje na żywo: `shows.json` (migracja z env), CRUD w API i UI, `.yml` z niego, skan biblioteki ErsatzTV | dodanie audycji w panelu = pozycja w ErsatzTV bez `.env` |
 | L2 | sterowanie: `control.rs`, wstrzymaj / wpuść, `anytime` na kanał, trwałe w `control.json`, log operacji; SSE | ZDEJMIJ zdejmuje studio w < 1 s na stosie testowym |
-| L3 | ramówka: EPG z ErsatzTV, bieżąca / następna audycja, odliczanie, ostrzeżenie o braku sygnału | operator widzi „20:00 Wiadomości za 3 min, studio gotowe” |
+| L3 | planowanie (§6a): kalendarz `plan.json`, widok tygodnia z EPG ErsatzTV, `scheduled` w `/ingest/state` i nakładce, `/epg.xml`; odliczanie i ostrzeżenie o braku sygnału | operator planuje „Debata, pt 21:00–22:30” w panelu, kanał przechodzi na studio o czasie, EPG ją pokazuje |
 | L4 | odbiorniki: heartbeat, miniatura, błędy nadawcy w panelu | widać obraz studia i zły klucz bez logów |
 | L5 | dokumentacja (DOKUMENTACJA §1 „Live Panel”, §4 compose), compose (`VIZRS_PANEL_TOKEN`), wydanie | stos S2 z panelem |
 | L6 | Trio: wskaźnik studia (VizRS CG System); telefon / `vizrs-shell` | operator Trio widzi stan studia |
