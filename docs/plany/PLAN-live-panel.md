@@ -106,6 +106,8 @@ Wewnętrzne, dla odbiorników (token ingest): `POST /ingest/heartbeat`,
 
 ## 6. Interfejs
 
+Makieta: [live-panel-makieta.html](live-panel-makieta.html) (statyczna; `#edycja` w adresie pokazuje okienko audycji).
+
 Czysty JS (moduły ES), bez bibliotek i CDN, działa offline; wygląd z
 `ui.css` VizRS (te same kolory, przyciski, panele), polskie etykiety.
 
