@@ -1,6 +1,6 @@
 # PLAN: VizRS Live Panel – sterowanie transmisjami na żywo kanałów ErsatzTV
 
-> Stan: **propozycja** (2026-11-05), gałąź `live-panel`. Etapy L0–L6 (§9).
+> Stan: **propozycja** (2026-11-05), gałąź `live-panel`. Etapy L0–L6 (§9). Planowanie zostaje w ErsatzTV, panel prowadzi do niego kreatorem (§6a).
 > Powiązane: DOKUMENTACJA §1 „Live ingest” i „Audycje na żywo w ramówce”,
 > VizRS CG System `docs/plany/PLAN-kanal.md` (rola emisji, MCR).
 
@@ -95,9 +95,10 @@ studia w panelu działa więc w ok. 0,3 s plus opóźnienie bufora odtwarzacza.
 | GET | `/api/live/events` | SSE: zmiany stanu (jak `/events` w VizRS), zamiast odpytywania |
 | POST | `/api/live/channels/<n>/hold` · `/release` | wstrzymaj studio (zdejmij / nie wpuszczaj) · wpuść |
 | PUT | `/api/live/channels/<n>` | `{"anytime": bool}` |
-| GET/POST | `/api/live/shows` | lista · dodaj audycję |
+| GET/POST | `/api/live/shows` | lista (ze stanem w ErsatzTV i najbliższą emisją) · dodaj audycję i utwórz ją w ErsatzTV |
 | PUT/DELETE | `/api/live/shows/<id>` | zmień · usuń (z potwierdzeniem w UI: ErsatzTV zdejmie ją z harmonogramów) |
 | POST | `/api/live/shows/scan` | skan biblioteki „Na żywo” w ErsatzTV (`POST /api/libraries/<id>/scan`) |
+| POST | `/api/live/channels/<n>/rebuild` | przebudowa playoutu kanału (`POST /api/channels/<n>/playout/reset`) |
 | GET | `/api/live/guide?channel=<n>` | najbliższe pozycje z EPG ErsatzTV (`/iptv/xmltv.xml`), oznaczone, które są audycjami na żywo |
 | GET | `/api/live/preview/<n>.jpg` | miniatura sygnału studia |
 
@@ -136,33 +137,42 @@ Czysty JS (moduły ES), bez bibliotek i CDN, działa offline; wygląd z
   harmonogramu w ErsatzTV” z odnośnikiem.
 - Później: wersja na telefon (jak `/mobile` w VizRS) i okno `vizrs-shell`.
 
-## 6a. Planowanie audycji na żywo w panelu
+## 6a. Audycje LIVE w ramówce ErsatzTV – kreator
 
-ErsatzTV nie ma API do wpisywania pozycji w zwykłą ramówkę (Classic, Block).
-Harmonogramy Scripted i ExternalJson budują **cały** playout kanału z
-zewnątrz, więc nie da się nimi dołożyć jednej audycji do istniejącej
-ramówki. Dlatego kalendarz audycji na żywo prowadzi panel, jak live w ffPlayout:
+Ramówkę układa się dalej w ErsatzTV; panel ma tylko maksymalnie skrócić
+drogę od pomysłu na audycję do pozycji w harmonogramie. Co da się zrobić z
+zewnątrz (sprawdzone w kodzie ErsatzTV):
 
-- **Kalendarz** (`<etv_config>/vizrs-live/plan.json`): wpisy kanał, audycja
-  (tytuł, opis), start, koniec, powtarzanie (jednorazowo / co tydzień w
-  wybrane dni / codziennie, do daty), plansza bez studia, zachowanie po końcu
-  (wróć o czasie albo zostań przy studiu do +N min). Widok tygodnia z
-  ramówką ErsatzTV (EPG) pod spodem, kolizje i to, co audycja przykryje.
-- **Emisja**: w oknie wpisu `/ingest/state` kanału ma `scheduled` (tytuł,
-  koniec, plansza). Nakładka traktuje wtedy każdy kawałek kanału jak slot
-  audycji: studio albo plansza, bez względu na pozycję ErsatzTV i `anytime`.
-  Ramówka ErsatzTV biegnie pod spodem według zegara, przykryta część
-  programu przepada (jak przy przejęciu w dowolnej chwili, §1 DOKUMENTACJI).
-  Zmiana w nakładce: obsługa `scheduled` (dziś zna tylko wejście slotu).
-- **EPG**: sidecar podaje `/epg.xml` = EPG ErsatzTV z wyciętymi i
-  wstawionymi audycjami z kalendarza; odtwarzacze i Jellyfin/Plex biorą EPG
-  stąd zamiast z ErsatzTV. Bez tego EPG pokazuje program ErsatzTV.
-- **Audycje z ramówki ErsatzTV** (Remote Streams z L1) zostają jako druga
-  droga: dla stałych, codziennych pasm ułożonych w ErsatzTV, z EPG ErsatzTV
-  bez `/epg.xml`.
+| Krok | API ErsatzTV | Kto robi |
+|---|---|---|
+| definicja audycji (`.yml` Remote Stream) | – (plik na dysku) | panel |
+| skan biblioteki „Na żywo” | `POST /api/libraries/<id>/scan` | panel |
+| kolekcja z audycją | `POST /api/collections/smart/new` (Smart Collection, zapytanie po bibliotece i dokładnym tytule) | panel, nazwa `LIVE · <tytuł>` |
+| **pozycja w harmonogramie** (godzina, One) | brak API dla Classic/Block; Scripted/ExternalJson/YAML przejmują cały kanał | operator w ErsatzTV |
+| przebudowa playoutu | `POST /api/channels/<n>/playout/reset` | panel (przycisk) |
 
-Makieta: zakładka **Plan audycji** (`#plan`), okienko **Zaplanuj** (`#zaplanuj`).
-Etap: **L3** (zamiast samego podglądu ramówki), `/epg.xml` w L3, nakładka w L3.
+Zapis do bazy ErsatzTV (`ersatztv.sqlite3`) odrzucony: zapis pod działającą
+aplikacją, schemat zmienny między wersjami, ryzyko uszkodzenia ramówki S1/S2.
+
+Przebieg w panelu (zakładka **Audycje LIVE**):
+
+1. **＋ Nowa audycja LIVE**: kanał, tytuł (EPG, `{title}`), długość, opis,
+   plansza bez studia → **Utwórz w ErsatzTV**.
+2. Panel: zapis `.yml`, skan, czekanie na pozycję w bibliotece, Smart
+   Collection `LIVE · <tytuł>`; postęp krok po kroku.
+3. Okienko „ostatni krok” z gotowymi wartościami do wybrania w ErsatzTV
+   (Fixed, Strict, Smart Collection, One, opcjonalnie element VizRS) i
+   odnośnikiem do harmonogramu kanału (`/schedules`).
+4. **Przebuduj ramówkę** (reset playoutu kanału).
+5. Tabela audycji pokazuje stan w ErsatzTV (plik, biblioteka, kolekcja) i
+   najbliższą emisję z EPG (`/iptv/xmltv.xml`); audycja bez emisji w oknie EPG
+   = „nie ma w ramówce” z instrukcją.
+
+Zmiana tytułu przemianowuje kolekcję (`/api/collections/smart/update`) i
+wymaga skanu; usunięcie usuwa plik i kolekcję po potwierdzeniu (ErsatzTV
+zdejmie pozycje z harmonogramów, które jej używają).
+
+Makieta: zakładka **Audycje LIVE** (`#audycje`), okienka `#nowa`, `#utworzona`, `#edycja`.
 
 ## 7. Bezpieczeństwo
 
@@ -196,9 +206,9 @@ Etap: **L3** (zamiast samego podglądu ramówki), `/epg.xml` w L3, nakładka w L
 | Etap | Zakres | Gotowe, gdy |
 |---|---|---|
 | L0 | szkielet: `panel.rs`, `/live` (UI wbudowane `include_str!`), token panelu, logowanie, `/api/live/state` z obecnego stanu ingest | panel pokazuje kanały i sygnał, test kontraktu |
-| L1 | audycje na żywo: `shows.json` (migracja z env), CRUD w API i UI, `.yml` z niego, skan biblioteki ErsatzTV | dodanie audycji w panelu = pozycja w ErsatzTV bez `.env` |
+| L1 | audycje LIVE (§6a): `shows.json` (migracja z env), CRUD, `.yml`, skan biblioteki, Smart Collection `LIVE · …`, okienko „ostatni krok”, reset playoutu | nowa audycja z panelu = gotowa kolekcja w ErsatzTV, operator dodaje tylko pozycję w harmonogramie |
 | L2 | sterowanie: `control.rs`, wstrzymaj / wpuść, `anytime` na kanał, trwałe w `control.json`, log operacji; SSE | ZDEJMIJ zdejmuje studio w < 1 s na stosie testowym |
-| L3 | planowanie (§6a): kalendarz `plan.json`, widok tygodnia z EPG ErsatzTV, `scheduled` w `/ingest/state` i nakładce, `/epg.xml`; odliczanie i ostrzeżenie o braku sygnału | operator planuje „Debata, pt 21:00–22:30” w panelu, kanał przechodzi na studio o czasie, EPG ją pokazuje |
+| L3 | ramówka: EPG z ErsatzTV, najbliższa emisja audycji, „nie ma w ramówce”, odliczanie i ostrzeżenie o braku sygnału na karcie kanału | operator widzi „20:00 Wiadomości za 3 min, studio gotowe” |
 | L4 | odbiorniki: heartbeat, miniatura, błędy nadawcy w panelu | widać obraz studia i zły klucz bez logów |
 | L5 | dokumentacja (DOKUMENTACJA §1 „Live Panel”, §4 compose), compose (`VIZRS_PANEL_TOKEN`), wydanie | stos S2 z panelem |
 | L6 | Trio: wskaźnik studia (VizRS CG System); telefon / `vizrs-shell` | operator Trio widzi stan studia |

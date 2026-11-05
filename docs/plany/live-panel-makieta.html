@@ -120,52 +120,39 @@ tr.edit td { background: #1f2229; }
 .tabs a.sel { background: var(--panel2); color: var(--text); box-shadow: inset 0 -2px 0 var(--acc); }
 .view[hidden] { display: none; }
 
-/* plan audycji */
-.plan { padding: 14px 16px; display: grid; grid-template-columns: 1fr 330px; gap: 14px; }
-.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.toolbar .grow { flex: 1; }
-.week { padding: 0; overflow: hidden; }
-.wk { display: grid; grid-template-columns: 52px repeat(7, 1fr); }
-.wk .dh { padding: 7px 8px; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); font-size: 12px; color: var(--dim); }
-.wk .dh b { color: var(--text); font-weight: 600; }
-.wk .dh.today { background: #241c10; }
-.wk .dh.today b { color: var(--acc); }
-.hours { position: relative; height: 560px; }
-.hours .hl { position: absolute; left: 0; width: 52px; font: 11px var(--mono); color: var(--dim); text-align: right; padding-right: 6px; transform: translateY(-7px); }
-.grid { position: absolute; inset: 0 0 0 52px; display: grid; grid-template-columns: repeat(7, 1fr); }
-.col { position: relative; border-left: 1px solid var(--line); background: repeating-linear-gradient(180deg, transparent 0 34px, #22252b 34px 35px); }
-.col.today { background-color: #17140e; }
-.ev { position: absolute; left: 3px; right: 3px; border-radius: 3px; padding: 3px 5px; font-size: 11px; overflow: hidden; line-height: 1.25; }
-.ev.etv { background: #23272f; color: #9aa1ad; border: 1px solid #2f343d; }
-.ev.lv { background: #4a1416; color: #ffd1cf; border: 1px solid var(--red); box-shadow: 0 0 0 1px rgba(229,50,45,.25); }
-.ev.lv b, .ev.new b { display: block; color: #fff; }
-.ev.lv.rep::after { content: "⟳"; position: absolute; right: 4px; top: 2px; color: #ff9a96; }
-.ev.new { background: repeating-linear-gradient(135deg, #4a1416 0 6px, #3a1012 6px 12px); border: 1px dashed #ff8a86; color: #ffd1cf; }
-.ev.clash { box-shadow: 0 0 0 2px var(--yellow); }
-.nowline { position: absolute; left: 0; right: 0; height: 2px; background: var(--acc); box-shadow: 0 0 6px var(--acc); }
-.nowline::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--acc); }
-.upcoming { padding: 10px; }
-.up { padding: 8px; border-radius: 5px; background: var(--panel2); margin-bottom: 8px; font-size: 12px; }
-.up .t { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 3px; }
-.up .t span { font: 600 12px var(--mono); color: #ff9a96; }
-.up .d { color: var(--dim); }
-.up .ok { color: var(--green); }
-.up .warn { color: var(--yellow); }
-.legend { display: flex; gap: 12px; font-size: 11px; color: var(--dim); align-items: center; }
-.legend i { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
-.days { display: flex; gap: 4px; }
-.days span { width: 30px; text-align: center; padding: 3px 0; border-radius: 3px; background: #0e0f12; border: 1px solid var(--line); font-size: 12px; }
-.days span.on { background: #3a2a10; border-color: var(--acc-d); color: var(--acc); }
-.radio { display: flex; gap: 12px; }
-.radio label { color: var(--text); display: flex; gap: 5px; align-items: center; }
-.clash-box { grid-column: 1 / -1; background: #33300f; border: 1px solid #6b5f1a; border-radius: 4px; padding: 8px 10px; font-size: 12px; color: #f3dc7c; }
-.modal.wide { width: 560px; }
+.modal.wide { width: 580px; }
+
+/* audycje LIVE */
+.showsview .shows { grid-column: auto; }
+.showsview { padding: 14px 16px; display: grid; grid-template-columns: 1fr 340px; gap: 14px; align-items: start; }
+.stt { display: inline-flex; gap: 4px; }
+.stt i { font-style: normal; font: 600 10px var(--mono); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--line); color: var(--dim); }
+.stt i.ok { border-color: #1f6b40; color: #7fe0a6; background: #0f2a1b; }
+.stt i.no { border-color: #6b5f1a; color: #f3dc7c; background: #2b2610; }
+.coll { font-family: var(--mono); font-size: 12px; color: #ffb4b0; }
+.air { font-size: 12px; }
+.air.none { color: var(--yellow); }
+.card { padding: 12px; }
+.card p { margin: 6px 0; color: var(--dim); font-size: 12px; }
+.kv { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px; font-size: 12px; align-items: center; margin-top: 8px; }
+.kv span:nth-child(3n+1) { color: var(--dim); }
+.kv .ok { color: var(--green); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.steps li { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.steps .ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 700 11px var(--mono); background: #0f2a1b; color: #7fe0a6; border: 1px solid #1f6b40; }
+.steps .ic.todo { background: #3a2a10; color: var(--acc); border-color: var(--acc-d); }
+.steps small { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+.etv-box { margin: 0 14px 14px; padding: 12px; border: 1px solid var(--acc-d); border-radius: 6px; background: #1f1a10; }
+.etv-box h4 { margin: 0 0 8px; font-size: 13px; color: var(--acc); }
+.etv-box ol { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 12.5px; }
+.val { font-family: var(--mono); background: #0e0f12; border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; color: var(--text); }
+.etv-box .row { display: flex; gap: 8px; margin-top: 10px; }
 </style>
 </head>
 <body>
 <header>
   <div class="logo"><b>VizRS</b> Live Panel <span>· stos s2</span></div>
-  <nav class="tabs"><a href="#" id="t-live" class="sel">Na żywo</a><a href="#plan" id="t-plan">Plan audycji</a></nav>
+  <nav class="tabs"><a href="#" id="t-live" class="sel">Na żywo</a><a href="#audycje" id="t-shows">Audycje LIVE</a></nav>
   <div class="grow"></div>
   <div class="conn"><span class="dot g"></span> sidecar</div>
   <div class="conn"><span class="dot g"></span> ErsatzTV</div>
@@ -242,48 +229,80 @@ tr.edit td { background: #1f2229; }
     </div>
   </aside>
 
-  <section class="panel shows">
-    <div class="section-h"><h3>Audycje na żywo</h3><span><button>⟳ Skanuj w ErsatzTV</button> <button class="acc">＋ Dodaj audycję</button></span></div>
-    <table>
-      <tr><th>Kanał</th><th>Tytuł (EPG)</th><th>Długość</th><th>Opis</th><th>W ramówce</th><th></th></tr>
-      <tr><td class="m">1</td><td>Wiadomości</td><td class="m">00:30:00</td><td>Serwis informacyjny na żywo ze studia</td><td>codziennie 19:30</td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
-      <tr><td class="m">1</td><td>Wiadomości wieczorne</td><td class="m">00:20:00</td><td>Podsumowanie dnia</td><td>codziennie 22:20</td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
-      <tr class="edit"><td class="m">4</td><td>Rozmowa dnia</td><td class="m">00:45:00</td><td>Gość w studiu BTB Info</td><td style="color:var(--yellow)">nie ma w harmonogramie</td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
-      <tr><td class="m">7</td><td>Magazyn sportowy</td><td class="m">01:00:00</td><td>Relacje i wyniki</td><td>pt 19:15</td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
-    </table>
-    <div class="hint">Nową audycję wstaw do ramówki w ErsatzTV: <a>Schedules → kanał → Add Schedule Item</a>, kolekcja z biblioteki „Na żywo”.</div>
-  </section>
 </main>
 
-<section class="view plan" id="v-plan" hidden>
-  <div>
-    <div class="toolbar">
-      <div class="ch-tabs" style="margin:0"><span class="sel">1 BTB 24</span><span>4 BTB Info</span><span>7 BTB Sport</span></div>
-      <button>‹</button><b>2–8 listopada 2026</b><button>›</button><button>Dziś</button>
-      <div class="grow"></div>
-      <div class="legend"><span><i style="background:#23272f;border:1px solid #2f343d"></i>ramówka ErsatzTV</span><span><i style="background:#4a1416;border:1px solid var(--red)"></i>audycja na żywo</span><span>⟳ cykliczna</span></div>
-      <button class="acc">＋ Zaplanuj audycję</button>
-    </div>
-    <div class="panel week">
-      <div class="wk"><div class="dh"></div><div class="dh"><b>pn</b> 2.11</div><div class="dh"><b>wt</b> 3.11</div><div class="dh"><b>śr</b> 4.11</div><div class="dh today"><b>cz</b> 5.11</div><div class="dh"><b>pt</b> 6.11</div><div class="dh"><b>sb</b> 7.11</div><div class="dh"><b>nd</b> 8.11</div></div>
-      <div class="hours"><span class="hl" style="top:0px">14:00</span><span class="hl" style="top:56px">15:00</span><span class="hl" style="top:112px">16:00</span><span class="hl" style="top:168px">17:00</span><span class="hl" style="top:224px">18:00</span><span class="hl" style="top:280px">19:00</span><span class="hl" style="top:336px">20:00</span><span class="hl" style="top:392px">21:00</span><span class="hl" style="top:448px">22:00</span><span class="hl" style="top:504px">23:00</span><div class="grid"><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div></div><div class="col today"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film: Ostatni pociąg</div><div class="ev lv rep" style="top:466px;height:18px"><b>Wiadomości wieczorne</b></div><div class="ev etv" style="top:486px;height:72px">Reportaż</div><div class="nowline" style="top:334px"></div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev lv rep" style="top:308px;height:26px"><b>Wiadomości</b>19:30–20:00</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:22px">Film</div><div class="ev lv clash" style="top:392px;height:82px"><b>Debata wyborcza</b>21:00–22:30 · jednorazowo</div><div class="ev etv" style="top:476px;height:82px">Film</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev etv" style="top:308px;height:26px">Magazyn</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:96px">Film</div><div class="ev etv" style="top:466px;height:92px">Reportaż</div></div><div class="col"><div class="ev etv" style="top:0px;height:138px">Seriale</div><div class="ev etv" style="top:140px;height:166px">Filmy dokumentalne</div><div class="ev etv" style="top:308px;height:26px">Magazyn</div><div class="ev etv" style="top:336px;height:30px">Pogoda · Reportaż</div><div class="ev etv" style="top:368px;height:22px">Film</div><div class="ev new" style="top:392px;height:54px"><b>Rozmowa dnia</b>nowa · 21:00–22:00</div><div class="ev etv" style="top:448px;height:110px">Film</div></div></div></div>
-    </div>
+<section class="view showsview" id="v-shows" hidden>
+  <div class="panel shows" style="padding:10px">
+    <div class="section-h"><h3>Audycje LIVE</h3><span><button>⟳ Odśwież z ErsatzTV</button> <button class="acc" id="add">＋ Nowa audycja LIVE</button></span></div>
+    <table>
+      <tr><th>Kanał</th><th>Tytuł (EPG)</th><th>Długość</th><th>W ErsatzTV</th><th>Kolekcja do harmonogramu</th><th>Najbliżej w ramówce</th><th></th></tr>
+      <tr><td class="m">1</td><td>Wiadomości</td><td class="m">00:30:00</td><td><span class="stt"><i class="ok">plik</i><i class="ok">biblioteka</i><i class="ok">kolekcja</i></span></td><td class="coll">LIVE · Wiadomości</td><td class="air">dziś 19:30 · pn–pt</td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
+      <tr><td class="m">1</td><td>Wiadomości wieczorne</td><td class="m">00:20:00</td><td><span class="stt"><i class="ok">plik</i><i class="ok">biblioteka</i><i class="ok">kolekcja</i></span></td><td class="coll">LIVE · Wiadomości wieczorne</td><td class="air">dziś 22:20</td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
+      <tr class="edit"><td class="m">4</td><td>Rozmowa dnia</td><td class="m">00:45:00</td><td><span class="stt"><i class="ok">plik</i><i class="ok">biblioteka</i><i class="ok">kolekcja</i></span></td><td class="coll">LIVE · Rozmowa dnia</td><td class="air none">⚠ nie ma w ramówce · <a style="color:var(--blue)">jak dodać?</a></td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
+      <tr><td class="m">7</td><td>Magazyn sportowy</td><td class="m">01:00:00</td><td><span class="stt"><i class="ok">plik</i><i class="no">skanuję…</i><i>kolekcja</i></span></td><td class="coll" style="color:var(--dim)">po skanie</td><td class="air" style="color:var(--dim)">–</td><td class="acts"><button>✎</button> <button>🗑</button></td></tr>
+    </table>
+    <div class="hint">Godzinę emisji ustawiasz w harmonogramie kanału w ErsatzTV: pozycja z kolekcją „LIVE · …”, start stały, tryb One. Resztę robi panel.</div>
   </div>
   <aside class="side">
-    <div class="panel upcoming">
-      <div class="section-h"><h3>Najbliższe na żywo · kanał 1</h3></div>
-      <div class="up"><div class="t">Wiadomości <span>dziś 19:30</span></div><div class="d">trwa · <span class="ok">studio na antenie</span></div></div>
-      <div class="up"><div class="t">Wiadomości wieczorne <span>dziś 22:20</span></div><div class="d">za 2 h 22 min · pn–pt</div></div>
-      <div class="up"><div class="t">Debata wyborcza <span>pt 21:00</span></div><div class="d">jednorazowo · <span class="warn">przykrywa „Film” 20:35–22:30</span></div></div>
-      <div class="up"><div class="t">Rozmowa dnia <span>nd 21:00</span></div><div class="d">szkic – niezapisana</div></div>
+    <div class="panel card">
+      <h3>Połączenie z ErsatzTV</h3>
+      <div class="kv">
+        <span>adres</span><span>http://ersatztv:8409</span><span class="ok">●</span>
+        <span>klucz API</span><span>z api-secrets.json</span><span class="ok">●</span>
+        <span>biblioteka</span><span>„Na żywo” (ID 7) · /config/vizrs-live</span><span class="ok">●</span>
+      </div>
+      <p>ID biblioteki podajesz raz – ErsatzTV nie udostępnia listy bibliotek przez API (widać je w adresie strony biblioteki).</p>
     </div>
-    <div class="panel log">
-      <div class="section-h"><h3>Jak to działa</h3></div>
-      W czasie audycji kanał nadaje studio (albo planszę, gdy studio nie nadaje), a ramówka ErsatzTV biegnie dalej pod spodem.<br>
-      EPG z audycjami: <b>http://cg:7700/epg.xml</b> (EPG ErsatzTV + plan panelu).
+    <div class="panel card">
+      <h3>Przebuduj ramówkę</h3>
+      <p>Po zmianie harmonogramu w ErsatzTV przebuduj playout kanału, żeby audycje trafiły do EPG.</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button>⟲ kanał 1</button><button>⟲ kanał 4</button><button>⟲ kanał 7</button></div>
     </div>
   </aside>
 </section>
+
+<div class="modal-bg" id="nm" hidden>
+  <div class="panel modal wide">
+    <div class="h"><b>Nowa audycja LIVE</b><button>✕</button></div>
+    <div class="form">
+      <label>Kanał</label><select><option>4 – BTB Info</option></select>
+      <label>Tytuł</label><input value="Rozmowa dnia">
+      <div class="note">widoczny w EPG i jako {title} w grafice VizRS</div>
+      <label>Długość</label><input value="00:45:00" style="width:110px;font-family:var(--mono)">
+      <label>Opis</label><textarea rows="2">Gość w studiu BTB Info</textarea>
+      <label>Bez studia</label><select><option>czerń (domyślna)</option><option>plansza-btb.png</option></select>
+      <div class="note">co idzie w czasie audycji, gdy studio nie nadaje</div>
+    </div>
+    <div class="f"><button>Anuluj</button><button class="acc" id="create">Utwórz w ErsatzTV</button></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="dm" hidden>
+  <div class="panel modal wide">
+    <div class="h"><b>„Rozmowa dnia” jest w ErsatzTV</b><button>✕</button></div>
+    <div style="padding:14px">
+      <ol class="steps">
+        <li><span class="ic">✓</span>Audycja zapisana<small>vizrs-live/4-rozmowa-dnia.yml</small></li>
+        <li><span class="ic">✓</span>Biblioteka „Na żywo” przeskanowana<small>Remote Stream · 00:45:00</small></li>
+        <li><span class="ic">✓</span>Kolekcja utworzona<small>LIVE · Rozmowa dnia</small></li>
+        <li><span class="ic todo">4</span><b>Wstaw do harmonogramu w ErsatzTV</b><small>ostatni krok</small></li>
+      </ol>
+    </div>
+    <div class="etv-box">
+      <h4>W ErsatzTV: Schedules → BTB Info → Add Schedule Item</h4>
+      <ol>
+        <li>Start Type: <span class="val">Fixed</span>, godzina np. <span class="val">21:00</span>, Fixed Start Time Behavior: <span class="val">Strict</span></li>
+        <li>Collection Type: <span class="val">Smart Collection</span> → <span class="val">LIVE · Rozmowa dnia</span></li>
+        <li>Playout Mode: <span class="val">One</span></li>
+        <li>opcjonalnie Graphics Elements: <span class="val">VizRS</span></li>
+        <li><b>Save Schedule Items</b>, potem wróć tu i kliknij „Przebuduj ramówkę”</li>
+      </ol>
+      <div class="row"><button class="acc">↗ Otwórz harmonogram kanału 4 w ErsatzTV</button><button>⟲ Przebuduj ramówkę kanału 4</button></div>
+    </div>
+    <div class="f"><span class="hint" style="margin:0">Panel sprawdzi w EPG, czy audycja jest w ramówce, i pokaże najbliższą emisję.</span><button>Gotowe</button></div>
+  </div>
+</div>
+
 
 <div class="modal-bg" id="pm" hidden>
   <div class="panel modal wide">
@@ -319,22 +338,25 @@ tr.edit td { background: #1f2229; }
       <label>Plansza</label><select><option>czerń (domyślna)</option><option>plansza-btb.png</option></select>
       <div class="note">gdy studio nie nadaje w czasie audycji</div>
     </div>
-    <div class="f"><button class="danger">🗑 Usuń</button><span><button>Anuluj</button> <button class="acc">Zapisz i skanuj</button></span></div>
+    <div class="f"><button class="danger">🗑 Usuń</button><span><button>Anuluj</button> <button class="acc">Zapisz w ErsatzTV</button></span></div>
   </div>
 </div>
 <script>
 function route() {
-  const h = location.hash, plan = h.startsWith("#plan") || h === "#zaplanuj";
-  document.getElementById("v-live").hidden = plan;
-  document.getElementById("v-plan").hidden = !plan;
-  document.getElementById("t-live").classList.toggle("sel", !plan);
-  document.getElementById("t-plan").classList.toggle("sel", plan);
+  const h = location.hash, shows = ["#audycje", "#nowa", "#utworzona", "#edycja"].includes(h);
+  document.getElementById("v-live").hidden = shows;
+  document.getElementById("v-shows").hidden = !shows;
+  document.getElementById("t-live").classList.toggle("sel", !shows);
+  document.getElementById("t-shows").classList.toggle("sel", shows);
   document.getElementById("m").hidden = h !== "#edycja";
-  document.getElementById("pm").hidden = h !== "#zaplanuj";
+  document.getElementById("nm").hidden = h !== "#nowa";
+  document.getElementById("dm").hidden = h !== "#utworzona";
 }
 addEventListener("hashchange", route); route();
-document.querySelectorAll("#v-plan .toolbar button.acc").forEach(b => b.onclick = () => location.hash = "#zaplanuj");
-document.querySelectorAll(".modal .h button, .modal .f button:not(.acc)").forEach(b => b.onclick = () => history.back());
+document.getElementById("add").onclick = () => location.hash = "#nowa";
+document.getElementById("create").onclick = () => location.hash = "#utworzona";
+document.querySelectorAll("#v-shows .acts button:first-child").forEach(b => b.onclick = () => location.hash = "#edycja");
+document.querySelectorAll(".modal .h button, .modal .f > button:not(.acc), .modal .f span > button:not(.acc)").forEach(b => b.onclick = () => location.hash = "#audycje");
 </script>
 </body>
 </html>
