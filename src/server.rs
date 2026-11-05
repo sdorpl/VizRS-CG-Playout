@@ -17,7 +17,10 @@
 //   GET  /ffmpeg/frames?session=N[&fps=25/1][&area=1]
 //                         raw yuva420p frames of that session for ffmpeg:
 //                         the channel, or with area=1 its graphics areas
-//   GET  /health          captures and sessions
+//   POST /ingest?channel=1, GET /ingest?channel=1, GET /ingest/state?channel=1
+//                         live ingest: a live source of the channel in, out
+//                         to the overlay, its state (src/ingest.rs)
+//   GET  /health          captures, sessions and live sources
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -33,6 +36,7 @@ use crate::capture::{Capture, CaptureMode, CaptureOptions, IDLE, find_browser};
 use crate::config::Config;
 use crate::frames::{Empty, Source};
 use crate::http::{self, Request};
+use crate::ingest::Ingest;
 use crate::json::{self, Value};
 use crate::native::{self, Renderer};
 use crate::overlay::quote_plus;
@@ -153,6 +157,7 @@ pub struct Server {
     sessions: Shared,
     count: AtomicUsize,
     empty: Empty,
+    ingest: Ingest,
 }
 
 impl Server {
@@ -166,7 +171,9 @@ impl Server {
             crate::warn!("{warning}");
         }
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
+        let ingest = Ingest::new(&config.ingest_token);
         Arc::new(Server {
+            ingest,
             config: Arc::new(config),
             ads: Arc::new(ads),
             browser,
@@ -271,6 +278,7 @@ impl Server {
             ("sessions", (self.count.load(Ordering::Relaxed) as u64).into()),
             ("captures", Value::Array(captures)),
             ("overlay", sessions.overlay.iter().map(String::as_str).collect::<Vec<_>>().into()),
+            ("ingest", if self.ingest.enabled() { self.ingest.health() } else { Value::Null }),
         ])
     }
 
@@ -291,6 +299,9 @@ impl Server {
                 self.frames_request(&request, stream);
                 Ok(())
             }
+            ("GET", "/ingest/state") => self.ingest.state_request(&request, stream),
+            ("GET", "/ingest") => self.ingest.read_request(&request, stream),
+            ("POST", "/ingest") => self.ingest.source_request(&request, stream),
             ("POST", "/etv") => {
                 self.script_session(&request, stream);
                 Ok(())

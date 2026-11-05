@@ -35,5 +35,6 @@
   "clock_offset_seconds": 0,
   "tape": false,
   "renderer": "auto",
-  "renderer_bin": ""
+  "renderer_bin": "",
+  "ingest_token": ""
 }

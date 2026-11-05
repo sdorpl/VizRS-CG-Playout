@@ -14,6 +14,8 @@ obok niezmienionego ErsatzTV:
 - **Wtapianie (burn-in)** – strona `/output` VizRS renderowana bezgłowym
   Chromium (bez GPU) i nakładana na obraz w ffmpeg ErsatzTV (nakładka
   ffmpeg) albo przez element grafiki ErsatzTV.
+- **Live ingest** – sygnał RTMP/SRT przejmuje kanał w miejsce harmonogramu
+  (z grafiką VizRS), a po jego końcu program wraca (DOKUMENTACJA §1).
 
 Sidecar to jeden plik binarny w Ruście (`vizrs-cg`) obok bezgłowego Chromium;
 wydania: obraz `ghcr.io/sdorpl/vizrs-cg` (amd64, arm64) i archiwa dla Linuksa

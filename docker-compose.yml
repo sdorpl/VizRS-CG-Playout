@@ -6,6 +6,10 @@
 #   VizRS Trio   http://<server>:8788/trio   token vizrs-operator-change-me
 #   Sidecar      http://<server>:7700/health
 #
+# Live ingest (RTMP/SRT takes a channel over, DOKUMENTACJA §1): set VIZRS_INGEST_TOKEN
+# and VIZRS_INGEST (e.g. "1=rtmp://0.0.0.0:1936/live/<key>"), then
+#   docker compose --profile ingest up -d
+#
 # The first start fills empty volumes from seed/: the VizRS show "newsroom-info24"
 # and ErsatzTV channel 1 with the VizRS element, test videos in seed/media.
 # Other channels: Channel → Deco → Graphics Elements → add "VizRS".
@@ -126,6 +130,8 @@ services:
       VIZRS_ETV_URL: http://ersatztv:8409
       VIZRS_CLIENT_DIR: /vizrs-client
       VIZRS_SYNC_SECONDS: ${VIZRS_SYNC_SECONDS:-60}
+      # Live ingest: shared secret of the ingest listeners; empty = live ingest off.
+      VIZRS_INGEST_TOKEN: ${VIZRS_INGEST_TOKEN:-}
     volumes:
       - ersatztv-config:/etv-config
       - vizrs-client:/vizrs-client
@@ -162,6 +168,9 @@ services:
       # frames (framerate instead of fps, rate from ffprobe): 60/30 fps media on
       # a 50 or 25 fps channel move evenly. Empty = fps.
       VIZRS_FFMPEG_FPS_BLEND: ${VIZRS_FFMPEG_FPS_BLEND-1}
+      # 1 = a live source of the channel (sidecar, live ingest) takes the transcode
+      # over; nothing changes while the sidecar has ingest off. Empty = never.
+      VIZRS_FFMPEG_INGEST: ${VIZRS_FFMPEG_INGEST-1}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config
@@ -175,6 +184,35 @@ services:
       # ETV_PORT=127.0.0.1:8409 = local only, behind a reverse proxy on the host
       # (containers reaching it through the Docker host then lose it).
       - "${ETV_PORT:-8409}:8409"
+
+  # Live ingest listeners (profile "ingest"): ffmpeg of the ErsatzTV image waits for
+  # RTMP/SRT publishers and hands them to the sidecar, without transcoding.
+  ingest:
+    image: ghcr.io/ersatztv/legacy:latest
+    profiles: ["ingest"]
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    restart: unless-stopped
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      cg:
+        condition: service_started
+    entrypoint: ["/vizrs/vizrs-ffmpeg", "vizrs-ingest"]
+    environment:
+      <<: *timezone
+      VIZRS_CG_URL: http://cg:7700
+      VIZRS_INGEST_TOKEN: ${VIZRS_INGEST_TOKEN:-}
+      # channel=URL, separated by ";": rtmp://0.0.0.0:1936/live/<key> (the key is the
+      # password), srt://0.0.0.0:9000?passphrase=<10-79 characters> (MPEG-TS, mode=caller).
+      VIZRS_INGEST: ${VIZRS_INGEST:-1=rtmp://0.0.0.0:1936/live/change-me}
+      # A publisher silent this long has ended (ms).
+      VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-2000}
+    volumes:
+      - vizrs-client:/vizrs:ro
+    ports:
+      - "${INGEST_RTMP_PORT:-1936}:1936"
+      - "${INGEST_SRT_PORT:-9000}:9000/udp"
 
 volumes:
   vizrs-data:

@@ -41,6 +41,11 @@
 //     VIZRS_FFMPEG_PRESET  x264/x265 preset, e.g. veryfast (empty: ErsatzTV's)
 //     VIZRS_FFMPEG_READRATE_CATCHUP  catch-up rate of HLS inputs, e.g. 2 (empty: none)
 //     VIZRS_FFMPEG_FPS_BLEND  1 = blend frames when converting the media's rate
+//     VIZRS_FFMPEG_INGEST  1 = live ingest of the sidecar takes the channel over
+//
+// With VIZRS_FFMPEG_INGEST=1 a transcode to HLS of a channel whose live
+// source is on (sidecar `/ingest/state`) plays that source in its place
+// (src/takeover.rs), with the graphics overlaid as on the schedule.
 //
 // A static binary, so it runs in the ErsatzTV image of any architecture
 // without extra packages. A canvas over https goes to plain ffmpeg.
@@ -51,7 +56,8 @@ use std::net::{Shutdown, TcpStream};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
@@ -62,6 +68,7 @@ use crate::http::percent_decode;
 use crate::json::{self, Value};
 use crate::net::{Url, connect, error, read_head, status_of};
 use crate::sys;
+use crate::takeover::{self, Job, Sink};
 
 const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
 const CLAIM_WAIT_MS: u32 = 2000;
@@ -108,6 +115,8 @@ pub struct Settings {
     pub catchup: String,
     /// Blend frames in the media's frame rate conversion.
     pub blend: bool,
+    /// Live ingest of the sidecar takes transcodes to HLS over (src/takeover.rs).
+    pub ingest: bool,
 }
 
 impl Settings {
@@ -120,6 +129,7 @@ impl Settings {
             preset: var("VIZRS_FFMPEG_PRESET").trim().to_owned(),
             catchup: var("VIZRS_FFMPEG_READRATE_CATCHUP").trim().to_owned(),
             blend: var("VIZRS_FFMPEG_FPS_BLEND").trim() == "1",
+            ingest: var("VIZRS_FFMPEG_INGEST").trim() == "1",
         }
     }
 }
@@ -523,6 +533,20 @@ fn relay(socket: TcpStream, mut pipe: impl Write, frame: usize, reconnect: Optio
     }
 }
 
+/// The input of the raw graphics frames at `pipe:<fd>`, with its options.
+fn raw_input(frames: &Frames, fd: i32) -> Vec<OsString> {
+    let size = format!("{}x{}", frames.width, frames.height);
+    let raw = ["-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", &size, "-framerate", &frames.rate];
+    let mut out: Vec<OsString> = raw.iter().map(OsString::from).collect();
+    // Undeclared, the overlay negotiates an unknown colour space for the whole
+    // chain and swscale sends every scaled frame of the media through RGB.
+    if !frames.matrix.is_empty() {
+        out.extend(["-colorspace", &frames.matrix, "-color_range", "tv"].iter().map(OsString::from));
+    }
+    out.extend(["-i".into(), format!("pipe:{fd}").into()]);
+    out
+}
+
 /// The command with the canvas input replaced by raw frames from `pipe:<fd>`.
 pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames) -> Vec<OsString> {
     let options = &args[canvas.start..canvas.index];
@@ -536,15 +560,7 @@ pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames
         out.push(options[i].clone());
         i += 1;
     }
-    let size = format!("{}x{}", frames.width, frames.height);
-    let raw = ["-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", &size, "-framerate", &frames.rate];
-    out.extend(raw.iter().map(OsString::from));
-    // Undeclared, the overlay negotiates an unknown colour space for the whole
-    // chain and swscale sends every scaled frame of the media through RGB.
-    if !frames.matrix.is_empty() {
-        out.extend(["-colorspace", &frames.matrix, "-color_range", "tv"].iter().map(OsString::from));
-    }
-    out.extend(["-i".into(), format!("pipe:{fd}").into()]);
+    out.extend(raw_input(frames, fd));
     out.extend_from_slice(&args[canvas.index + 2..]);
     // Frames of graphics areas: each overlaid at its place (checked by `with_position` beforehand).
     let at_origin = matches!(frames.areas.as_slice(), [(a, _)] if (a.x, a.y) == (0, 0));
@@ -699,10 +715,145 @@ fn plain(settings: &Settings, args: Vec<OsString>) -> ! {
     std::process::exit(127)
 }
 
+/// The transcode to HLS that live ingest can take over, with the channel's
+/// live state then (`/ingest/state`: on, audio); None without
+/// `VIZRS_FFMPEG_INGEST=1` or with ingest off in the sidecar.
+fn live_job(settings: &Settings, args: &[OsString], channel: Option<&str>) -> Option<(Job, bool, bool)> {
+    if !settings.ingest || settings.sidecar.is_empty() {
+        return None;
+    }
+    let job = Job::of(args, channel)?;
+    let (enabled, on, audio) = takeover::state(&settings.sidecar, &job.channel)?;
+    enabled.then_some((job, on, audio))
+}
+
+/// The real ffmpeg with `args`, graphics at `fd`, the forwarded signals unblocked.
+fn spawn(settings: &Settings, args: Vec<OsString>, fd: Option<i32>) -> io::Result<Child> {
+    let mut command = Command::new(&settings.ffmpeg);
+    command.args(args);
+    let fd = fd.unwrap_or(-1);
+    // SAFETY: only async-signal-safe calls in the forked child.
+    unsafe {
+        command.pre_exec(move || sys::ffmpeg_child_setup(fd));
+    }
+    command.spawn()
+}
+
+/// The live run of the piece (src/takeover.rs), adjusted as every command.
+fn live_command(
+    settings: &Settings,
+    args: &[OsString],
+    job: &Job,
+    elapsed: f64,
+    source: &takeover::Source,
+    graphics: Option<(&Frames, i32)>,
+) -> Vec<OsString> {
+    let full = graphics.filter(|(f, _)| f.areas.is_empty()).map(|(f, _)| (f.width, f.height));
+    let rate = graphics.map_or("", |(f, _)| f.rate.as_str());
+    let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, full, rate);
+    let input = graphics.map(|(frames, fd)| takeover::Graphics { input: raw_input(frames, fd), areas: &frames.areas });
+    adjusted(takeover::live_args(args, job, elapsed, source, &format, input.as_ref()), settings)
+}
+
+/// Runs the piece through `takeover::sequence`, the signals of ErsatzTV forwarded to the run of the moment.
+fn sequence(
+    settings: &Settings,
+    job: &Job,
+    on: bool,
+    audio: bool,
+    run: &dyn Fn(f64, Option<&takeover::Source>) -> io::Result<Child>,
+) -> i32 {
+    let current = Arc::new(AtomicU32::new(0));
+    let stopping = Arc::new(AtomicBool::new(false));
+    sys::block_signals(&FORWARDED);
+    {
+        let (current, stopping) = (Arc::clone(&current), Arc::clone(&stopping));
+        std::thread::spawn(move || {
+            loop {
+                let signal = sys::wait_signal(&FORWARDED);
+                stopping.store(true, Ordering::Relaxed);
+                let pid = current.load(Ordering::Relaxed);
+                if pid != 0 {
+                    sys::send_signal(pid, signal);
+                }
+            }
+        });
+    }
+    let runner = takeover::Runner { sidecar: &settings.sidecar, run, current: &current, stopping: &stopping };
+    takeover::sequence(&runner, job, on, audio)
+}
+
+/// The piece with the graphics of the sidecar and live ingest: every run gets
+/// its own pipe of the same frame stream.
+fn with_graphics(
+    settings: &Settings,
+    args: &[OsString],
+    canvas: &Canvas,
+    job: &Job,
+    (on, audio): (bool, bool),
+    (frames, socket, place): (Frames, TcpStream, bool),
+    drain: Drain,
+) -> i32 {
+    let frame = frame_bytes(frames.width, frames.height);
+    let (sink, control) = Sink::new(frame);
+    let area = if place { "&area=1" } else { "" };
+    let resume = (!frames.resume.is_empty()).then(|| format!("/ffmpeg/resume?{}&fps={}{area}", frames.resume, quote_plus(&frames.rate)));
+    let sidecar = settings.sidecar.clone();
+    std::thread::spawn(move || {
+        let reconnect = |path: &str| {
+            let (sender, receiver) = mpsc::channel();
+            let (sidecar, path) = (sidecar.clone(), path.to_owned());
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(RECONNECT);
+                    if let Ok(socket) = open_frames(&sidecar, &path) {
+                        let _ = sender.send(socket);
+                        return;
+                    }
+                }
+            });
+            receiver
+        };
+        let again = resume.as_deref().map(|path| move || reconnect(path));
+        relay(socket, sink, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<TcpStream>));
+    });
+    let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
+        let (reader, writer) = io::pipe()?;
+        let fd = reader.as_raw_fd();
+        let command = match source {
+            Some(source) => live_command(settings, args, job, elapsed, source, Some((&frames, fd))),
+            None => adjusted(job.program(&overlay_args(args, canvas, fd, &frames), elapsed), settings),
+        };
+        let child = spawn(settings, command, Some(fd))?;
+        drop(reader);
+        control.attach(writer);
+        Ok(child)
+    };
+    let code = sequence(settings, job, on, audio, &run);
+    // The relay stops at its next frame, closing the frame stream: the sidecar ends the script.
+    control.close();
+    std::thread::sleep(SCRIPT_END);
+    drain.close();
+    code
+}
+
 /// The overlay: `vizrs-ffmpeg <ffmpeg arguments>`; returns the exit code.
 pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
+    let canvas = find_canvas(&args).filter(|_| !settings.sidecar.is_empty());
+    let live = live_job(settings, &args, canvas.as_ref().map(|c| c.channel.as_str()));
     // Not a canvas transcode: plain ffmpeg, at the forced rate, preset and catch-up rate when set.
-    let Some(canvas) = find_canvas(&args).filter(|_| !settings.sidecar.is_empty()) else { plain(settings, args) };
+    let Some(canvas) = canvas else {
+        return match live {
+            Some((job, on, audio)) => {
+                let program = |elapsed: f64| adjusted(job.program(&args, elapsed), settings);
+                sequence(settings, &job, on, audio, &|elapsed, source| match source {
+                    Some(source) => spawn(settings, live_command(settings, &args, &job, elapsed, source, None), None),
+                    None => spawn(settings, program(elapsed), None),
+                })
+            }
+            None => plain(settings, args),
+        };
+    };
 
     let headers = parse_headers(&args[canvas.start..canvas.index]);
     let rate = headers.iter().find(|(name, _)| name == "x-etv-frame-rate").map_or("", |(_, v)| v.as_str()).to_owned();
@@ -718,6 +869,9 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
         }
     };
 
+    if let Some((job, on, audio)) = live {
+        return with_graphics(settings, &args, &canvas, &job, (on, audio), (frames, socket, place), drain);
+    }
     let (reader, writer) = match io::pipe() {
         Ok(pipe) => pipe,
         Err(e) => {

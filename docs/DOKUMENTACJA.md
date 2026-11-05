@@ -415,6 +415,7 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_FFMPEG_PRESET` | – (compose A1: `veryfast`) | preset kodera programowego (libx264, libx265), np. `superfast`; puste = preset ErsatzTV |
 | `VIZRS_FFMPEG_READRATE_CATCHUP` | – (compose: `2`) | tempo nadrabiania strumienia MPEG-TS kanału po przestoju (`-readrate_catchup`); puste = bez nadrabiania |
 | `VIZRS_FFMPEG_FPS_BLEND` | – (compose: `1`) | `1` = zmiana klatkażu materiału szybszego od kanału z mieszaniem klatek (`framerate` zamiast `fps`; klatkaż z `ffprobe`); puste = `fps` |
+| `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
 
 #### Nadrabianie strumienia MPEG-TS (`VIZRS_FFMPEG_READRATE_CATCHUP`)
 
@@ -525,6 +526,93 @@ animowanym pasku 1080p z ~200% CPU do kilku procent). Pierwsza sesja
 wznawia je i od razu dostaje świeżą klatkę. Przerwa między pozycjami
 harmonogramu jest dużo krótsza, więc w trakcie emisji pauza nie występuje.
 
+### Live ingest
+
+Jak w VizRS ffPlayout System, kanał można przełączyć z harmonogramu na
+przychodzący sygnał na żywo (RTMP albo SRT). ErsatzTV zostaje bez zmian:
+sygnał przyjmuje osobna usługa, sidecar trzyma jego stan, a podmianę obrazu
+robi nakładka ffmpeg.
+
+```
+OBS/koder ── RTMP/SRT ──► vizrs-ffmpeg vizrs-ingest ── POST /ingest (MPEG-TS) ──► sidecar
+                           (ffmpeg -listen, -c copy)                               │
+ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state, GET /ingest ◄────┘
+                                  └─ ta sama playlista HLS: kawałek │ live │ kawałek
+```
+
+1. **Odbiór** (`vizrs-ffmpeg vizrs-ingest`, [src/listener.rs](../src/listener.rs)):
+   dla każdego wpisu `kanał=URL` z `VIZRS_INGEST` ffmpeg czeka na nadawcę
+   (RTMP `-listen 1`, SRT `mode=listener`), przepakowuje strumień do MPEG-TS
+   bez transkodowania (`-c copy`; pierwszy obraz i pierwszy dźwięk) i wysyła
+   go do sidecara (`POST /ingest?channel=N`, `Authorization: Bearer
+   <VIZRS_INGEST_TOKEN>`). Nadawca, który przez `VIZRS_INGEST_IDLE_MS`
+   (domyślnie 2000 ms) nic nie wyśle, jest rozłączany, a ffmpeg czeka na
+   następnego. Sidecar nieosiągalny = dane przepadają, a odbiornik łączy się
+   ponownie co sekundę (nadawca zostaje). W RTMP ostatni człon ścieżki to
+   klucz strumienia: ffmpeg przyjmuje każdą nazwę i tylko ostrzega, więc
+   odbiornik sam rozłącza nadawcę z innym kluczem (`wrong stream key` w logu).
+   SRT przyjmuje MPEG-TS (nadawca `srt://serwer:9000?mode=caller`); hasło
+   ustawia się w adresie (`passphrase=…`, 10–79 znaków, ten sam u nadawcy).
+   MPEG-TS ffmpeg analizuje 2 s (`-analyzeduration`, domyślnie 5 s – o tyle
+   późniejsze przejęcie); ścieżka, która zacznie się później, przepada
+   (dźwięk: cisza do końca sygnału). Każdy pakiet idzie od razu (`-flush_packets 1`).
+   Do 16 odbiorników, każdy z innym adresem; kilka może zasilać jeden kanał.
+2. **Stan w sidecarze** ([src/ingest.rs](../src/ingest.rs)): kanał jest „live”
+   od pierwszej klatki kluczowej obrazu (flaga *random access* w MPEG-TS albo
+   IDR/SPS H.264, IRAP/VPS/SPS HEVC) do końca połączenia albo 5 s ciszy.
+   Sidecar trzyma ostatnie PAT i PMT oraz strumień od ostatniej klatki
+   kluczowej (do 32 MB), więc czytelnik dołącza od razu od obrazu. Jeden sygnał
+   na kanał: drugi, gdy pierwszy trwa, dostaje 409 (aktywne przejęcie nie jest
+   wywłaszczane, jak w ffPlayout). Bez `ingest_token` (`VIZRS_INGEST_TOKEN`)
+   ingest jest wyłączony, a `POST /ingest` odpowiada 404.
+   `GET /ingest/state?channel=N` → `{"enabled":true,"live":true,"audio":true,
+   "video":"h264","seconds":12}`, `/health` → `ingest` (lista kanałów z sygnałem,
+   `null` przy wyłączonym ingest).
+3. **Przejęcie** (`VIZRS_FFMPEG_INGEST=1` w ErsatzTV, [src/takeover.rs](../src/takeover.rs)):
+   nakładka ffmpeg pyta sidecara o stan kanału przy każdym transkodowaniu
+   kawałka do HLS (`-f hls` z `-t`, wideo kodowane, nie kopiowane). Kanał to
+   kanał płótna grafiki, a bez płótna (reklama bez elementu VizRS) katalog
+   playlisty (`/transcode/<kanał>/`). Przy włączonym ingest kawałek idzie jako
+   ciąg przebiegów ffmpeg do tej samej playlisty (ErsatzTV pisze ją z
+   `append_list`):
+   - komenda ErsatzTV kawałka; gdy kanał przechodzi na live, nakładka kończy ją
+     `SIGINT` (ffmpeg zamyka i dopisuje bieżący segment, co ok. 250 ms
+     sprawdzenie stanu);
+   - przebieg live: wejście `GET /ingest?channel=N`, skalowanie z zachowaniem
+     proporcji i czarne pasy do rozmiaru kanału, klatkaż kanału, dźwięk 48 kHz
+     stereo (bez ścieżki dźwięku: cisza), grafika VizRS nałożona jak w kawałku
+     (te same obszary, §1, Obszar grafiki), a koder, jego opcje, `-r` i opcje
+     HLS z komendy ErsatzTV; trwa do końca sygnału albo kawałka;
+   - po zejściu sygnału znowu komenda kawałka od miejsca, w którym jest już
+     harmonogram (`-ss` przesunięte o czas, który kawałek wyprodukował).
+   Każdy przebieg dostaje `-t` z pozostałym czasem i `-output_ts_offset`
+   zwiększony o wyprodukowany czas (z EXTINF nowych segmentów playlisty, tak
+   jak liczy go ErsatzTV), więc znaczniki czasu idą dalej jak z jednego
+   ffmpeg, a kawałek kończy się dokładnie wtedy, kiedy ErsatzTV tego oczekuje.
+   Live zastępuje harmonogram, nie przesuwa go: program po powrocie idzie
+   od bieżącego miejsca, a ominięta część przepada (w ffPlayout program był
+   wstrzymywany). Kawałek, który zaczyna się w trakcie live, od razu idzie
+   z sygnału.
+
+Rozmiar kanału dla przebiegu live: najnowszy segment w katalogu playlisty
+(`ffprobe`), klatki grafiki całego kanału, `pad`/`scale` z filtrów ErsatzTV,
+w ostateczności 1920×1080; klatkaż: `VIZRS_FFMPEG_FPS`, `-r` wyjścia, klatki
+grafiki, 25. Przy koderze VAAPI i Vulkan obraz jest wysyłany do karty
+(`format=nv12,hwupload` z urządzeniem z komendy ErsatzTV), przy QSV podany
+w NV12; NVENC i kodery programowe biorą go wprost. Opcje dekodera materiału
+(`-hwaccel` itd.) przebieg live pomija: sygnał dekoduje się programowo.
+
+Opóźnienie: przejęcie widać po czasie, o który ErsatzTV wyprzedza zegar
+(bufor odtwarzacza, `lead_seconds`), plus dołączenie od ostatniej klatki
+kluczowej sygnału (GOP nadawcy, ustaw 1–2 s). Kawałek z kopiowanym wideo
+(`-c:v copy`, tryb kopiowania ErsatzTV) live nie przejmuje.
+
+Uwaga: sygnał live wchodzi na antenę bez potwierdzenia operatora, więc
+porty odbiorników otwieraj tylko z kluczem RTMP albo hasłem SRT (w compose
+przykładowy klucz `change-me`), najlepiej tylko dla zaufanych adresów.
+`GET /ingest` i `/ingest/state` nie wymagają tokenu, jak reszta API sidecara
+(`/ffmpeg/frames`): portu 7700 nie wystawiaj publicznie.
+
 ## 2. Odpowiedniki w VizRS ffPlayout System
 
 VizRS ffPlayout System jest od 2026-10-24 archiwum: nie jest rozwijany i
@@ -543,6 +631,9 @@ szablony komend; nowe funkcje VizRS CG Playout nie mają już odpowiednika tam.
 | `{next_*}` z playlisty | z wpisów EPG ErsatzTV (`epg_entries: 3`) |
 | przechwytywanie co n-tą klatkę Chromium, wtapianie aktualnej grafiki w każdą klatkę | to samo (§1, płynność animacji), plus zrzut stanu końcowego |
 | brak – grafika zawsze w rozmiarze kanału | `render_size` / `&render=` (rozmiar renderowania grafiki, §1) |
+| live ingest: odbiorniki RTMP/SRT kanału, przejęcie od pierwszej klatki obrazu, `idle_timeout_ms` (2 s) | `VIZRS_INGEST` (`kanał=URL`) usługi `ingest`, `VIZRS_INGEST_IDLE_MS`; przejęcie w nakładce ffmpeg (`VIZRS_FFMPEG_INGEST`, §1, Live ingest) |
+| program wstrzymany na czas live | program idzie dalej według zegara (harmonogram ErsatzTV), część zastąpiona przez live przepada |
+| priorytety odbiorników kanału | brak: pierwszy sygnał kanału trzyma antenę do końca |
 
 ## 3. Komendy i symbole zastępcze
 
@@ -906,6 +997,29 @@ Obraz sidecara ma `tzdata` i sam ustawia `TZ=Europe/Warsaw`, więc ta sama
 strefa obowiązuje też poza tym compose (np. `docker run`). Inną strefę daje
 tylko zmiana kotwicy w compose.
 
+### Live ingest w Dockerze
+
+Odbiorniki (§1, Live ingest) to usługa `ingest` w profilu `ingest`: obraz
+ErsatzTV (jego ffmpeg, bez dodatkowego pobierania) z programem
+`/vizrs/vizrs-ffmpeg vizrs-ingest` z wolumenu `vizrs-client`. W `.env`:
+
+```sh
+VIZRS_INGEST_TOKEN=<długi losowy tekst>              # sidecar i odbiorniki
+VIZRS_INGEST=1=rtmp://0.0.0.0:1936/live/<klucz>      # kilka: "1=rtmp://…; 2=srt://0.0.0.0:9000?passphrase=…"
+# INGEST_RTMP_PORT=1936, INGEST_SRT_PORT=9000 (UDP) – porty na hoście
+```
+
+potem `docker compose --profile ingest up -d`. Nadawca (OBS: **Ustawienia →
+Strumień → Własny**): serwer `rtmp://<serwer>:1936/live`, klucz `<klucz>`;
+GOP 1–2 s. ErsatzTV ma w compose `VIZRS_FFMPEG_INGEST=1`, a ścieżką FFmpeg
+musi być nakładka (`/vizrs/vizrs-ffmpeg`, wyżej). Bez tokenu sidecar ma ingest
+wyłączony, a odbiorniki nie startują (`VIZRS_INGEST_TOKEN is empty` w logu).
+Pierwszy start po aktualizacji może zastać w wolumenie starą nakładkę bez
+trybu `vizrs-ingest` – usługa restartuje się, aż `cg` ją podmieni (§4,
+Synchronizacja z ErsatzTV). Odbiornik tylko przepakowuje strumień (ułamek
+rdzenia); CPU kosztuje przebieg live w ErsatzTV: dekodowanie sygnału
+w miejsce dekodowania materiału.
+
 ### Synchronizacja z ErsatzTV
 
 Sidecar sam utrzymuje integrację, więc jego wersja zawsze zgadza się z klientami:
@@ -1156,9 +1270,14 @@ vizrs-cg config.json      # albo CONFIG=config.json vizrs-cg
   "clock_offset_seconds": 0,
   "tape": false,
   "renderer": "chromium",
-  "renderer_bin": ""
+  "renderer_bin": "",
+  "ingest_token": ""
 }
 ```
+
+`ingest_token` (env `VIZRS_INGEST_TOKEN`; ustawiona pusta zmienna wyłącza
+token z pliku): wspólny sekret odbiorników live ingest; puste = live ingest
+wyłączony (§1, Live ingest).
 
 Opcje `etv_config`, `etv_url`, `client_source`, `client_dir`, `sync_seconds`
 (env `VIZRS_ETV_CONFIG`, `VIZRS_ETV_URL`, `VIZRS_CLIENT_SOURCE`, `VIZRS_CLIENT_DIR`,
@@ -1193,6 +1312,7 @@ kanału), `VIZRS_CAPTURE_MODE` (`frames` albo `screencast`, niżej),
 `VIZRS_RENDERER` (`chromium`, `native` albo `auto` – kto rysuje grafikę, §1;
 błędna wartość = `chromium` z ostrzeżeniem), `VIZRS_RENDERER_BIN` (program
 `vizrs-render`; puste = obok sidecara albo w `PATH`),
+`VIZRS_INGEST_TOKEN` (live ingest, §1),
 `VIZRS_BROWSER`, `VIZRS_BROWSER_NO_SANDBOX=1` (root / kontenery),
 `VIZRS_BROWSER_ARGS` (dodatkowe flagi Chromium, rozdzielone spacją),
 `DEBUG=1`.
@@ -1302,6 +1422,16 @@ potomny dziedziczy maskę, więc bez jej wyczyszczenia ffmpeg nie przyjmowałby
 `SIGTERM` i po zabiciu nakładki zostawałby, dopisując segmenty do playlisty
 kanału (do wersji z tą poprawką kończył go dopiero `SIGKILL`).
 
+Live ingest nie zatrzymuje kanału: przebieg live, który nie da obrazu
+(sygnał zniknął między sprawdzeniem stanu a startem, uszkodzony strumień),
+kończy się, a kawałek leci dalej z harmonogramu; ten sam sygnał jest pomijany
+przez 30 s albo do jego zejścia (`the live source gave no picture` w logu
+ErsatzTV). Sidecar nieosiągalny = nakładka widzi kanał bez live. Przebieg
+programu, który sam skończy się błędem, kończy kawałek z tym kodem jak bez
+ingest. Restart sidecara w trakcie live kończy przebieg live (koniec
+strumienia), kawałek wraca do harmonogramu, a odbiornik łączy się ponownie
+i kanał wraca na live z następnym sprawdzeniem stanu.
+
 ## 7. Testy
 
 ```sh
@@ -1331,7 +1461,12 @@ npm test                   # testy kontraktu na target/release/vizrs-cg, vizrs-e
   jak po awarii Chromium; testy sprawdzają protokół (`/etv`, `/ffmpeg`,
   `/ffmpeg/frames`, `/health`) i komendy VizRS. Wtapianie przez prawdziwy
   Chromium (pakiety ETV i `yuva420p`) – `chromium.test.mjs`, bez
-  przeglądarki pomijany. Inną binarkę wskazuje `VIRTRS_CG_BIN`, przy
+  przeglądarki pomijany. Live ingest – `ingest.test.mjs`: API `/ingest`
+  z ręcznie złożonym MPEG-TS oraz pełna ścieżka z prawdziwym ffmpeg
+  (`VIZRS_TEST_FFMPEG` albo `ffmpeg` w `PATH`, bez niego pomijana): nadawca RTMP,
+  odbiornik, kawałek z płótnem grafiki do HLS, w środku live; sprawdza długość
+  playlisty, rozmiar kanału, ciągłość znaczników czasu wideo i obraz w segmentach.
+  Inną binarkę wskazuje `VIRTRS_CG_BIN`, przy
   `TRACE=1` log sidecara każdego testu trafia na stderr.
 
 ### Sprzątanie po testach w Dockerze

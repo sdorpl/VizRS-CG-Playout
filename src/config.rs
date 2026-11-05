@@ -117,6 +117,9 @@ pub struct Config {
     pub renderer: String,
     /// The native renderer program; "" = `vizrs-render` next to the sidecar or on `PATH`.
     pub renderer_bin: String,
+    /// Shared secret of the live ingest listeners (`vizrs-ffmpeg vizrs-ingest`,
+    /// `POST /ingest`); "" = live ingest off.
+    pub ingest_token: String,
     pub browser: String,
     pub no_sandbox: bool,
     /// Extra Chromium flags, e.g. fewer raster threads on small ARM hosts.
@@ -159,6 +162,7 @@ impl Default for Config {
             tape: false,
             renderer: "auto".into(),
             renderer_bin: String::new(),
+            ingest_token: String::new(),
             browser: String::new(),
             no_sandbox: false,
             browser_args: Vec::new(),
@@ -318,6 +322,7 @@ impl Config {
                     "tape" => config.tape = boolean(value, key)?,
                     "renderer" => config.renderer = string(value, key)?,
                     "renderer_bin" => config.renderer_bin = string(value, key)?,
+                    "ingest_token" => config.ingest_token = string(value, key)?,
                     "browser" => config.browser = string(value, key)?,
                     "no_sandbox" => config.no_sandbox = boolean(value, key)?,
                     "browser_args" => {
@@ -444,6 +449,9 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_RENDERER_BIN").filter(|v| !v.is_empty()) {
             config.renderer_bin = v;
+        }
+        if let Some(v) = env("VIZRS_INGEST_TOKEN") {
+            config.ingest_token = v.trim().to_owned();
         }
         if let Some(v) = env("VIZRS_BROWSER").filter(|v| !v.is_empty()) {
             config.browser = v;
@@ -627,6 +635,16 @@ mod tests {
         let (config, warnings) = Config::from_values(Some(&file), &env(&[("VIZRS_IN_SECONDS", "0"), ("VIZRS_OUT_SECONDS", "x")])).unwrap();
         assert_eq!((config.in_seconds, config.out_seconds), (0.0, 15.0));
         assert_eq!(warnings, ["VIZRS_OUT_SECONDS=\"x\" is not a number; using 15"]);
+    }
+
+    #[test]
+    fn ingest_token() {
+        assert_eq!(Config::default().ingest_token, "");
+        let file = json::parse(r#"{"ingest_token":"abc"}"#).unwrap();
+        assert_eq!(Config::from_values(Some(&file), &env(&[])).unwrap().0.ingest_token, "abc");
+        // An empty variable turns ingest off even with a token in the file.
+        assert_eq!(Config::from_values(Some(&file), &env(&[("VIZRS_INGEST_TOKEN", "")])).unwrap().0.ingest_token, "");
+        assert_eq!(Config::from_values(None, &env(&[("VIZRS_INGEST_TOKEN", " x ")])).unwrap().0.ingest_token, "x");
     }
 
     #[test]

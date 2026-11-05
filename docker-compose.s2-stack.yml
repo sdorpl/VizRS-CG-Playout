@@ -41,6 +41,7 @@ services:
     - VIZRS_ETV_URL=http://ersatztv:8409
     - VIZRS_CLIENT_DIR=/vizrs-client
     - VIZRS_SYNC_SECONDS=${VIZRS_SYNC_SECONDS:-60}
+    - VIZRS_INGEST_TOKEN=${VIZRS_INGEST_TOKEN:-}
     image: ${CG_IMAGE:-ghcr.io/sdorpl/vizrs-cg:latest}
     init: true
     labels:
@@ -78,6 +79,7 @@ services:
     - VIZRS_CG_URL=${VIZRS_CG_URL-http://cg:7700}
     - VIZRS_FFMPEG_FPS=${VIZRS_FFMPEG_FPS:-}
     - VIZRS_FFMPEG_FPS_BLEND=${VIZRS_FFMPEG_FPS_BLEND-1}
+    - VIZRS_FFMPEG_INGEST=${VIZRS_FFMPEG_INGEST-1}
     - VIZRS_FFMPEG_PRESET=${VIZRS_FFMPEG_PRESET:-veryfast}
     - VIZRS_FFMPEG_READRATE_CATCHUP=${VIZRS_FFMPEG_READRATE_CATCHUP-2}
     image: ghcr.io/ersatztv/legacy:latest

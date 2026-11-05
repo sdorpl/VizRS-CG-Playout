@@ -182,7 +182,7 @@ pub fn child_setup(fds: &[(RawFd, RawFd)]) -> io::Result<()> {
 }
 
 /// For `CommandExt::pre_exec` of the overlay's ffmpeg: descriptor `fd`
-/// stays open across exec (its `pipe:N` input), the signal mask is cleared
+/// stays open across exec (its `pipe:N` input; none when negative), the signal mask is cleared
 /// (std keeps the overlay's blocked forwarded signals, and ffmpeg would then
 /// never take SIGTERM from ErsatzTV or the overlay) and ffmpeg gets SIGTERM
 /// when the overlay dies. Only async-signal-safe calls.
@@ -191,7 +191,7 @@ pub fn ffmpeg_child_setup(fd: RawFd) -> io::Result<()> {
     // SAFETY: clears FD_CLOEXEC of a descriptor the child owns; an all-zero
     // sigset_t is the empty set on Linux; prctl takes an unsigned long.
     unsafe {
-        if fcntl(fd, F_SETFD, 0 as c_int) < 0 {
+        if fd >= 0 && fcntl(fd, F_SETFD, 0 as c_int) < 0 {
             return Err(io::Error::last_os_error());
         }
         sigprocmask(SIG_SETMASK, &empty, std::ptr::null_mut());
