@@ -29,11 +29,12 @@ else
   echo "seed: test media copied"
 fi
 
-# The sidecar (user 10001) keeps these up to date itself: programs, elements
-# and read access to the ErsatzTV API key.
+# The sidecar (user 10001) keeps these up to date itself: programs, elements,
+# live programmes (Remote Streams, live_shows) and read access to the ErsatzTV API key.
 elements=/ersatztv-config/templates/graphics-elements/script
-mkdir -p "$elements"
-chown -R 10001:10001 /vizrs-client "$elements"
+live=/ersatztv-config/vizrs-live
+mkdir -p "$elements" "$live"
+chown -R 10001:10001 /vizrs-client "$elements" "$live"
 if [ -e /ersatztv-config/api-secrets.json ]; then
   chown root:10001 /ersatztv-config/api-secrets.json
   chmod 640 /ersatztv-config/api-secrets.json

@@ -1104,7 +1104,7 @@ Sidecar sam utrzymuje integrację, więc jego wersja zawsze zgadza się z klient
 
 Puste `VIZRS_ETV_CONFIG` wyłącza synchronizację, a wtedy elementy stron robi jak
 dotąd klient (§3). `seed` wypełnia tylko puste wolumeny i przy każdym starcie
-stosu daje użytkownikowi 10001 zapis do klientów i elementów oraz odczyt klucza
+stosu daje użytkownikowi 10001 zapis do klientów, elementów i audycji na żywo (`vizrs-live`, §1) oraz odczyt klucza
 API. Błędy trafiają tylko do logu.
 
 ### Automatyczna aktualizacja po wydaniu
