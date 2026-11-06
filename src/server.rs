@@ -21,6 +21,8 @@
 //                         live ingest: a live source of the channel in, out
 //                         to the overlay, its state (src/ingest.rs)
 //   GET  /health          captures, sessions and live sources
+//   GET  /live, /api/live/*
+//                         the Live Panel (src/panel.rs), with `panel_token`
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -40,6 +42,7 @@ use crate::ingest::Ingest;
 use crate::json::{self, Value};
 use crate::native::{self, Renderer};
 use crate::overlay::quote_plus;
+use crate::panel::Panel;
 use crate::scale::render_size;
 use crate::stream::{self, Control, Format, Options};
 use crate::sync;
@@ -158,6 +161,7 @@ pub struct Server {
     count: AtomicUsize,
     empty: Empty,
     ingest: Ingest,
+    panel: Arc<Panel>,
 }
 
 impl Server {
@@ -172,8 +176,10 @@ impl Server {
         }
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
         let ingest = Ingest::new(&config.ingest_token, config.ingest_anytime);
+        let panel = Panel::new(&config, &ingest);
         Arc::new(Server {
             ingest,
+            panel,
             config: Arc::new(config),
             ads: Arc::new(ads),
             browser,
@@ -291,6 +297,7 @@ impl Server {
 
     pub fn handle(&self, request: Request, mut stream: TcpStream) {
         let result = match (request.method.as_str(), request.path.as_str()) {
+            (_, path) if Panel::owns(path) => self.panel.handle(&request, stream, &self.ingest),
             ("GET", "/health") => http::respond(&mut stream, 200, Some("application/json"), self.health().to_string().as_bytes()),
             ("GET", "/etv/pages") => self.pages_request(&request, stream),
             ("GET", "/ffmpeg") => self.claim_request(&request, stream),

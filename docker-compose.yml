@@ -5,6 +5,7 @@
 #   ErsatzTV     http://<server>:8409
 #   VizRS Trio   http://<server>:8788/trio   token vizrs-operator-change-me
 #   Sidecar      http://<server>:7700/health
+#   Live Panel   http://<server>:7700/live?token=<VIZRS_PANEL_TOKEN>
 #
 # Live ingest (RTMP/SRT takes a channel over, DOKUMENTACJA §1): set VIZRS_INGEST_TOKEN
 # and VIZRS_INGEST (e.g. "1=rtmp://0.0.0.0:1936/live/<key>"), then
@@ -134,9 +135,12 @@ services:
       VIZRS_INGEST_TOKEN: ${VIZRS_INGEST_TOKEN:-}
       # 1 = a live source takes any piece over; 0 = only live programmes of the schedule.
       VIZRS_INGEST_ANYTIME: ${VIZRS_INGEST_ANYTIME:-1}
-      # Live programmes as Remote Streams for the ErsatzTV schedule (/config/vizrs-live), JSON:
+      # Live programmes as Remote Streams for the ErsatzTV schedule (/config/vizrs-live); only the
+      # first filling of vizrs-live/shows.json, which the Live Panel edits. JSON:
       # [{"channel":"1","title":"Wiadomości","duration":"00:30:00","plot":"…"}]
       VIZRS_LIVE_SHOWS: ${VIZRS_LIVE_SHOWS:-}
+      # Live Panel on :7700/live (studio on/off air, live programmes in ErsatzTV); empty = off.
+      VIZRS_PANEL_TOKEN: ${VIZRS_PANEL_TOKEN:-}
     volumes:
       - ersatztv-config:/etv-config
       - vizrs-client:/vizrs-client

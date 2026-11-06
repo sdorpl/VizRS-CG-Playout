@@ -14,12 +14,16 @@
 //                              a second of black and silence without a length,
 //                              so that ErsatzTV's ffprobe of the item works
 //   GET  /ingest/state?channel=1
-//                              {"enabled":…,"anytime":…,"live":…,"audio":…,"video":…}
+//                              {"enabled":…,"anytime":…,"hold":…,"live":…,"audio":…,"video":…}
 //
 // The channel is live from the first video keyframe of the source until its
 // connection ends or sends nothing for `IDLE`. One source per channel: a
 // second one while the first is live is refused (an active takeover is not
 // pre-empted, as in VizRS ffPlayout System).
+//
+// The Live Panel (src/panel.rs) decides per channel: a held channel is not live
+// for the overlay and its readers, though its source stays connected, and
+// `anytime` of a channel overrides `ingest_anytime`.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
@@ -333,17 +337,84 @@ impl Feed {
     }
 }
 
+/// Most events kept for the Live Panel.
+const MAX_EVENTS: usize = 100;
+
+/// What the operator decided for a channel (Live Panel).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChannelControl {
+    /// The studio is kept off the channel, even with a source.
+    pub hold: bool,
+    /// Overrides `ingest_anytime` for the channel.
+    pub anytime: Option<bool>,
+}
+
+/// Something that happened to the live sources: epoch ms, channel, text.
+pub type Event = (i64, String, String);
+
 /// The live sources of the sidecar, by channel.
 pub struct Ingest {
     token: String,
     /// A source takes any piece over, not only live programmes.
     anytime: bool,
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
+    control: Mutex<HashMap<String, ChannelControl>>,
+    events: Mutex<VecDeque<Event>>,
 }
 
 impl Ingest {
     pub fn new(token: &str, anytime: bool) -> Ingest {
-        Ingest { token: token.to_owned(), anytime, feeds: Mutex::new(HashMap::new()) }
+        Ingest {
+            token: token.to_owned(),
+            anytime,
+            feeds: Mutex::new(HashMap::new()),
+            control: Mutex::new(HashMap::new()),
+            events: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    pub fn control(&self, channel: &str) -> ChannelControl {
+        self.control.lock().unwrap_or_else(|e| e.into_inner()).get(channel).cloned().unwrap_or_default()
+    }
+
+    pub fn set_control(&self, channel: &str, control: ChannelControl) {
+        let mut all = self.control.lock().unwrap_or_else(|e| e.into_inner());
+        if control == ChannelControl::default() {
+            all.remove(channel);
+        } else {
+            all.insert(channel.to_owned(), control);
+        }
+    }
+
+    /// Whether a source of the channel takes any piece over.
+    pub fn anytime_of(&self, channel: &str) -> bool {
+        self.control(channel).anytime.unwrap_or(self.anytime)
+    }
+
+    /// A line for the Live Panel's events.
+    pub fn event(&self, channel: &str, text: impl Into<String>) {
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
+        if events.len() >= MAX_EVENTS {
+            events.pop_front();
+        }
+        events.push_back((crate::time::now_ms(), channel.to_owned(), text.into()));
+    }
+
+    /// The events, newest first.
+    pub fn events(&self) -> Vec<Event> {
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().cloned().collect()
+    }
+
+    /// The source of a channel (live, audio, video, seconds), None without one.
+    pub fn source(&self, channel: &str) -> Option<Value> {
+        self.feed(channel).map(|feed| feed.state())
+    }
+
+    /// The channels with a source.
+    pub fn channels(&self) -> Vec<String> {
+        let mut channels: Vec<String> = self.feeds().keys().cloned().collect();
+        channels.sort();
+        channels
     }
 
     pub fn enabled(&self) -> bool {
@@ -377,8 +448,9 @@ impl Ingest {
         }
     }
 
+    /// The channel's source is live and not held: the studio is on the channel.
     pub fn is_live(&self, channel: &str) -> bool {
-        self.feed(channel).is_some_and(|feed| feed.is_live())
+        self.feed(channel).is_some_and(|feed| feed.is_live()) && !self.control(channel).hold
     }
 
     /// `/health`: the channels with a source.
@@ -405,9 +477,19 @@ impl Ingest {
             Some(feed) => feed.state(),
             None => json::object([("live", false.into()), ("audio", false.into()), ("video", Value::Null), ("seconds", Value::Null)]),
         };
+        let hold = self.control(channel).hold;
         if let Value::Object(members) = &mut state {
+            if hold {
+                // Held: the overlay leaves (or does not take) the channel.
+                for (key, value) in members.iter_mut() {
+                    if key == "live" {
+                        *value = false.into();
+                    }
+                }
+            }
             members.insert(0, ("enabled".into(), self.enabled().into()));
-            members.insert(1, ("anytime".into(), self.anytime.into()));
+            members.insert(1, ("anytime".into(), self.anytime_of(channel).into()));
+            members.insert(2, ("hold".into(), hold.into()));
         }
         http::respond(&mut stream, 200, Some("application/json"), state.to_string().as_bytes())
     }
@@ -421,6 +503,7 @@ impl Ingest {
         }
         if !constant_eq(bearer.trim().as_bytes(), self.token.as_bytes()) {
             crate::warn!("ingest: channel {channel}: bad token");
+            self.event(&channel, "odbiornik: zły token (odrzucony)");
             return http::respond(&mut stream, 401, None, b"");
         }
         if channel.is_empty() {
@@ -428,11 +511,13 @@ impl Ingest {
         }
         let Some(feed) = self.start(&channel) else {
             crate::warn!("ingest: channel {channel} already has a live source; the new one is refused");
+            self.event(&channel, "drugi sygnał odrzucony (kanał ma już źródło)");
             return http::respond(&mut stream, 409, None, b"");
         };
         stream.write_all(b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n")?;
         stream.set_read_timeout(Some(IDLE))?;
         crate::info!("ingest: channel {channel}: source connected");
+        self.event(&channel, "nadawca połączony");
         let result = self.receive(&channel, &feed, &mut stream);
         let seconds = feed.lock().since.map(|t| t.elapsed().as_secs());
         self.finish(&channel, &feed);
@@ -440,6 +525,10 @@ impl Ingest {
             (Err(error), Some(s)) => crate::info!("ingest: channel {channel}: live ended after {s} s ({error})"),
             (Ok(()), Some(s)) => crate::info!("ingest: channel {channel}: live ended after {s} s"),
             (_, None) => crate::info!("ingest: channel {channel}: source gone before a keyframe"),
+        }
+        match seconds {
+            Some(s) => self.event(&channel, format!("sygnał zakończony po {}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)),
+            None => self.event(&channel, "nadawca rozłączony przed klatką kluczową"),
         }
         Ok(())
     }
@@ -460,6 +549,8 @@ impl Ingest {
                 let streams = &scanner.streams;
                 let audio = if streams.audio { "with audio" } else { "without audio" };
                 crate::info!("ingest: channel {channel}: live ({}, {audio})", streams.video.unwrap_or("?"));
+                let audio = if streams.audio { "z dźwiękiem" } else { "bez dźwięku" };
+                self.event(channel, format!("sygnał ({}, {audio})", streams.video.unwrap_or("?")));
             }
         }
     }
@@ -467,7 +558,8 @@ impl Ingest {
     /// `GET /ingest`: the live source of a channel for the overlay's ffmpeg.
     pub fn read_request(&self, request: &Request, mut stream: TcpStream) -> io::Result<()> {
         let channel = request.param("channel").unwrap_or("");
-        let Some(feed) = self.feed(channel).filter(|f| f.is_live()) else {
+        let held = self.control(channel).hold;
+        let Some(feed) = self.feed(channel).filter(|f| f.is_live() && !held) else {
             if request.param("slot") == Some("1") {
                 // No Content-Length: ffprobe gives no length, ErsatzTV takes the programme's.
                 stream.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")?;
@@ -480,6 +572,10 @@ impl Ingest {
         stream.write_all(head.as_bytes())?;
         let mut after = None;
         while let Some((runs, last)) = feed.next(after, Duration::from_secs(1)) {
+            if self.control(channel).hold {
+                // Held from the panel: the reader (ErsatzTV in a live slot) ends.
+                return Ok(());
+            }
             for run in runs {
                 stream.write_all(&run)?;
             }
@@ -490,7 +586,7 @@ impl Ingest {
 }
 
 /// Comparison that takes as long for every wrong token.
-fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 

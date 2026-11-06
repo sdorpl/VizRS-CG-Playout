@@ -566,9 +566,12 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    na kanał: drugi, gdy pierwszy trwa, dostaje 409 (aktywne przejęcie nie jest
    wywłaszczane, jak w ffPlayout). Bez `ingest_token` (`VIZRS_INGEST_TOKEN`)
    ingest jest wyłączony, a `POST /ingest` odpowiada 404.
-   `GET /ingest/state?channel=N` → `{"enabled":true,"live":true,"audio":true,
-   "video":"h264","seconds":12}`, `/health` → `ingest` (lista kanałów z sygnałem,
-   `null` przy wyłączonym ingest).
+   `GET /ingest/state?channel=N` → `{"enabled":true,"anytime":true,"hold":false,
+   "live":true,"audio":true,"video":"h264","seconds":12}`, `/health` → `ingest`
+   (lista kanałów z sygnałem, `null` przy wyłączonym ingest). Kanał wstrzymany
+   w Live Panel (niżej) ma `"hold":true` i `"live":false` mimo sygnału, a jego
+   `GET /ingest` odpowiada jak bez sygnału (bieżący czytelnik kończy się
+   w ciągu sekundy).
 3. **Przejęcie** (`VIZRS_FFMPEG_INGEST=1` w ErsatzTV, [src/takeover.rs](../src/takeover.rs)):
    nakładka ffmpeg pyta sidecara o stan kanału przy każdym transkodowaniu
    kawałka do HLS (`-f hls` z `-t`, wideo kodowane, nie kopiowane). Kanał to
@@ -631,15 +634,21 @@ is_live: true
 duration: "00:30:00"
 ```
 
-1. **Definicje** ([src/live_shows.rs](../src/live_shows.rs)): każdy wpis
-   `live_shows` (`VIZRS_LIVE_SHOWS`, JSON) sidecar zapisuje przy starcie i co
-   `sync_seconds` do `<etv_config>/vizrs-live/<kanał>-<tytuł>.yml` (albo
-   `<file>.yml`), tylko gdy plik się zmienił. Pól `channel`, `title`,
+1. **Definicje** ([src/live_shows.rs](../src/live_shows.rs)): lista audycji
+   to `<etv_config>/vizrs-live/shows.json`, którą edytuje Live Panel (niżej).
+   `live_shows` (`VIZRS_LIVE_SHOWS`, JSON) tylko ją zakłada: gdy pliku nie ma,
+   sidecar przepisuje do niego wpisy z konfiguracji (w logu `moved to …
+   shows.json`), a potem konfigurację pomija. Każdą audycję sidecar zapisuje
+   przy starcie, co `sync_seconds` i po zmianie w panelu do
+   `<etv_config>/vizrs-live/<kanał>-<tytuł>.yml` (albo `<file>.yml`), tylko gdy
+   plik się zmienił. Pól `channel`, `title`,
    `duration` (`"HH:MM:SS"`, `"MM:SS"` albo sekundy, do 23:59:59) nie można
-   pominąć; `plot` i `file` są opcjonalne. Adres sidecara pochodzi z adresu
-   elementu `vizrs.yml` (domyślnie `http://cg:7700`). Usunięty wpis zostawia
-   plik: ErsatzTV usunąłby wtedy pozycję z harmonogramów. Plik usuwa się ręcznie,
-   tak jak elementy stron (§3). Własne pliki `.yml` w tym formacie też działają.
+   pominąć; `plot` i `file` są opcjonalne. Nazwa pliku powstaje raz, przy
+   dodaniu: zmiana tytułu w panelu zostawia plik, więc pozycja w ErsatzTV i jej
+   miejsca w harmonogramach zostają. Adres sidecara pochodzi z adresu
+   elementu `vizrs.yml` (domyślnie `http://cg:7700`). Synchronizacja nie kasuje
+   plików (ErsatzTV usunąłby pozycję z harmonogramów); usuwa je tylko „Usuń”
+   w panelu albo operator ręcznie. Własne pliki `.yml` w tym formacie też działają.
 2. **Biblioteka w ErsatzTV**, raz: **Media → Local Libraries → Add Local
    Library**, rodzaj **Remote Streams**, folder `/config/vizrs-live`, skan.
    Audycje są potem zwykłymi elementami biblioteki: kolekcja, pozycja
@@ -668,13 +677,111 @@ duration: "00:30:00"
 przejmuje kanał także poza audycjami na żywo, jak w ffPlayout (każdy
 kawałek). `false` = studio wchodzi na antenę tylko w swoich pozycjach
 ramówki, a w pozostałym czasie jego sygnał niczego nie zmienia (`/ingest/state`:
-`"anytime"`).
+`"anytime"`). Przełącznik „poza audycjami” w Live Panel nadpisuje to dla
+jednego kanału.
 
 Bez nakładki (zwykły ffmpeg) ErsatzTV odtworzyłby adres slotu wprost: przy
 nadającym studiu działa to jak zwykły Remote Stream (bez grafiki VizRS przez
 nakładkę), ale bez studia sekunda czerni kończy źródło i ErsatzTV pokazuje
 do końca pozycji własną planszę awaryjną. Audycje na żywo wymagają więc
 nakładki z `VIZRS_FFMPEG_INGEST=1`.
+
+### Live Panel (`/live`)
+
+Stanowisko operatora emisji (MCR) dla sygnałów na żywo, wbudowane w sidecara
+([src/panel.rs](../src/panel.rs), strona [src/panel.html](../src/panel.html)):
+`http://<serwer>:7700/live`. Pokazuje, co przychodzi ze studia i co idzie na
+antenę, pozwala zdjąć albo wpuścić studio i prowadzi audycje LIVE w ramówce
+ErsatzTV. Plan i dalsze etapy: [PLAN-live-panel.md](plany/PLAN-live-panel.md).
+
+**Włączenie i logowanie.** `panel_token` (env `VIZRS_PANEL_TOKEN`); puste =
+panel wyłączony (`/live` i `/api/live/*` odpowiadają 404). Wejście
+`/live?token=<token>` zapisuje ciasteczko (`vizrs_panel`, HttpOnly,
+SameSite=Strict, rok) i przekierowuje na `/live`; bez ciasteczka jest ekran
+logowania. Zły token czeka sekundę (spowalnia zgadywanie). API przyjmuje
+token także w `X-Panel-Token` albo `Authorization: Bearer`. Żądania, które
+coś zmieniają, muszą przyjść ze strony panelu (`Sec-Fetch-Site`, `Origin`
+zgodny z `Host`), inaczej 403. Nazwa stanowiska (klik w „operator” u góry)
+idzie w nagłówku `X-Operator` do zdarzeń i do dziennika
+`<etv_config>/vizrs-live/log.jsonl` (powyżej 1 MB poprzedni plik dostaje
+końcówkę `.1`). Port 7700 dalej nie powinien być publiczny: panel tylko
+w sieci operatorów albo za reverse proxy z HTTPS.
+
+**Na żywo.** Karta każdego kanału (kanały ErsatzTV, kanały z sygnałem
+i z audycjami): stan sygnału (kodek, dźwięk, czas trwania; podglądu obrazu
+jeszcze nie ma), tryb, bieżąca pozycja z EPG i ostrzeżenie na żółto, gdy
+audycja LIVE trwa albo zaczyna się w ciągu 10 minut, a studio nie nadaje.
+Oznaczenia: **NA ANTENIE** (sygnał, nie wstrzymany, a kanał przyjmuje studio
+teraz: „poza audycjami” albo trwa audycja LIVE), **WSTRZYMANY**, **RAMÓWKA**.
+
+- **■ ZDEJMIJ** (drugie kliknięcie w ciągu 3 s potwierdza) wstrzymuje studio
+  na kanale: `/ingest/state` ma od razu `"live":false`, więc nakładka wraca
+  do ramówki w ok. 0,3 s plus bufor odtwarzacza, a w audycji LIVE idzie
+  plansza. Sygnał zostaje podłączony. Wstrzymanie trwa do **▶ WPUŚĆ**, także
+  po restarcie sidecara.
+- **poza audycjami**: studio przejmuje kanał także poza audycjami LIVE
+  (`ingest_anytime` dla tego kanału).
+- Z boku **Ramówka** (najbliższe pozycje EPG wybranego kanału, audycje LIVE
+  oznaczone) i **Zdarzenia** (nadawca połączony, sygnał, koniec sygnału,
+  odrzucony drugi sygnał albo zły token, decyzje operatorów; ostatnie 100,
+  w pamięci).
+
+Decyzje kanałów i ustawienia panelu są w `<etv_config>/vizrs-live/control.json`.
+Strona odświeża stan co sekundę; dane z ErsatzTV (kanały, kolekcje, EPG
+z `/iptv/xmltv.xml`) sidecar pobiera co 30 s i po każdej zmianie audycji.
+
+**Audycje LIVE.** Tabela audycji (`shows.json`, wyżej) ze stanem w ErsatzTV
+(plik, biblioteka, kolekcja), kolekcją do harmonogramu i najbliższą emisją
+z EPG; audycji, której EPG nie ma, panel pokazuje „nie ma w ramówce · jak
+dodać?”. Raz w karcie **Połączenie z ErsatzTV**: ID biblioteki Remote Streams
+z folderem `/config/vizrs-live` (ErsatzTV nie ma API listy bibliotek; ID widać
+w adresie strony biblioteki) i, gdy przeglądarka operatora widzi ErsatzTV pod
+innym adresem niż `http://<host panelu>:8409`, ten adres.
+
+**＋ Nowa audycja LIVE**: kanał, tytuł (EPG i `{title}` grafiki), długość
+(1 s – 23:59:59), opis → **Utwórz w ErsatzTV**. Panel:
+
+1. dopisuje audycję do `shows.json` i zapisuje jej `.yml`;
+2. zleca skan biblioteki (`POST /api/libraries/<ID>/scan`);
+3. zakłada **Smart Collection** `LIVE · <tytuł>` z zapytaniem
+   `type:remote_stream AND library_id:<ID> AND sort_title:"<tytuł>"`
+   (`sort_title` to cały tytuł małymi literami, więc „Wiadomości” nie łapie
+   „Wiadomości wieczorne”); kolekcja o tej nazwie, która już jest, zostaje
+   użyta i poprawiona. Kolekcja działa od razu, a audycję obejmie po skanie.
+
+Okienko z wynikiem pokazuje kroki i ostatni krok w ErsatzTV, którego nie da
+się zrobić z zewnątrz (harmonogramy Classic i Block nie mają API): **Schedules
+→ harmonogram kanału → Add Schedule Item**, Start Type **Fixed** z godziną,
+**Strict**, **Smart Collection** `LIVE · <tytuł>`, Playout Mode **One**,
+opcjonalnie element **VizRS**, potem **⟲ Przebuduj ramówkę** (reset playoutu
+kanału, `POST /api/channels/<n>/playout/reset`). ✎ zmienia tytuł, długość
+i opis (plik zostaje, kolekcja zmienia nazwę i zapytanie, skan); 🗑 usuwa
+audycję, jej plik i kolekcję (ErsatzTV zdejmuje ją z harmonogramów, które jej
+używają). **⟳ Odśwież z ErsatzTV** skanuje bibliotekę i zakłada brakujące
+kolekcje (np. po błędzie ErsatzTV albo usunięciu kolekcji). Błąd ErsatzTV nie
+cofa zapisu audycji: kroki pokazują, co się nie udało.
+
+Walidacja jak w VizRS `validate.rs`: kanał to numer ErsatzTV (litery, cyfry,
+kropka, myślnik, do 20 znaków), tytuł 1–200 znaków bez znaków sterujących
+z choć jedną literą albo cyfrą, opis do 2000 znaków, najwyżej 200 audycji,
+jeden plik na kanał i tytuł.
+
+API (`/api/live/*`, JSON, token jak wyżej):
+
+| Metoda | Ścieżka | Działanie |
+|---|---|---|
+| GET | `/api/live/state` | kanały (sygnał, `on_air`, `hold`, `anytime`, bieżąca i najbliższa audycja LIVE), ramówka po kanałach, zdarzenia, stan ErsatzTV, ustawienia |
+| PUT | `/api/live/settings` | `{"library": ID\|null, "etv_public": "http(s)://…"}` |
+| POST | `/api/live/channels/<n>/hold` · `/release` | ZDEJMIJ · WPUŚĆ |
+| PUT | `/api/live/channels/<n>` | `{"anytime": true\|false\|null}` (`null` = jak w konfiguracji) |
+| POST | `/api/live/channels/<n>/rebuild` | reset playoutu kanału w ErsatzTV |
+| GET | `/api/live/shows` | audycje ze stanem w ErsatzTV i najbliższą emisją |
+| POST | `/api/live/shows` | `{"channel","title","duration","plot"}` → `{"show", "steps":[{"step","ok","detail"}]}` |
+| PUT · DELETE | `/api/live/shows/<id>` | zmiana · usunięcie (`id` = nazwa pliku bez `.yml`) |
+| POST | `/api/live/shows/scan` | skan biblioteki i brakujące kolekcje |
+
+Wymaga `etv_config` (zapis audycji i ustawień) i `etv_url` (ErsatzTV);
+bez nich panel pokazuje sygnały, a audycji nie zapisze (409).
 
 ## 2. Odpowiedniki w VizRS ffPlayout System
 
@@ -1084,8 +1191,11 @@ Synchronizacja z ErsatzTV). Odbiornik tylko przepakowuje strumień (ułamek
 rdzenia); CPU kosztuje przebieg live w ErsatzTV: dekodowanie sygnału
 w miejsce dekodowania materiału.
 
-Audycje na żywo w ramówce (§1): w `.env` np.
-`VIZRS_LIVE_SHOWS=[{"channel":"1","title":"Wiadomości","duration":"00:30:00"}]`
+Live Panel (§1): w `.env` `VIZRS_PANEL_TOKEN=<długi losowy tekst>`, potem
+`http://<serwer>:7700/live?token=<token>`. Audycje na żywo w ramówce (§1)
+zakłada się w panelu; `VIZRS_LIVE_SHOWS`, np.
+`VIZRS_LIVE_SHOWS=[{"channel":"1","title":"Wiadomości","duration":"00:30:00"}]`,
+tylko pierwszy raz wypełnia ich listę
 (sidecar pisze je do wolumenu konfiguracji ErsatzTV, `/config/vizrs-live`),
 opcjonalnie `VIZRS_INGEST_ANYTIME=0` i `VIZRS_FFMPEG_STANDBY=/media/plansza.png`
 (plik w mediach ErsatzTV). Bibliotekę **Remote Streams** z folderem
@@ -1352,6 +1462,8 @@ wyłączony (§1, Live ingest). `ingest_anytime` (env `VIZRS_INGEST_ANYTIME`,
 `0`/`1`, domyślnie `true`) i `live_shows` (tablica, env `VIZRS_LIVE_SHOWS` z tym
 samym JSON-em; błędny JSON w env trafia do logu i jest pomijany, błędny wpis
 w pliku zatrzymuje start z nazwą pola): §1, Audycje na żywo w ramówce.
+`panel_token` (env `VIZRS_PANEL_TOKEN`; ustawiona pusta zmienna wyłącza
+token z pliku): token Live Panel, puste = panel wyłączony (§1, Live Panel).
 
 Opcje `etv_config`, `etv_url`, `client_source`, `client_dir`, `sync_seconds`
 (env `VIZRS_ETV_CONFIG`, `VIZRS_ETV_URL`, `VIZRS_CLIENT_SOURCE`, `VIZRS_CLIENT_DIR`,
@@ -1387,6 +1499,7 @@ kanału), `VIZRS_CAPTURE_MODE` (`frames` albo `screencast`, niżej),
 błędna wartość = `chromium` z ostrzeżeniem), `VIZRS_RENDERER_BIN` (program
 `vizrs-render`; puste = obok sidecara albo w `PATH`),
 `VIZRS_INGEST_TOKEN`, `VIZRS_INGEST_ANYTIME`, `VIZRS_LIVE_SHOWS` (live ingest, §1),
+`VIZRS_PANEL_TOKEN` (Live Panel, §1),
 `VIZRS_BROWSER`, `VIZRS_BROWSER_NO_SANDBOX=1` (root / kontenery),
 `VIZRS_BROWSER_ARGS` (dodatkowe flagi Chromium, rozdzielone spacją),
 `DEBUG=1`.
@@ -1542,6 +1655,11 @@ npm test                   # testy kontraktu na target/release/vizrs-cg, vizrs-e
   playlisty, rozmiar kanału, ciągłość znaczników czasu wideo i obraz w segmentach;
   audycja na żywo w ramówce: plik `.yml`, odpowiedź slotu dla ffprobe, plansza
   przed i po studiu, zwykły kawałek nieprzejęty przy `ingest_anytime: false`.
+  Live Panel – `live-panel.test.mjs` z udawanym ErsatzTV (Node.js): token,
+  ciasteczko i ekran logowania, odrzucanie żądań z obcych stron, kreator
+  audycji (plik, skan, Smart Collection, zmiana nazwy, usunięcie, dziennik),
+  wstrzymanie kanału w `/ingest/state` także po restarcie, przeniesienie
+  `VIZRS_LIVE_SHOWS` do `shows.json`.
   Inną binarkę wskazuje `VIRTRS_CG_BIN`, przy
   `TRACE=1` log sidecara każdego testu trafia na stderr.
 

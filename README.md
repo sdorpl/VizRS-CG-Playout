@@ -17,6 +17,8 @@ obok niezmienionego ErsatzTV:
 - **Live ingest** – sygnał RTMP/SRT przejmuje kanał w miejsce harmonogramu
   (z grafiką VizRS), a po jego końcu program wraca; audycje na żywo mogą też
   być pozycjami ramówki i EPG (DOKUMENTACJA §1).
+- **Live Panel** (`:7700/live`) – stanowisko MCR: stan sygnałów studia,
+  ZDEJMIJ / WPUŚĆ i kreator audycji LIVE w ramówce ErsatzTV (DOKUMENTACJA §1).
 
 Sidecar to jeden plik binarny w Ruście (`vizrs-cg`) obok bezgłowego Chromium;
 wydania: obraz `ghcr.io/sdorpl/vizrs-cg` (amd64, arm64) i archiwa dla Linuksa

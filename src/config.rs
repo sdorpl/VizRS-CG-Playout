@@ -42,7 +42,7 @@ pub struct ShowOverride {
 
 /// A live programme of a channel as a schedule item of ErsatzTV: a Remote
 /// Stream definition the sidecar writes (src/live_shows.rs).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LiveShow {
     /// ErsatzTV channel whose live source the programme plays.
     pub channel: String,
@@ -54,6 +54,8 @@ pub struct LiveShow {
     pub plot: String,
     /// File name without `.yml`; "" = channel and title.
     pub file: String,
+    /// Its smart collection in ErsatzTV (`LIVE · <title>`), made by the Live Panel.
+    pub collection: Option<u64>,
 }
 
 /// What one ErsatzTV channel has of its own: another VizRS means other
@@ -138,8 +140,11 @@ pub struct Config {
     pub ingest_token: String,
     /// A live source takes any piece over; false = only live programmes (`live_shows`).
     pub ingest_anytime: bool,
-    /// Live programmes written as Remote Streams for ErsatzTV's schedule.
+    /// Live programmes written as Remote Streams for ErsatzTV's schedule; only
+    /// the first filling of `shows.json`, which the Live Panel edits.
     pub live_shows: Vec<LiveShow>,
+    /// Token of the Live Panel (`/live`, `/api/live/*`); "" = panel off.
+    pub panel_token: String,
     pub browser: String,
     pub no_sandbox: bool,
     /// Extra Chromium flags, e.g. fewer raster threads on small ARM hosts.
@@ -185,6 +190,7 @@ impl Default for Config {
             ingest_token: String::new(),
             ingest_anytime: true,
             live_shows: Vec::new(),
+            panel_token: String::new(),
             browser: String::new(),
             no_sandbox: false,
             browser_args: Vec::new(),
@@ -282,7 +288,7 @@ fn channel_overrides(value: &Value) -> Result<Vec<ChannelOverride>, String> {
 }
 
 /// `"00:30:00"`, `"1:30:00"`, `"45:00"` or a number of seconds.
-fn duration(value: &Value, name: &str) -> Result<f64, String> {
+pub(crate) fn duration(value: &Value, name: &str) -> Result<f64, String> {
     let seconds = match value {
         Value::String(text) if text.contains(':') => {
             let parts: Vec<&str> = text.trim().split(':').collect();
@@ -297,7 +303,7 @@ fn duration(value: &Value, name: &str) -> Result<f64, String> {
     if (1.0..MAX_SECONDS).contains(&seconds) { Ok(seconds) } else { Err(format!("{name}: expected 1 s to 23:59:59")) }
 }
 
-fn live_shows(value: &Value) -> Result<Vec<LiveShow>, String> {
+pub(crate) fn live_shows(value: &Value) -> Result<Vec<LiveShow>, String> {
     let items = value.as_array().ok_or("live_shows: expected an array")?;
     let mut shows = Vec::new();
     for (i, item) in items.iter().enumerate() {
@@ -315,6 +321,7 @@ fn live_shows(value: &Value) -> Result<Vec<LiveShow>, String> {
             seconds: duration(item.get("duration").ok_or(format!("{prefix}.duration: missing"))?, &format!("{prefix}.duration"))?,
             plot: text("plot")?,
             file: text("file")?,
+            collection: item.get("collection").and_then(Value::as_f64).filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u64),
         };
         if show.channel.trim().is_empty() || show.title.trim().is_empty() {
             return Err(format!("{prefix}: channel and title are required"));
@@ -390,6 +397,7 @@ impl Config {
                     "ingest_token" => config.ingest_token = string(value, key)?,
                     "ingest_anytime" => config.ingest_anytime = boolean(value, key)?,
                     "live_shows" => config.live_shows = live_shows(value)?,
+                    "panel_token" => config.panel_token = string(value, key)?.trim().to_owned(),
                     "browser" => config.browser = string(value, key)?,
                     "no_sandbox" => config.no_sandbox = boolean(value, key)?,
                     "browser_args" => {
@@ -528,6 +536,9 @@ impl Config {
                 Ok(shows) => config.live_shows = shows,
                 Err(error) => warnings.push(format!("VIZRS_LIVE_SHOWS: {error}; ignored")),
             }
+        }
+        if let Some(v) = env("VIZRS_PANEL_TOKEN") {
+            config.panel_token = v.trim().to_owned();
         }
         if let Some(v) = env("VIZRS_BROWSER").filter(|v| !v.is_empty()) {
             config.browser = v;
@@ -724,6 +735,15 @@ mod tests {
     }
 
     #[test]
+    fn panel_token() {
+        assert_eq!(Config::default().panel_token, "");
+        let file = json::parse(r#"{"panel_token":" p "}"#).unwrap();
+        assert_eq!(Config::from_values(Some(&file), &env(&[])).unwrap().0.panel_token, "p");
+        assert_eq!(Config::from_values(Some(&file), &env(&[("VIZRS_PANEL_TOKEN", "")])).unwrap().0.panel_token, "");
+        assert_eq!(Config::from_values(None, &env(&[("VIZRS_PANEL_TOKEN", "x")])).unwrap().0.panel_token, "x");
+    }
+
+    #[test]
     fn live_shows_and_anytime() {
         assert!(Config::default().ingest_anytime);
         let file = json::parse(
@@ -737,9 +757,13 @@ mod tests {
             config.live_shows,
             [
                 LiveShow {
-                    channel: "1".into(), title: "Wiadomości".into(), seconds: 1800.0, plot: "Na żywo".into(), file: String::new()
+                    channel: "1".into(),
+                    title: "Wiadomości".into(),
+                    seconds: 1800.0,
+                    plot: "Na żywo".into(),
+                    ..LiveShow::default()
                 },
-                LiveShow { channel: "2".into(), title: "Rozmowa".into(), seconds: 5400.0, plot: String::new(), file: "rozmowa".into() },
+                LiveShow { channel: "2".into(), title: "Rozmowa".into(), seconds: 5400.0, file: "rozmowa".into(), ..LiveShow::default() },
             ]
         );
         assert!(Config::from_values(None, &env(&[("VIZRS_INGEST_ANYTIME", "1")])).unwrap().0.ingest_anytime);

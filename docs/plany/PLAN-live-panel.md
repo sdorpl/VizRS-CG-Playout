@@ -1,6 +1,8 @@
 # PLAN: VizRS Live Panel – sterowanie transmisjami na żywo kanałów ErsatzTV
 
-> Stan: **propozycja** (2026-11-05), gałąź `live-panel`. Etapy L0–L6 (§9). Planowanie zostaje w ErsatzTV, panel prowadzi do niego kreatorem (§6a).
+> Stan: **L0–L3 zbudowane** (2026-11-06), gałąź `live-panel`; dalej L4–L6 (§9). Planowanie zostaje w ErsatzTV, panel prowadzi do niego kreatorem (§6a).
+> Sprawdzone testami kontraktu (udawany ErsatzTV) i ręcznie z sygnałem testowym ffmpeg; **do sprawdzenia na stosie Dockera**: zapytanie Smart Collection w prawdziwym ErsatzTV (pozycja trafia do kolekcji po skanie) i czas powrotu do ramówki po ZDEJMIJ przez nakładkę.
+> Opis działania: DOKUMENTACJA §1 „Live Panel”. Decyzje z §11: wariant A, osobny `VIZRS_PANEL_TOKEN`, ZDEJMIJ do ręcznego WPUŚĆ, ramówka zostaje w ErsatzTV.
 > Powiązane: DOKUMENTACJA §1 „Live ingest” i „Audycje na żywo w ramówce”,
 > VizRS CG System `docs/plany/PLAN-kanal.md` (rola emisji, MCR).
 
@@ -205,10 +207,10 @@ Makieta: zakładka **Audycje LIVE** (`#audycje`), okienka `#nowa`, `#utworzona`,
 
 | Etap | Zakres | Gotowe, gdy |
 |---|---|---|
-| L0 | szkielet: `panel.rs`, `/live` (UI wbudowane `include_str!`), token panelu, logowanie, `/api/live/state` z obecnego stanu ingest | panel pokazuje kanały i sygnał, test kontraktu |
-| L1 | audycje LIVE (§6a): `shows.json` (migracja z env), CRUD, `.yml`, skan biblioteki, Smart Collection `LIVE · …`, okienko „ostatni krok”, reset playoutu | nowa audycja z panelu = gotowa kolekcja w ErsatzTV, operator dodaje tylko pozycję w harmonogramie |
-| L2 | sterowanie: `control.rs`, wstrzymaj / wpuść, `anytime` na kanał, trwałe w `control.json`, log operacji; SSE | ZDEJMIJ zdejmuje studio w < 1 s na stosie testowym |
-| L3 | ramówka: EPG z ErsatzTV, najbliższa emisja audycji, „nie ma w ramówce”, odliczanie i ostrzeżenie o braku sygnału na karcie kanału | operator widzi „20:00 Wiadomości za 3 min, studio gotowe” |
+| ✅ L0 | szkielet: `panel.rs`, `/live` (UI wbudowane `include_str!`), token panelu, logowanie, `/api/live/state` z obecnego stanu ingest | panel pokazuje kanały i sygnał, test kontraktu |
+| ✅ L1 | audycje LIVE (§6a): `shows.json` (migracja z env), CRUD, `.yml`, skan biblioteki, Smart Collection `LIVE · …`, okienko „ostatni krok”, reset playoutu | nowa audycja z panelu = gotowa kolekcja w ErsatzTV, operator dodaje tylko pozycję w harmonogramie |
+| ✅ L2 | sterowanie: wstrzymaj / wpuść, `anytime` na kanał, trwałe w `control.json`, log operacji (zrobione w `panel.rs` i `ingest.rs`, bez osobnego `control.rs`); zamiast SSE strona pyta o stan co sekundę | ZDEJMIJ zdejmuje studio w < 1 s na stosie testowym |
+| ✅ L3 | ramówka: EPG z ErsatzTV, najbliższa emisja audycji, „nie ma w ramówce”, odliczanie i ostrzeżenie o braku sygnału na karcie kanału | operator widzi „20:00 Wiadomości za 3 min, studio gotowe” |
 | L4 | odbiorniki: heartbeat, miniatura, błędy nadawcy w panelu | widać obraz studia i zły klucz bez logów |
 | L5 | dokumentacja (DOKUMENTACJA §1 „Live Panel”, §4 compose), compose (`VIZRS_PANEL_TOKEN`), wydanie | stos S2 z panelem |
 | L6 | Trio: wskaźnik studia (VizRS CG System); telefon / `vizrs-shell` | operator Trio widzi stan studia |
