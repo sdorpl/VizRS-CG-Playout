@@ -149,7 +149,9 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
     let mut sent_seq: Option<u64> = None;
     // Raw frames: the picture shown, held while it lasts so its PNG is decoded
     // (and its yuva420p frame built) once, not on every output frame.
-    let mut held: Option<(u64, Arc<Picture>)> = None;
+    // The yuva420p frame goes with it: a standing graphic (pictures sharing
+    // their pixels) is converted once, not 50 times a second.
+    let mut held: Option<(u64, Arc<Picture>, Arc<crate::yuva::Yuva>)> = None;
     // Raw frames: how far after its moment an output frame takes its picture.
     let mut shift = Duration::ZERO;
 
@@ -198,11 +200,18 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
             };
             let written = if let Format::Yuva { layout, hd } = &options.format {
                 sent += 1;
-                let picture = match &held {
-                    Some((seq, picture)) if *seq == frame.seq => Arc::clone(picture),
-                    _ => Arc::clone(&held.insert((frame.seq, frame.picture())).1),
+                let yuva = match &held {
+                    Some((seq, _, yuva)) if *seq == frame.seq => Arc::clone(yuva),
+                    _ => {
+                        let picture = frame.picture();
+                        let yuva = match &held {
+                            Some((_, same, yuva)) if Arc::ptr_eq(same, &picture) => Arc::clone(yuva),
+                            _ => picture.yuva(layout, *hd),
+                        };
+                        Arc::clone(&held.insert((frame.seq, picture, yuva)).2)
+                    }
                 };
-                out.write_all(&picture.yuva(layout, *hd))
+                out.write_all(&yuva)
             } else if sent_seq != Some(frame.seq) {
                 sent_seq = Some(frame.seq);
                 sent += 1;
