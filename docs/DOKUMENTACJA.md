@@ -255,6 +255,11 @@ Płynność animacji (rozwiązania z VizRS ffPlayout System):
   (ffmpeg czyta po kilka klatek naraz, więc obrazy by się powtarzały
   i przeskakiwały). Klatki przesuwają się raz o stałą wartość w głąb historii
   (z zapasem 0,3 s), a przesunięcie maleje, gdy ffmpeg nadrabia.
+  Pamięć historii: obraz taki sam jak poprzedni (stojąca grafika) współdzieli
+  jego piksele, a klatka `yuva420p` dla nakładki (ok. 5 MB przy 1080p) żyje
+  tylko, dopóki sesja ją wysyła, nie przez całą historię. Wcześniej 5,6 s
+  historii przy 50 kl./s i ruchomej grafice trzymało ok. 3 GB; teraz sidecar
+  z jednym kanałem 1080p50 zajmuje ok. 250 MB.
 - **Klatki na żądanie (`capture_mode: frames`, §5).** Screencast bierze
   klatki z zegara Chromium (60 Hz), więc przy 25 kl./s kanału na 5 klatek
   wyjścia przypada 6 klatek źródła i ruch co jakiś czas przeskakuje
