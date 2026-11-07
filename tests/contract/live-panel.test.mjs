@@ -233,3 +233,19 @@ test("VIZRS_LIVE_SHOWS fills shows.json once", async (t) => {
   assert.deepEqual(list.shows.map((s) => [s.id, s.duration]), [["1-wiadomosci", "00:30:00"]]);
   assert.ok(existsSync(path.join(folder, "vizrs-live", "shows.json")));
 });
+
+test("the panel tells publishers where to send: RTMP server and key, SRT address and passphrase", async (t) => {
+  const { api } = await setup(t, {
+    VIZRS_INGEST: "4=rtmp://0.0.0.0:1936/live/studio; 4=srt://0.0.0.0:9000?passphrase=tajne-haslo-1; 7=rtmp://0.0.0.0:1937/in/drugi",
+    VIZRS_INGEST_PUBLIC: "tv.example.pl",
+    VIZRS_INGEST_RTMP_PORT: "1940",
+  });
+  const { body } = await api("GET", "state");
+  const of = (n) => body.channels.find((c) => c.number === n).inputs;
+  assert.deepEqual(of("4"), [
+    { kind: "rtmp", host: "tv.example.pl", port: 1940, app: "/live", key: "studio", passphrase: "", streamid: "" },
+    { kind: "srt", host: "tv.example.pl", port: 9000, app: "", key: "", passphrase: "tajne-haslo-1", streamid: "" },
+  ]);
+  assert.equal(of("7")[0].key, "drugi", "a channel with only a listener is listed too");
+  assert.ok(body.channels.filter((c) => !["4", "7"].includes(c.number)).every((c) => c.inputs.length === 0), "other channels: no inputs");
+});

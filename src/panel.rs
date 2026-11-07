@@ -133,6 +133,8 @@ impl Step {
 
 pub struct Panel {
     token: String,
+    /// Live ingest listeners (`VIZRS_INGEST`) and how publishers reach them.
+    inputs: Vec<(String, Value)>,
     graphics: Arc<crate::graphics::Store>,
     etv_config: String,
     configured: Vec<LiveShow>,
@@ -266,8 +268,19 @@ fn programme_json(p: &Programme, live: bool) -> Value {
 
 impl Panel {
     pub fn new(config: &Config, ingest: &Ingest, graphics: Arc<crate::graphics::Store>) -> Arc<Panel> {
+        let (listeners, errors) = crate::listener::parse_listeners(&config.ingest_listeners);
+        for error in errors {
+            crate::warn!("VIZRS_INGEST: {error}");
+        }
+        let inputs = listeners
+            .iter()
+            .map(|l| {
+                (l.channel.clone(), crate::listener::publisher(l, &config.ingest_public, config.ingest_rtmp_port, config.ingest_srt_port))
+            })
+            .collect();
         let panel = Arc::new(Panel {
             token: config.panel_token.clone(),
+            inputs,
             graphics,
             etv_config: config.etv_config.clone(),
             configured: config.live_shows.clone(),
@@ -502,7 +515,12 @@ impl Panel {
         let names: BTreeMap<&str, &str> = cache.channels.iter().map(|(n, name)| (n.as_str(), name.as_str())).collect();
         let mut numbers: Vec<String> = cache.channels.iter().map(|(n, _)| n.clone()).collect();
         let settings = lock(&self.settings).clone();
-        let extra = ingest.channels().into_iter().chain(shows.iter().map(|s| s.channel.clone())).chain(settings.channels.keys().cloned());
+        let extra = ingest
+            .channels()
+            .into_iter()
+            .chain(shows.iter().map(|s| s.channel.clone()))
+            .chain(settings.channels.keys().cloned())
+            .chain(self.inputs.iter().map(|(c, _)| c.clone()));
         for number in extra {
             if !numbers.contains(&number) {
                 numbers.push(number);
@@ -534,6 +552,7 @@ impl Panel {
                     ("anytime_own", control.anytime.map_or(Value::Null, Value::from)),
                     ("now", current.map_or(Value::Null, |p| programme_json(p, in_slot))),
                     ("next_live", next_live.map_or(Value::Null, |p| programme_json(p, true))),
+                    ("inputs", Value::Array(self.inputs.iter().filter(|(c, _)| c == number).map(|(_, v)| v.clone()).collect())),
                 ])
             })
             .collect();

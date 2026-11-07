@@ -140,6 +140,14 @@ pub struct Config {
     pub ingest_token: String,
     /// A live source takes any piece over; false = only live programmes (`live_shows`).
     pub ingest_anytime: bool,
+    /// The listeners' `VIZRS_INGEST` (`kanał=URL; …`), for the Live Panel to show
+    /// publishers where to send; the listener service reads its own copy.
+    pub ingest_listeners: String,
+    /// Host publishers reach the listeners at ("" = the panel's own host).
+    pub ingest_public: String,
+    /// Host ports of the listeners when compose maps them elsewhere (`INGEST_RTMP_PORT`, `INGEST_SRT_PORT`).
+    pub ingest_rtmp_port: Option<u16>,
+    pub ingest_srt_port: Option<u16>,
     /// Live programmes written as Remote Streams for ErsatzTV's schedule; only
     /// the first filling of `shows.json`, which the Live Panel edits.
     pub live_shows: Vec<LiveShow>,
@@ -189,6 +197,10 @@ impl Default for Config {
             renderer_bin: String::new(),
             ingest_token: String::new(),
             ingest_anytime: true,
+            ingest_listeners: String::new(),
+            ingest_public: String::new(),
+            ingest_rtmp_port: None,
+            ingest_srt_port: None,
             live_shows: Vec::new(),
             panel_token: String::new(),
             browser: String::new(),
@@ -396,6 +408,8 @@ impl Config {
                     "renderer_bin" => config.renderer_bin = string(value, key)?,
                     "ingest_token" => config.ingest_token = string(value, key)?,
                     "ingest_anytime" => config.ingest_anytime = boolean(value, key)?,
+                    "ingest" => config.ingest_listeners = string(value, key)?,
+                    "ingest_public" => config.ingest_public = string(value, key)?.trim().to_owned(),
                     "live_shows" => config.live_shows = live_shows(value)?,
                     "panel_token" => config.panel_token = string(value, key)?.trim().to_owned(),
                     "browser" => config.browser = string(value, key)?,
@@ -527,6 +541,19 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_INGEST_TOKEN") {
             config.ingest_token = v.trim().to_owned();
+        }
+        if let Some(v) = env("VIZRS_INGEST") {
+            config.ingest_listeners = v;
+        }
+        if let Some(v) = env("VIZRS_INGEST_PUBLIC") {
+            config.ingest_public = v.trim().to_owned();
+        }
+        for (name, port) in
+            [("VIZRS_INGEST_RTMP_PORT", &mut config.ingest_rtmp_port), ("VIZRS_INGEST_SRT_PORT", &mut config.ingest_srt_port)]
+        {
+            if let Some(v) = env(name).filter(|v| !v.trim().is_empty()) {
+                *port = Some(v.trim().parse().map_err(|_| format!("{name}: expected a port number"))?);
+            }
         }
         if let Some(v) = env("VIZRS_INGEST_ANYTIME").filter(|v| !v.trim().is_empty()) {
             config.ingest_anytime = v.trim() != "0";

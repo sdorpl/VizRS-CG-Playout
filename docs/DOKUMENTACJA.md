@@ -1487,6 +1487,16 @@ samym JSON-em; błędny JSON w env trafia do logu i jest pomijany, błędny wpis
 w pliku zatrzymuje start z nazwą pola): §1, Audycje na żywo w ramówce.
 `panel_token` (env `VIZRS_PANEL_TOKEN`; ustawiona pusta zmienna wyłącza
 token z pliku): token Live Panel, puste = panel wyłączony (§1, Live Panel).
+`ingest` (env `VIZRS_INGEST`, ta sama wartość co w usłudze odbiorników),
+`ingest_public` (env `VIZRS_INGEST_PUBLIC`: host, pod którym nadawcy widzą
+odbiorniki, np. `studio.example.pl` albo IP serwera; puste = host, z którego
+operator otwiera panel) i porty na hoście `VIZRS_INGEST_RTMP_PORT`,
+`VIZRS_INGEST_SRT_PORT` (compose podaje `INGEST_RTMP_PORT`, `INGEST_SRT_PORT`;
+bez nich port z adresu odbiornika): sidecar sam niczego nie odbiera – z tego
+Live Panel podaje w `/api/live/state` każdemu kanałowi `inputs`
+(`[{"kind":"rtmp"|"srt","host","port","app","key","passphrase","streamid"}]`),
+czyli serwer i klucz dla OBS albo adres SRT z hasłem. To sekrety nadawania:
+widzi je tylko ktoś z tokenem panelu.
 
 Opcje `etv_config`, `etv_url`, `client_source`, `client_dir`, `sync_seconds`
 (env `VIZRS_ETV_CONFIG`, `VIZRS_ETV_URL`, `VIZRS_CLIENT_SOURCE`, `VIZRS_CLIENT_DIR`,
