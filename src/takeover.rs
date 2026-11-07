@@ -39,6 +39,11 @@ const POLL: Duration = Duration::from_millis(250);
 const SHORT_LIVE: f64 = 1.0;
 const SUPPRESS: Duration = Duration::from_secs(30);
 const PROBE_WAIT: Duration = Duration::from_secs(3);
+/// A run that has not ended this long after SIGINT gets SIGTERM, and SIGKILL
+/// `KILL_GRACE` later: a hung ffmpeg (e.g. CUDA with a graphics pipe) must not
+/// keep live off the channel and hold the GPU.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+const KILL_GRACE: Duration = Duration::from_secs(2);
 /// Global options of ErsatzTV's command that the live run keeps (the rest
 /// before the first input are options of the media input).
 const GLOBAL_FLAGS: [&str; 5] = ["-hide_banner", "-nostdin", "-nostats", "-y", "-benchmark"];
@@ -558,6 +563,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         };
         runner.current.store(child.id(), Ordering::Relaxed);
         let mut interrupted = false;
+        let mut stop = Stop::default();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -568,6 +574,10 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
                 // ffmpeg ends on SIGINT as on `q`: the segment it writes is closed and listed.
                 crate::sys::send_signal(child.id(), crate::sys::SIGINT);
                 interrupted = true;
+                stop.since = Some(Instant::now());
+            }
+            if let Some(step) = stop.escalate(&mut child) {
+                log(format_args!("channel {}: the piece did not stop on SIGINT; {step}", job.channel));
             }
             std::thread::sleep(Duration::from_millis(50));
         };
@@ -587,6 +597,32 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
             return code(status);
         }
         elapsed = elapsed.max(now);
+    }
+}
+
+/// Stopping a run after SIGINT: SIGTERM after `STOP_GRACE`, SIGKILL `KILL_GRACE` later.
+#[derive(Default)]
+struct Stop {
+    since: Option<Instant>,
+    termed: bool,
+    killed: bool,
+}
+
+impl Stop {
+    /// The next step for a run still alive, if one is due now (what was done, for the log).
+    fn escalate(&mut self, child: &mut Child) -> Option<&'static str> {
+        let waited = self.since?.elapsed();
+        if !self.termed && waited >= STOP_GRACE {
+            self.termed = true;
+            crate::sys::send_signal(child.id(), crate::sys::SIGTERM);
+            return Some("SIGTERM");
+        }
+        if !self.killed && waited >= STOP_GRACE + KILL_GRACE {
+            self.killed = true;
+            let _ = child.kill();
+            return Some("SIGKILL");
+        }
+        None
     }
 }
 
@@ -658,6 +694,29 @@ impl Write for Sink {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hung_run_is_terminated_then_killed() {
+        use super::{KILL_GRACE, STOP_GRACE, Stop};
+        // ignores SIGINT and SIGTERM, like ffmpeg stuck on a graphics pipe
+        let mut child = std::process::Command::new("sh").args(["-c", "trap '' INT TERM; sleep 30"]).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        crate::sys::send_signal(child.id(), crate::sys::SIGINT);
+        let mut stop = Stop { since: Some(std::time::Instant::now()), ..Stop::default() };
+        let mut steps = Vec::new();
+        let start = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            steps.extend(stop.escalate(&mut child));
+            assert!(start.elapsed() < STOP_GRACE + KILL_GRACE + std::time::Duration::from_secs(3), "run not stopped");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert_eq!(steps, ["SIGTERM", "SIGKILL"]);
+        assert!(!status.success());
+        assert!(start.elapsed() >= STOP_GRACE + KILL_GRACE);
+    }
+
     use super::*;
 
     fn args(list: &[&str]) -> Vec<OsString> {

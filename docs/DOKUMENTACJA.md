@@ -586,7 +586,10 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    `append_list`):
    - komenda ErsatzTV kawałka; gdy kanał przechodzi na live, nakładka kończy ją
      `SIGINT` (ffmpeg zamyka i dopisuje bieżący segment, co ok. 250 ms
-     sprawdzenie stanu);
+     sprawdzenie stanu); gdy nie skończy się w 3 s – `SIGTERM`, po kolejnych
+     2 s `SIGKILL` (zawieszony ffmpeg, np. CUDA z pipe'em grafiki, nie może
+     trzymać live poza anteną ani pamięci GPU – wcześniej nakładka czekała bez
+     końca, a ErsatzTV Next restartował sesję po „ffmpeg stall”);
    - przebieg live: wejście `GET /ingest?channel=N`, skalowanie z zachowaniem
      proporcji i czarne pasy do rozmiaru kanału, klatkaż kanału, dźwięk 48 kHz
      stereo (bez ścieżki dźwięku: cisza), grafika VizRS nałożona jak w kawałku
