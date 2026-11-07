@@ -43,6 +43,16 @@
 //     VIZRS_FFMPEG_FPS_BLEND  1 = blend frames when converting the media's rate
 //     VIZRS_FFMPEG_INGEST  1 = live ingest of the sidecar takes the channel over
 //     VIZRS_FFMPEG_STANDBY image of a live programme without its source (empty: black)
+//     VIZRS_FFMPEG_CUDA  encode = with an NVENC encoder, decoding and filters on the CPU
+//
+// With VIZRS_FFMPEG_CUDA=encode a command that encodes with NVENC (`*_nvenc`)
+// loses ErsatzTV's CUDA decoding and filters (`-hwaccel cuda`,
+// `-init_hw_device cuda`, `hwupload`, `scale_cuda`, `overlay_cuda`, `pad_cuda`,
+// `yadif_cuda`, `bwdif_cuda` become their CPU filters): only the encoder stays
+// on the card. A process then takes about half the GPU memory (720p: 118 MiB
+// instead of 218 MiB), for some CPU – on a card shared with a desktop, two
+// pieces of a channel at once (one ending, the next starting) no longer run
+// out of memory (`CUDA_ERROR_OUT_OF_MEMORY`).
 //
 // With VIZRS_FFMPEG_INGEST=1 a transcode to HLS of a channel whose live
 // source is on (sidecar `/ingest/state`) plays that source in its place
@@ -120,6 +130,8 @@ pub struct Settings {
     pub ingest: bool,
     /// Picture of a live programme without its source; empty = black.
     pub standby: String,
+    /// `encode`: NVENC commands decode and filter on the CPU (VIZRS_FFMPEG_CUDA).
+    pub cuda_encode: bool,
 }
 
 impl Settings {
@@ -134,6 +146,7 @@ impl Settings {
             blend: var("VIZRS_FFMPEG_FPS_BLEND").trim() == "1",
             ingest: var("VIZRS_FFMPEG_INGEST").trim() == "1",
             standby: var("VIZRS_FFMPEG_STANDBY").trim().to_owned(),
+            cuda_encode: var("VIZRS_FFMPEG_CUDA").trim().eq_ignore_ascii_case("encode"),
         }
     }
 }
@@ -416,10 +429,143 @@ pub fn with_catchup(args: Vec<OsString>, rate: &str) -> Vec<OsString> {
 
 /// The command with the forced rate, blending, preset and catch-up rate, when set.
 fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
+    let args = if settings.cuda_encode { cuda_encode_only(args) } else { args };
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
     let blended = with_blend(rated, settings.blend, source);
     with_catchup(with_preset(blended, &settings.preset), &settings.catchup)
+}
+
+/// Options of ErsatzTV's CUDA decoding left out with `VIZRS_FFMPEG_CUDA=encode` (with their value).
+const CUDA_OPTIONS: [&str; 4] = ["-hwaccel", "-hwaccel_output_format", "-hwaccel_device", "-filter_hw_device"];
+
+/// A command encoding with NVENC, its CUDA decoding and filters moved to the
+/// CPU (`VIZRS_FFMPEG_CUDA=encode`); any other command, or one it cannot
+/// rewrite, unchanged.
+pub fn cuda_encode_only(args: Vec<OsString>) -> Vec<OsString> {
+    let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
+    let Some(text) = text else { return args };
+    let nvenc = text.windows(2).any(|w| ["-c:v", "-vcodec", "-codec:v"].contains(&w[0]) && w[1].ends_with("_nvenc"));
+    let cuda = text.windows(2).any(|w| w[0] == "-hwaccel" && w[1] == "cuda") || text.iter().any(|a| a.contains("_cuda"));
+    if !nvenc || !cuda {
+        return args;
+    }
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < text.len() {
+        let arg = text[i];
+        let value = text.get(i + 1).copied().unwrap_or("");
+        if CUDA_OPTIONS.contains(&arg) && i + 1 < text.len() {
+            i += 2;
+            continue;
+        }
+        if arg == "-init_hw_device" && value.starts_with("cuda") {
+            i += 2;
+            continue;
+        }
+        if ["-filter_complex", "-vf", "-filter:v"].contains(&arg) && i + 1 < text.len() {
+            match cpu_filters(value) {
+                Some(filters) => out.extend([OsString::from(arg), OsString::from(filters)]),
+                None => return args,
+            }
+            i += 2;
+            continue;
+        }
+        out.push(OsString::from(arg));
+        i += 1;
+    }
+    out
+}
+
+/// A filter graph with its CUDA filters as CPU filters; None = cannot tell.
+fn cpu_filters(graph: &str) -> Option<String> {
+    let chains: Vec<String> = graph.split(';').map(cpu_chain).collect::<Option<_>>()?;
+    Some(chains.join(";"))
+}
+
+/// One chain `[in]f1,f2[out]`: uploads dropped, CUDA filters replaced.
+fn cpu_chain(chain: &str) -> Option<String> {
+    // input labels, filters, output labels
+    let (inputs, rest) = chain.split_at(leading_labels(chain));
+    let tail = trailing_labels(rest);
+    let (body, outputs) = rest.split_at(rest.len() - tail);
+    let mut filters = Vec::new();
+    for filter in body.split(',').filter(|f| !f.is_empty()) {
+        let (name, options) = filter.split_once('=').unwrap_or((filter, ""));
+        match name {
+            "hwupload" | "hwupload_cuda" => {}
+            "scale_cuda" => filters.extend(cpu_scale(options)),
+            "overlay_cuda" => filters.push(cpu_overlay(options)),
+            "pad_cuda" => filters.push(format!("pad={options}")),
+            "yadif_cuda" => filters.push(if options.is_empty() { "yadif".into() } else { format!("yadif={options}") }),
+            "bwdif_cuda" => filters.push(if options.is_empty() { "bwdif".into() } else { format!("bwdif={options}") }),
+            other if other.ends_with("_cuda") || other == "hwdownload" => return None,
+            _ => filters.push(filter.to_owned()),
+        }
+    }
+    if filters.is_empty() {
+        filters.push("null".into());
+    }
+    Some(format!("{inputs}{}{outputs}", filters.join(",")))
+}
+
+/// Bytes of the `[label]` run at the start.
+fn leading_labels(chain: &str) -> usize {
+    let mut at = 0;
+    while chain[at..].starts_with('[') {
+        match chain[at..].find(']') {
+            Some(end) => at += end + 1,
+            None => break,
+        }
+    }
+    at
+}
+
+/// Bytes of the `[label]` run at the end.
+fn trailing_labels(chain: &str) -> usize {
+    let mut end = chain.len();
+    while chain[..end].ends_with(']') {
+        match chain[..end].rfind('[') {
+            Some(start) => end = start,
+            None => break,
+        }
+    }
+    chain.len() - end
+}
+
+/// `scale_cuda=W:H:format=F:…` → `scale=W:H` and `format=F` (CUDA-only options dropped).
+fn cpu_scale(options: &str) -> Vec<String> {
+    let mut size = Vec::new();
+    let mut named = Vec::new();
+    let mut format = None;
+    for (n, option) in options.split(':').filter(|o| !o.is_empty()).enumerate() {
+        match option.split_once('=') {
+            Some(("format", f)) => format = Some(f.to_owned()),
+            Some(("w" | "h" | "force_original_aspect_ratio" | "force_divisible_by", _)) => named.push(option.to_owned()),
+            Some(_) => {}
+            None if n < 2 => size.push(option.to_owned()),
+            None => {}
+        }
+    }
+    let mut out = Vec::new();
+    if !size.is_empty() || !named.is_empty() {
+        let mut all = size;
+        all.extend(named);
+        out.push(format!("scale={}", all.join(":")));
+    }
+    if let Some(format) = format {
+        out.push(format!("format={format}"));
+    }
+    out
+}
+
+/// `overlay_cuda=x=X:y=Y:…` → `overlay=…:format=auto` (yuva graphics over yuv video).
+fn cpu_overlay(options: &str) -> String {
+    let mut all: Vec<&str> = options.split(':').filter(|o| !o.is_empty()).collect();
+    if !all.iter().any(|o| o.starts_with("format=")) {
+        all.push("format=auto");
+    }
+    format!("overlay={}", all.join(":"))
 }
 
 /// `/internal/graphics/<channel>/<item>`: the channel, still percent-encoded.
@@ -974,6 +1120,83 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn cuda_encode_only_moves_decoding_and_filters_to_the_cpu() {
+        let real = args(&[
+            "-threads",
+            "1",
+            "-init_hw_device",
+            "cuda",
+            "-hwaccel",
+            "cuda",
+            "-hwaccel_output_format",
+            "cuda",
+            "-i",
+            "/m/a.mp4",
+            "-f",
+            "rawvideo",
+            "-i",
+            "pipe:6",
+            "-filter_complex",
+            "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=1056:320:0:0,format=yuva420p,hwupload_cuda[vz_g0];[vz_s1]crop=1280:80:0:320,format=yuva420p,hwupload_cuda[vz_g1];[0:0]hwupload,fps=23620/1000,setsar=1,scale_cuda=format=yuv420p[v_m0];[v_m0]fps=25[v_m0_fps];[v_m0_fps][vz_g0]overlay_cuda=x=112:y=208[vz_o0];[vz_o0][vz_g1]overlay_cuda=x=0:y=640[v_o0]",
+            "-map",
+            "[v_o0]",
+            "-vcodec",
+            "h264_nvenc",
+            "-b:v",
+            "2000k",
+            "-f",
+            "hls",
+            "o.m3u8",
+        ]);
+        let cpu = cuda_encode_only(real);
+        assert_eq!(
+            cpu,
+            args(&[
+                "-threads",
+                "1",
+                "-i",
+                "/m/a.mp4",
+                "-f",
+                "rawvideo",
+                "-i",
+                "pipe:6",
+                "-filter_complex",
+                "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=1056:320:0:0,format=yuva420p[vz_g0];[vz_s1]crop=1280:80:0:320,format=yuva420p[vz_g1];[0:0]fps=23620/1000,setsar=1,format=yuv420p[v_m0];[v_m0]fps=25[v_m0_fps];[v_m0_fps][vz_g0]overlay=x=112:y=208:format=auto[vz_o0];[vz_o0][vz_g1]overlay=x=0:y=640:format=auto[v_o0]",
+                "-map",
+                "[v_o0]",
+                "-vcodec",
+                "h264_nvenc",
+                "-b:v",
+                "2000k",
+                "-f",
+                "hls",
+                "o.m3u8",
+            ])
+        );
+        // scale with a size, a lone upload, deinterlacing
+        let other = cuda_encode_only(args(&[
+            "-hwaccel",
+            "cuda",
+            "-i",
+            "a",
+            "-vf",
+            "[0:0]hwupload_cuda,yadif_cuda,scale_cuda=1920:1080:format=nv12:interp_algo=lanczos[v]",
+            "-c:v",
+            "hevc_nvenc",
+            "o",
+        ]));
+        assert_eq!(other, args(&["-i", "a", "-vf", "[0:0]yadif,scale=1920:1080,format=nv12[v]", "-c:v", "hevc_nvenc", "o"]));
+        assert_eq!(cpu_chain("[a]hwupload_cuda[b]").unwrap(), "[a]null[b]");
+        // not NVENC, no CUDA, or an unknown CUDA filter: unchanged
+        let x264 = args(&["-hwaccel", "cuda", "-i", "a", "-c:v", "libx264", "o"]);
+        assert_eq!(cuda_encode_only(x264.clone()), x264);
+        let plain = args(&["-i", "a", "-c:v", "h264_nvenc", "o"]);
+        assert_eq!(cuda_encode_only(plain.clone()), plain);
+        let unknown = args(&["-hwaccel", "cuda", "-i", "a", "-vf", "tonemap_cuda=x", "-c:v", "h264_nvenc", "o"]);
+        assert_eq!(cuda_encode_only(unknown.clone()), unknown);
     }
 
     #[test]

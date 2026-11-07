@@ -189,6 +189,10 @@ services:
       # Picture of a live programme while the studio is not on (path in this container,
       # e.g. /media/plansza.png); empty = black.
       VIZRS_FFMPEG_STANDBY: ${VIZRS_FFMPEG_STANDBY:-}
+      # encode = with NVENC only the encoder runs on the card; decoding and filters on
+      # the CPU (about half the GPU memory per piece, for a card shared with a desktop).
+      # Empty = ErsatzTV's command (CUDA decoding and filters with NVENC).
+      VIZRS_FFMPEG_CUDA: ${VIZRS_FFMPEG_CUDA:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config
