@@ -176,19 +176,32 @@ fn read_chunked(reader: &mut impl BufRead, max_body: usize) -> Result<Vec<u8>, E
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        303 => "See Other",
         400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
+        409 => "Conflict",
         413 => "Payload Too Large",
         500 => "Internal Server Error",
+        502 => "Bad Gateway",
         _ => "",
     }
 }
 
 /// A complete reply; the connection closes after it.
 pub fn respond(stream: &mut impl Write, status: u16, content_type: Option<&str>, body: &[u8]) -> io::Result<()> {
+    match content_type {
+        Some(content_type) => respond_with(stream, status, &[("Content-Type", content_type)], body),
+        None => respond_with(stream, status, &[], body),
+    }
+}
+
+/// A complete reply with header lines of its own.
+pub fn respond_with(stream: &mut impl Write, status: u16, headers: &[(&str, &str)], body: &[u8]) -> io::Result<()> {
     let mut head = format!("HTTP/1.1 {status} {}\r\n", reason(status));
-    if let Some(content_type) = content_type {
-        head.push_str(&format!("Content-Type: {content_type}\r\n"));
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str(&format!("Content-Length: {}\r\nConnection: close\r\n\r\n", body.len()));
     let mut reply = head.into_bytes();

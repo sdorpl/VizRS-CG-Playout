@@ -69,6 +69,32 @@ pub fn rtmp_key(url: &str) -> Option<&str> {
     path.rsplit('/').next().filter(|k| !k.is_empty() && path.matches('/').count() >= 2)
 }
 
+/// What a publisher needs to reach a listener (live API, VizRS Live): RTMP server and
+/// stream key as OBS asks for them, or the SRT address and passphrase. `host`
+/// "" = unknown (the panel puts in its own); a port given replaces the
+/// listener's (compose maps the host port elsewhere).
+pub fn publisher(listener: &Listener, host: &str, rtmp_port: Option<u16>, srt_port: Option<u16>) -> crate::json::Value {
+    use crate::json;
+    let url = Url::split(&listener.url);
+    let kind = url.as_ref().map_or(String::new(), |u| u.scheme.to_ascii_lowercase());
+    let own_port = url.as_ref().and_then(|u| u.netloc.rsplit_once(':')).and_then(|(_, p)| p.parse::<u16>().ok());
+    let port = if kind == "rtmp" { rtmp_port.or(own_port).unwrap_or(1935) } else { srt_port.or(own_port).unwrap_or(0) };
+    let path = url.as_ref().map_or("", |u| u.path);
+    let key = if kind == "rtmp" { rtmp_key(&listener.url).unwrap_or("") } else { "" };
+    let app = if key.is_empty() { path } else { &path[..path.len() - key.len() - 1] };
+    let query = url.as_ref().map_or("", |u| u.query.trim_start_matches('?'));
+    let param = |name: &str| query.split('&').find_map(|kv| kv.strip_prefix(name).and_then(|v| v.strip_prefix('='))).unwrap_or("");
+    json::object([
+        ("kind", kind.as_str().into()),
+        ("host", host.into()),
+        ("port", f64::from(port).into()),
+        ("app", app.into()),
+        ("key", key.into()),
+        ("passphrase", param("passphrase").into()),
+        ("streamid", param("streamid").into()),
+    ])
+}
+
 /// ffmpeg's arguments for a listener: the publisher remuxed to MPEG-TS on stdout.
 pub fn listen_args(url: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-nostats", "-loglevel", "warning"].iter().map(OsString::from).collect();
@@ -310,5 +336,24 @@ mod tests {
         assert!(!text("srt://0.0.0.0:9000").contains("-listen"));
         assert_eq!(rtmp_key("rtmp://0.0.0.0:1936/live/k"), Some("k"));
         assert_eq!(rtmp_key("rtmp://0.0.0.0:1936/live"), None);
+    }
+
+    #[test]
+    fn publisher_settings() {
+        use crate::json::Value;
+        let get = |v: &Value, k: &str| v.get(k).map(|x| x.to_string()).unwrap_or_default();
+        let rtmp = Listener { channel: "1".into(), url: "rtmp://0.0.0.0:1936/live/studio".into() };
+        let v = publisher(&rtmp, "tv.example.pl", None, None);
+        assert_eq!(
+            (get(&v, "kind"), get(&v, "port"), get(&v, "app"), get(&v, "key")),
+            ("\"rtmp\"".into(), "1936".into(), "\"/live\"".into(), "\"studio\"".into())
+        );
+        assert_eq!(get(&publisher(&rtmp, "", Some(1940), None), "port"), "1940");
+        let srt = Listener { channel: "1".into(), url: "srt://0.0.0.0:9000?passphrase=tajne-haslo-1&latency=200000".into() };
+        let v = publisher(&srt, "", None, Some(9100));
+        assert_eq!(
+            (get(&v, "kind"), get(&v, "port"), get(&v, "passphrase"), get(&v, "key")),
+            ("\"srt\"".into(), "9100".into(), "\"tajne-haslo-1\"".into(), "\"\"".into())
+        );
     }
 }

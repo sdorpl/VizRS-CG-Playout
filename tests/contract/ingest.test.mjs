@@ -104,7 +104,7 @@ async function state(cg, channel) {
 
 test("ingest API: token, live from the first keyframe, readers join there, one source per channel", async (t) => {
   const cg = await sidecar(t, { ingest_token: TOKEN });
-  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, live: false, audio: false, video: null, seconds: null });
+  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, seconds: null });
 
   const refused = await postSource(cg, "1", "wrong");
   assert.equal(refused.status, 401);
@@ -119,7 +119,7 @@ test("ingest API: token, live from the first keyframe, readers join there, one s
 
   source.socket.write(Buffer.concat([video(true, 2), video(false, 3)]));
   for (let i = 0; i < 40 && !(await state(cg, "1")).live; i++) await sleep(50);
-  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, live: true, audio: true, video: "h264", seconds: 0 });
+  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, hold: false, live: true, audio: true, video: "h264", seconds: 0 });
   assert.equal((await cg.health()).ingest[0].channel, "1");
 
   const second = await postSource(cg, "1", TOKEN);

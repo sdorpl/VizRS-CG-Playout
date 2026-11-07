@@ -795,3 +795,55 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
     assert.equal(result.read, 2 * yuvaSize(8, 4), encoder);
   }
 });
+
+test("graphics rules from the live API: validated, saved, in force from the next item, kept after a restart", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const folder = mkdtempSync(path.join(os.tmpdir(), "vizrs-graphics-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const config = {
+    vizrs: { address: vizrs.address },
+    on_clip: "TAKE 1 headline={title}",
+    in_seconds: 0,
+    out_seconds: -1,
+    lead_seconds: 0,
+    channel_buses: false,
+    panel_token: "p",
+    etv_config: folder,
+    sync_seconds: 3600,
+  };
+  let cg = await startSidecar(config);
+  const api = (method, body) =>
+    fetch(`${cg.url}/api/live/graphics`, {
+      method,
+      headers: { "X-Panel-Token": "p", "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+
+  const first = await api("GET");
+  assert.equal(first.status, 200);
+  assert.equal(first.body.source, "config");
+  assert.equal(first.body.rules.on_clip, "TAKE 1 headline={title}");
+  assert.equal((await fetch(`${cg.url}/api/live/graphics`)).status, 401, "token required");
+
+  await runClient(`${cg.url}/etv?channel=1`, item("/m/A.mp4", "2026-10-24T20:00:00+02:00"), 300);
+  const bad = await api("PUT", { on_clip: "TAKE 9", shows: [{ show_title: "(" }] });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /show_title/);
+  const put = await api("PUT", { on_clip: "TAKE 2 headline={title}", channels: { 3: { on_clip: "TAKE 3" } } });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.source, "file");
+  await runClient(`${cg.url}/etv?channel=1`, item("/m/B.mp4", "2026-10-24T21:00:00+02:00"), 300);
+  await runClient(`${cg.url}/etv?channel=3`, item("/m/C.mp4", "2026-10-24T21:00:00+02:00"), 300);
+  await sleep(100);
+  assert.deepEqual(vizrs.received, ["TAKE 1 headline=A", "TAKE 2 headline=B", "TAKE 3"]);
+  const saved = JSON.parse(readFileSync(path.join(folder, "vizrs-live", "graphics.json"), "utf8"));
+  assert.equal(saved.on_clip, "TAKE 2 headline={title}");
+
+  await cg.stop();
+  cg = await startSidecar(config);
+  t.after(cg.stop);
+  const again = await api("GET");
+  assert.equal(again.body.source, "file");
+  assert.equal(again.body.rules.channels["3"].on_clip, "TAKE 3");
+});

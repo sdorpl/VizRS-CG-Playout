@@ -37,7 +37,10 @@
   "renderer": "auto",
   "renderer_bin": "",
   "ingest_token": "",
+  "panel_token": "",
   "ingest_anytime": true,
+  "ingest": "",
+  "ingest_public": "",
   "live_shows": [
     { "channel": "1", "title": "Wiadomości na żywo", "duration": "00:30:00", "plot": "Serwis ze studia" }
   ]

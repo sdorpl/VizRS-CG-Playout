@@ -42,16 +42,19 @@ impl Shot {
 type Part = (Layout, bool);
 
 /// A decoded picture; built once, shared by the sessions of the same size.
+/// Its yuva420p frame is kept only while a session holds it: the history
+/// keeps pictures for seconds after the overlay took them, and a 1080p frame
+/// is 5 MB (seconds of a moving graphic were gigabytes).
 #[derive(Debug)]
 pub struct Picture {
     pub rects: Vec<Rect>,
     packet: OnceLock<Vec<u8>>,
-    yuva: OnceLock<(Part, Arc<Yuva>)>,
+    yuva: Mutex<Option<(Part, Weak<Yuva>)>>,
 }
 
 impl Picture {
     pub fn new(rects: Vec<Rect>) -> Picture {
-        Picture { rects, packet: OnceLock::new(), yuva: OnceLock::new() }
+        Picture { rects, packet: OnceLock::new(), yuva: Mutex::new(None) }
     }
 
     /// ETV packet: the visible rectangles, or Clear.
@@ -66,8 +69,20 @@ impl Picture {
             Some(a) => yuva_area(&self.rects, (a.x, a.y, a.w, a.h), hd),
             None => yuva_area(&layout.place(&self.rects), (0, 0, layout.width, layout.height), hd),
         };
-        let ((cached, cached_hd), data) = self.yuva.get_or_init(|| ((layout.clone(), hd), build()));
-        if cached == layout && *cached_hd == hd { Arc::clone(data) } else { build() }
+        let mut cache = self.yuva.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(((cached, cached_hd), weak)) = cache.as_ref() {
+            if cached == layout && *cached_hd == hd {
+                if let Some(data) = weak.upgrade() {
+                    return data;
+                }
+            } else if weak.strong_count() > 0 {
+                // Another layout in use: not cached.
+                return build();
+            }
+        }
+        let data = build();
+        *cache = Some(((layout.clone(), hd), Arc::downgrade(&data)));
+        data
     }
 }
 
@@ -173,11 +188,21 @@ impl History {
     }
 
     /// A new decoded picture drawn at `at`. Two empty pictures in a row are one.
+    /// A picture equal to the current one shares its pixels (and the packet
+    /// and yuva420p frame made from them): a standing graphic drawn 50 times
+    /// a second would otherwise keep seconds of identical copies.
     pub fn set(&self, rects: Vec<Rect>, at: Instant) {
-        if rects.is_empty() && self.current().is_empty() {
+        let current = self.current();
+        if rects.is_empty() && current.is_empty() {
             return;
         }
-        self.push(at, |seq, at| Frame::new(seq, rects, at));
+        match &current.content {
+            Content::Decoded(picture) if picture.rects == rects => {
+                let picture = Arc::clone(picture);
+                self.push(at, |seq, at| Frame { seq, at, content: Content::Decoded(picture) });
+            }
+            _ => self.push(at, |seq, at| Frame::new(seq, rects, at)),
+        }
     }
 
     /// A new PNG drawn at `at`, decoded once a session shows it.
@@ -247,6 +272,23 @@ mod tests {
         history.set(Vec::new(), t0 + Duration::from_secs(3));
         assert_eq!(history.current().seq, 4);
         assert_eq!(history.lock().len(), 2);
+    }
+
+    #[test]
+    fn a_standing_picture_is_shared() {
+        let history = History::new(Duration::from_secs(5));
+        let t0 = Instant::now();
+        history.set(pixel(1), t0);
+        let first = history.current().picture();
+        for i in 1..100 {
+            history.set(pixel(1), t0 + Duration::from_millis(20 * i));
+        }
+        // Every moment has its own frame, all with the same pixels.
+        assert_eq!(history.current().seq, 100);
+        assert!(Arc::ptr_eq(&first, &history.frame_at(t0 + Duration::from_millis(1000)).picture()));
+        history.set(pixel(2), t0 + Duration::from_secs(3));
+        assert!(!Arc::ptr_eq(&first, &history.current().picture()));
+        assert_eq!(history.current().picture().rects, pixel(2));
     }
 
     #[test]

@@ -44,6 +44,7 @@ services:
     - VIZRS_INGEST_TOKEN=${VIZRS_INGEST_TOKEN:-}
     - VIZRS_INGEST_ANYTIME=${VIZRS_INGEST_ANYTIME:-1}
     - VIZRS_LIVE_SHOWS=${VIZRS_LIVE_SHOWS:-}
+    - VIZRS_PANEL_TOKEN=${VIZRS_PANEL_TOKEN:-}
     image: ${CG_IMAGE:-ghcr.io/sdorpl/vizrs-cg:latest}
     init: true
     labels:

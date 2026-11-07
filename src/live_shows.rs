@@ -5,14 +5,21 @@
 // (`/ingest?channel=N&slot=1`), its title and description go to the guide,
 // its length is the length in the schedule. The overlay plays the studio there
 // while it is on air and a standby picture while it is not (src/takeover.rs).
-// Files are written when they change and never deleted: ErsatzTV would drop the
-// item from the schedules it is in.
+// Files are written when they change and never deleted by the sync: ErsatzTV
+// would drop the item from the schedules it is in (the live API deletes the
+// file of a programme the operator removes).
+//
+// The list itself lives in `<etv_config>/vizrs-live/shows.json`, which the Live
+// Panel edits (src/panel.rs); `live_shows` / `VIZRS_LIVE_SHOWS` only fills it
+// the first time, when there is no such file yet.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
-use crate::config::LiveShow;
+use crate::config::{self, LiveShow};
+use crate::json::{self, Value};
 use crate::overlay::quote_plus;
 use crate::sync::write_atomic;
 
@@ -107,6 +114,104 @@ pub fn write(shows: &[LiveShow], folder: &Path, sidecar: &str) -> io::Result<usi
     Ok(changed)
 }
 
+static STORE: Mutex<()> = Mutex::new(());
+
+/// Held while `shows.json` and the definitions change: the periodic sync must
+/// not write back the file of a programme the panel has just removed.
+pub fn lock() -> MutexGuard<'static, ()> {
+    STORE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Most programmes in `shows.json`.
+pub const MAX_SHOWS: usize = 200;
+const MAX_TITLE: usize = 200;
+const MAX_PLOT: usize = 2000;
+const MAX_CHANNEL: usize = 20;
+
+/// `shows.json` in the folder of the definitions.
+pub fn store_path(etv_config: &str) -> PathBuf {
+    folder(etv_config).join("shows.json")
+}
+
+/// The file stem of a programme, its id in the panel.
+pub fn id(show: &LiveShow) -> String {
+    file_name(show).trim_end_matches(".yml").to_owned()
+}
+
+/// A programme as the live API takes it: limits of length and characters
+/// (data from a browser is hostile, as in VizRS `validate.rs`).
+pub fn validate(show: &LiveShow) -> Result<(), String> {
+    let channel = show.channel.trim();
+    if channel.is_empty() || channel.len() > MAX_CHANNEL || !channel.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') {
+        return Err("kanał: numer kanału ErsatzTV (cyfry, kropka)".into());
+    }
+    let title = show.title.trim();
+    if title.is_empty() || title.chars().count() > MAX_TITLE || title.chars().any(char::is_control) {
+        return Err(format!("tytuł: 1–{MAX_TITLE} znaków, bez znaków sterujących"));
+    }
+    if show.plot.chars().count() > MAX_PLOT || show.plot.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(format!("opis: najwyżej {MAX_PLOT} znaków"));
+    }
+    if !(1.0..86_400.0).contains(&show.seconds) {
+        return Err("długość: od 00:00:01 do 23:59:59".into());
+    }
+    if slug(&show.title).is_empty() {
+        return Err("tytuł: potrzebna choć jedna litera albo cyfra".into());
+    }
+    Ok(())
+}
+
+/// The list as `shows.json`.
+pub fn to_json(shows: &[LiveShow]) -> String {
+    let items = shows.iter().map(|show| {
+        json::object([
+            ("channel", show.channel.as_str().into()),
+            ("title", show.title.as_str().into()),
+            ("duration", clock(show.seconds).into()),
+            ("plot", show.plot.as_str().into()),
+            ("file", id(show).into()),
+            ("collection", show.collection.map_or(Value::Null, Value::from)),
+        ])
+    });
+    let mut text = json::object([("shows", Value::Array(items.collect()))]).to_string();
+    text.push('\n');
+    text
+}
+
+/// `shows.json` read back; every programme gets its file name fixed.
+pub fn from_json(text: &str) -> Result<Vec<LiveShow>, String> {
+    let value = json::parse(text).map_err(|e| e.to_string())?;
+    let mut shows = config::live_shows(value.get("shows").ok_or("shows.json: no \"shows\"")?)?;
+    for show in &mut shows {
+        show.file = id(show);
+    }
+    Ok(shows)
+}
+
+/// The programmes of `shows.json`; without the file, the configured ones
+/// (`live_shows`, `VIZRS_LIVE_SHOWS`) become the file, once.
+pub fn load(etv_config: &str, configured: &[LiveShow]) -> io::Result<Vec<LiveShow>> {
+    let path = store_path(etv_config);
+    match fs::read_to_string(&path) {
+        Ok(text) => from_json(&text).map_err(|e| io::Error::other(format!("{}: {e}", path.display()))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if configured.is_empty() {
+                return Ok(Vec::new());
+            }
+            let shows: Vec<LiveShow> = configured.iter().map(|s| LiveShow { file: id(s), ..s.clone() }).collect();
+            save(etv_config, &shows)?;
+            crate::info!("{} live programmes of VIZRS_LIVE_SHOWS moved to {}; VizRS Live edits them now", shows.len(), path.display());
+            Ok(shows)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub fn save(etv_config: &str, shows: &[LiveShow]) -> io::Result<()> {
+    fs::create_dir_all(folder(etv_config))?;
+    write_atomic(&store_path(etv_config), &to_json(shows))
+}
+
 /// `scheme://host:port` of a URL (the sidecar from the address of the graphics element).
 pub fn origin(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
@@ -119,7 +224,7 @@ mod tests {
     use super::*;
 
     fn show(title: &str) -> LiveShow {
-        LiveShow { channel: "1".into(), title: title.into(), seconds: 1800.0, plot: String::new(), file: String::new() }
+        LiveShow { channel: "1".into(), title: title.into(), seconds: 1800.0, ..LiveShow::default() }
     }
 
     #[test]
@@ -150,5 +255,37 @@ mod tests {
         assert_eq!(write(&[], &dir.join("none"), "x").unwrap(), 0);
         assert!(!dir.join("none").exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn store_moves_the_configured_shows_once() {
+        let dir = std::env::temp_dir().join(format!("vizrs-store-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config = dir.to_str().unwrap();
+        assert_eq!(load(config, &[]).unwrap(), []);
+        assert!(!store_path(config).exists());
+        let shows = load(config, &[show("Wiadomości")]).unwrap();
+        assert_eq!(shows[0].file, "1-wiadomosci");
+        // The file now wins over the configuration.
+        assert_eq!(load(config, &[show("Inna")]).unwrap(), shows);
+        let edited = [LiveShow { collection: Some(12), plot: "a\nb".into(), ..shows[0].clone() }];
+        save(config, &edited).unwrap();
+        assert_eq!(load(config, &[]).unwrap(), edited);
+        fs::write(store_path(config), "{").unwrap();
+        assert!(load(config, &[]).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn validation() {
+        assert_eq!(validate(&show("Wiadomości")), Ok(()));
+        assert!(validate(&LiveShow { channel: "1; rm".into(), ..show("A") }).is_err());
+        assert!(validate(&LiveShow { title: " ".into(), ..show("A") }).is_err());
+        assert!(validate(&LiveShow { title: "x".repeat(201), ..show("A") }).is_err());
+        assert!(validate(&LiveShow { title: "a\u{7}".into(), ..show("A") }).is_err());
+        assert!(validate(&LiveShow { seconds: 86_400.0, ..show("A") }).is_err());
+        assert!(validate(&LiveShow { seconds: 0.5, ..show("A") }).is_err());
+        assert!(validate(&LiveShow { channel: "2.5".into(), ..show("„!”") }).is_err());
+        assert_eq!(validate(&LiveShow { channel: "2.5".into(), ..show("Ż") }), Ok(()));
     }
 }

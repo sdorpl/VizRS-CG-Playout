@@ -119,6 +119,31 @@ pub fn post(url: &str, headers: &str, body: &str) -> io::Result<()> {
     }
 }
 
+/// Any method with an optional JSON body; the status code and the whole reply
+/// body, whatever the status (the caller decides what is an error).
+pub fn request(method: &str, url: &str, headers: &str, body: Option<&str>) -> io::Result<(u16, String)> {
+    let parts = Url::split(url).ok_or_else(|| error(format!("bad URL {url}")))?;
+    let mut stream = connect(&parts)?;
+    let mut head = format!(
+        "{method} {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\nAccept: application/json\r\n{headers}",
+        parts.target(),
+        parts.netloc
+    );
+    if let Some(body) = body {
+        head.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len()));
+    } else if method != "GET" {
+        head.push_str("Content-Length: 0\r\n");
+    }
+    head.push_str("\r\n");
+    head.push_str(body.unwrap_or(""));
+    stream.write_all(head.as_bytes())?;
+    let line = read_head(&mut stream, parts.netloc)?;
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply)?;
+    let status = status_of(&line).parse().map_err(|_| error(format!("{}: bad status line", parts.netloc)))?;
+    Ok((status, String::from_utf8_lossy(&reply).into_owned()))
+}
+
 /// Status code of a status line.
 pub fn status_of(line: &str) -> &str {
     line.split(' ').nth(1).unwrap_or("")
