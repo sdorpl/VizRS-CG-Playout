@@ -120,6 +120,15 @@ impl Footprints {
         (!etv_config.is_empty()).then(|| Path::new(etv_config).join("vizrs-live").join("footprints.json"))
     }
 
+    /// How many page footprints are known (all sizes).
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+
     /// The footprint of `page` on a channel of `size`, if learnt.
     pub fn get(&self, page: &str, size: (u32, u32)) -> Option<&[Area]> {
         self.pages.get(&key(page, size)).map(Vec::as_slice)
@@ -196,29 +205,25 @@ impl Footprints {
 /// Zones covering more of the channel than this are not worth an atlas: the whole channel.
 pub const WHOLE_SHARE: f64 = 0.6;
 
-/// The zones of an ffmpeg run (PLAN-strefy S2): the footprints of the pages on
-/// air (`on_air`, keys `id:number`) and of the pages the rules may take in the
-/// piece (`numbers`, as in `TAKE 4001`), merged. `None` = the whole channel:
-/// a page without a footprint, no graphics known at all, or zones over
-/// `WHOLE_SHARE` of the channel.
+/// The zones of an ffmpeg run (PLAN-strefy S2, S3a): the footprints of all the
+/// pages known on a channel of `size`, merged – so a known page the operator
+/// takes in the middle of the run is not cut off. `None` = the whole channel:
+/// a page on air (`on_air`, keys `id:number`) or a page the rules may take
+/// (`numbers`, as in `TAKE 4001`) without a footprint yet, no footprint at all,
+/// or zones over `WHOLE_SHARE` of the channel.
 pub fn zones(footprints: &Footprints, on_air: &[OnAir], numbers: &[String], size: (u32, u32)) -> Option<Vec<Area>> {
-    let mut areas = Vec::new();
+    let suffix = format!("@{}x{}", size.0, size.1);
     for page in on_air {
-        areas.extend_from_slice(footprints.get(&page.page, size)?);
+        footprints.get(&page.page, size)?;
     }
     for number in numbers {
-        let suffix = format!(":{number}@{}x{}", size.0, size.1);
-        let mut found = false;
-        for (key, list) in &footprints.pages {
-            if key.ends_with(&suffix) {
-                areas.extend_from_slice(list);
-                found = true;
-            }
-        }
-        if !found {
+        let rule = format!(":{number}{suffix}");
+        if !footprints.pages.keys().any(|key| key.ends_with(&rule)) {
             return None;
         }
     }
+    let areas: Vec<Area> =
+        footprints.pages.iter().filter(|(key, _)| key.ends_with(&suffix)).flat_map(|(_, list)| list.iter().copied()).collect();
     if areas.is_empty() {
         return None;
     }
@@ -226,6 +231,11 @@ pub fn zones(footprints: &Footprints, on_air: &[OnAir], numbers: &[String], size
     let pixels: u64 = areas.iter().map(|a| u64::from(a.w) * u64::from(a.h)).sum();
     let share = pixels as f64 / (f64::from(size.0) * f64::from(size.1));
     (share <= WHOLE_SHARE).then_some(areas)
+}
+
+/// Whether every rectangle (x, y, w, h) lies inside one of the zones.
+pub fn covered(zones: &[Area], rects: &[(u32, u32, u32, u32)]) -> bool {
+    rects.iter().all(|&(x, y, w, h)| zones.iter().any(|z| contains(*z, Area { x, y, w, h })))
 }
 
 /// A rectangle snapped out to the grid, with the margin, even and inside the channel.
@@ -344,11 +354,15 @@ mod tests {
         // logo on air, the title will be taken by on_clip (TAKE 4001)
         let z = zones(&f, &[page("logo:3001", 1)], &["4001".into()], HD).unwrap();
         assert_eq!(z.len(), 2);
+        // nothing on air and no rules: still all the known pages (the operator may take them)
+        assert_eq!(zones(&f, &[], &[], HD).unwrap().len(), 2);
+        assert!(covered(&z, &[(1700, 40, 160, 160), (100, 850, 800, 120)]));
+        assert!(!covered(&z, &[(900, 400, 50, 50)]));
         // a page with no footprint: the whole channel
         assert_eq!(zones(&f, &[page("x:9", 1)], &[], HD), None);
         assert_eq!(zones(&f, &[], &["5005".into()], HD), None);
-        // nothing known: the whole channel
-        assert_eq!(zones(&f, &[], &[], HD), None);
+        // nothing known for another size: the whole channel
+        assert_eq!(zones(&f, &[], &[], (1280, 720)), None);
         // a full-screen page: over WHOLE_SHARE = the whole channel
         f.learn(&[page("full:7", 1)], &[(0, 0, 1920, 1080)], HD);
         assert_eq!(zones(&f, &[page("full:7", 1)], &[], HD), None);

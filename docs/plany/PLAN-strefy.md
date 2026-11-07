@@ -1,6 +1,6 @@
 # PLAN-strefy – strefy grafiki liczone z tego, co jest na antenie
 
-> Stan: propozycja (2026-11-07). Opis działania po wdrożeniu – `docs/DOKUMENTACJA.md` §1 („Obszar grafiki”).
+> Stan: w toku – S0–S3a, S4, S5 (CG Playout) zrobione 2026-11-07; zostają S3b, S6 i wiersz w VizRS Live. Opis działania po wdrożeniu – `docs/DOKUMENTACJA.md` §1 („Obszar grafiki”).
 
 ## Problem
 
@@ -102,9 +102,10 @@ Wniosek dla S2: atlas układa strefy jedna pod drugą z szerokością najszersze
 | S0 | Pomiar wyjściowy na lokalnym stosie: CPU sidecara i ErsatzTV, pamięć GPU, ruch pipe przy pełnym ekranie (benchmark `bench/`, `VIZRS_FFMPEG_FPS=25` i `50`) | – | zrobione (2026-11-07, wyniki niżej) |
 | S1 | Rejestr śladów stron: uczenie z `visible_rects` przy znanych stronach na antenie, normalizacja, `footprints.json`, testy jednostkowe (przypisanie pikseli, sklejanie, unieważnienie przy zmianie show) | S0 | zrobione (2026-11-07; `src/footprint.rs`, uczenie co 0,5 s w wątku sidecara, `VIZRS_AREA=auto`) |
 | S2 | `VIZRS_AREA=auto`: zestaw stref przebiegu przy `GET /ffmpeg` (strony na antenie + reguły kawałka), sklejanie, nieznana strona → cały ekran; test kontraktu nakładki z atlasem zmiennym między przebiegami | S1 | zrobione (2026-11-07; renderer dalej rysuje cały kanał – oszczędność na strumieniu, wysyłce na GPU i nakładaniu; pakowanie atlasu obok siebie – osobno) |
-| S3 | Poszerzenie w trakcie przebiegu: flaga z wyprzedzenia (`TAKE`, `STATE`) i z pikseli poza strefami, nowy przebieg przez ścieżkę przebiegów `takeover.rs`, limit 1/10 s | S2 | do zrobienia |
-| S4 | Zwężanie przy naturalnym starcie przebiegu (histereza) | S3 | do zrobienia |
-| S5 | `/health` i log (strefy, % ekranu, poszerzenia), DOKUMENTACJA §1 i §5 (`VIZRS_AREA=auto`); w VizRS Live – wiersz w „Stan” Diagnostyki | S2 | do zrobienia |
+| S3a | Strefy przebiegu = ślady wszystkich znanych stron rozmiaru kanału (znana strona wzięta przez operatora nie jest ucięta); piksele poza strefami: ostrzeżenie i licznik `outside` | S2 | zrobione (2026-11-07) |
+| S3b | Poszerzenie w trakcie przebiegu: flaga z wyprzedzenia (`TAKE`, `STATE`) i z pikseli poza strefami, nowy przebieg przez ścieżkę przebiegów `takeover.rs`, limit 1/10 s. **Wymaga zmiany nakładki:** strumień klatek grafiki jest dziś jeden na kawałek ze stałym układem (`Sink::new(frame)` w `overlay::with_graphics`), więc poszerzenie potrzebuje drugiego strumienia `/ffmpeg/frames` tej samej sesji (sidecar dziś odmawia), nowego `Sink` z innym rozmiarem klatki i ogólnego wyzwalacza restartu przebiegu w `takeover::sequence` (dziś tylko live); działa tylko dla kawałków idących przez sekwencję (`VIZRS_FFMPEG_INGEST`) | S3a | do zrobienia |
+| S4 | Zwężanie przy naturalnym starcie przebiegu (histereza) | S3a | zrobione z założenia (strefy liczone tylko przy starcie przebiegu, S2) |
+| S5 | `/health` i log (strefy, % ekranu, poszerzenia), DOKUMENTACJA §1 i §5 (`VIZRS_AREA=auto`); w VizRS Live – wiersz w „Stan” Diagnostyki | S2 | zrobione w CG Playout (2026-11-07, `/health` → `zones`); wiersz w VizRS Live – osobno |
 | S6 | (opcjonalnie, repo VizRS CG System) `GET /pages/<n>/bounds` – granice stron z układu szablonu; sidecar używa ich przed śladem z pikseli | S2 | do zrobienia |
 
 Kolejność S0 → S5 daje działającą funkcję bez zmian w VizRS. Każdy punkt ma testy (`cargo test`, wektory, kontrakt `npm test`) i kończy się zielonym `cargo fmt --check && cargo clippy -- -D warnings && cargo test && npm test`.

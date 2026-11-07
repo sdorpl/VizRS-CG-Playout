@@ -113,6 +113,8 @@ struct Script {
     area: String,
     /// With `area: auto`, the zones the overlay got for this run (PLAN-strefy S2).
     zones: Mutex<Option<Vec<Area>>>,
+    /// Pictures with graphics outside those zones (cut off until the next run, S3a).
+    outside: AtomicUsize,
     capture: Option<Arc<Capture>>,
     /// The session as a reader of `capture`.
     reader: u64,
@@ -247,6 +249,18 @@ impl Server {
 
     /// One learning step: per channel with a capture, its last picture and the pages on its antenna.
     fn learn_footprints(&self) {
+        // Graphics outside the zones of a running overlay: cut off until its next run.
+        let running: Vec<Arc<Script>> =
+            lock(&self.sessions).scripts.values().filter(|s| s.claimed.load(Ordering::Relaxed)).cloned().collect();
+        for script in running {
+            let Some(capture) = &script.capture else { continue };
+            let zones = script.zones.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let Some(zones) = zones.filter(|z| !z.is_empty()) else { continue };
+            let rects: Vec<(u32, u32, u32, u32)> = capture.current().picture().rects.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
+            if !footprint::covered(&zones, &rects) && script.outside.fetch_add(1, Ordering::Relaxed) == 0 {
+                crate::warn!("channel {}: graphics outside the zones of this run, cut off until the next run", script.channel);
+            }
+        }
         let channels: Vec<(String, Arc<Capture>)> = {
             let sessions = lock(&self.sessions);
             let mut seen = Vec::<(String, Arc<Capture>)>::new();
@@ -391,11 +405,39 @@ impl Server {
                 capture
             })
             .collect();
+        // `area: auto` (PLAN-strefy S5): the zones of the overlay runs and the pages with footprints.
+        let zones = Area::is_auto(&self.config.area).then(|| {
+            let runs: Vec<Value> = sessions
+                .scripts
+                .values()
+                .filter(|s| s.claimed.load(Ordering::Relaxed))
+                .map(|s| {
+                    let zones = s.zones.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let channel = f64::from(s.ctx.width) * f64::from(s.ctx.height);
+                    let (geometry, share) = match zones.filter(|z| !z.is_empty()) {
+                        Some(z) => {
+                            let pixels: u64 = z.iter().map(|a| u64::from(a.w) * u64::from(a.h)).sum();
+                            (Value::from(geometries(&z)), (100.0 * pixels as f64 / channel).round())
+                        }
+                        None => (Value::Null, 100.0),
+                    };
+                    json::object([
+                        ("channel", s.channel.as_str().into()),
+                        ("zones", geometry),
+                        ("share_percent", share.into()),
+                        ("outside", (s.outside.load(Ordering::Relaxed) as u64).into()),
+                    ])
+                })
+                .collect();
+            let pages = self.footprints.lock().unwrap_or_else(|e| e.into_inner()).len();
+            json::object([("runs", Value::Array(runs)), ("pages", (pages as u64).into())])
+        });
         json::object([
             ("sessions", (self.count.load(Ordering::Relaxed) as u64).into()),
             ("captures", Value::Array(captures)),
             ("overlay", sessions.overlay.iter().map(String::as_str).collect::<Vec<_>>().into()),
             ("ingest", if self.ingest.enabled() { self.ingest.health() } else { Value::Null }),
+            ("zones", zones.unwrap_or(Value::Null)),
         ])
     }
 
@@ -713,6 +755,7 @@ impl Server {
                     render: spec.clone(),
                     area: area.clone(),
                     zones: Mutex::new(None),
+                    outside: AtomicUsize::new(0),
                     capture: capture.clone(),
                     reader,
                     stream: Arc::clone(&control),

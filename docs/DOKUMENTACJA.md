@@ -102,14 +102,28 @@ rozmiar kanału (inne show = inne `id` = puste ślady). Ślady zapisują się co
 oznacza brak śladów.
 
 Przy przejęciu sesji przez nakładkę (`GET /ffmpeg?…&area=1`, start przebiegu)
-strefy przebiegu to ślady stron na antenie kanału (`STATE`) i stron, które
-mogą wziąć reguły (`TAKE` z `on_clip`, `on_end` i reguł audycji, po
-zastosowaniu reguł z live API), sklejone jak wyżej. Nakładka dostaje je tak
+strefy przebiegu to ślady **wszystkich znanych stron** dla rozmiaru kanału,
+sklejone jak wyżej – także stron, których teraz nie ma na antenie, żeby znana
+strona wzięta przez operatora w trakcie przebiegu nie była ucięta. Warunek:
+mają ślad strony na antenie kanału (`STATE`) i strony, które mogą wziąć reguły
+(`TAKE` z `on_clip`, `on_end` i reguł audycji, po zastosowaniu reguł z live
+API). Nakładka dostaje je tak
 jak stały `area` (`areas`, atlas), a `resume` niesie wyliczone strefy, nie
 `auto` (nakładka po restarcie sidecara dostaje ten sam atlas, co jej graf
 ffmpeg). Cały kanał, gdy którakolwiek strona nie ma jeszcze śladu, gdy nic
 nie jest znane albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
 <strefy> (N% of the channel)` albo `graphics zones: the whole channel`.
+
+Strefy są stałe przez przebieg (graf ffmpeg się nie zmienia) i zmieniają się
+przy następnym starcie przebiegu (nowy kawałek, po live). Strona nigdy
+dotąd niewidziana, wzięta w trakcie przebiegu, jest do jego końca ucięta do
+stref – sidecar uczy się jej śladu z pełnego obrazu, więc następny przebieg
+już ją obejmuje albo dostaje cały kanał; ostrzeżenie `graphics outside the
+zones of this run` (raz na przebieg). Poszerzenie w środku kawałka to
+PLAN-strefy S3b. `/health` ma przy `area: auto` pole `zones`: `pages` (liczba
+śladów) i `runs` – dla każdego przebiegu nakładki `channel`, `zones` (strefy
+albo `null` = cały kanał), `share_percent`, `outside` (obrazy z grafiką poza
+strefami).
 
 - W trybie `capture_mode: frames` każdy obszar to osobna karta Chromium
   z tą samą stroną i stałym `viewport` równym obszarowi; w każdej klatce

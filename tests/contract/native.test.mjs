@@ -203,5 +203,8 @@ test("area auto: footprints of the page on air become the zones of the overlay's
   assert.equal(claim.width, 160);
   assert.equal(claim.height, 64);
   assert.match(claim.resume, /graphics=160x64%2B16%2B80/);
+  const health = await (await fetch(`${cg.url}/health`)).json();
+  assert.equal(health.zones.pages, 1);
+  assert.deepEqual(health.zones.runs, [{ channel: "1", zones: "160x64+16+80", share_percent: 18, outside: 0 }]);
   await script.catch(() => {});
 });
