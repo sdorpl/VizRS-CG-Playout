@@ -1,8 +1,9 @@
 # PLAN: VizRS Live Panel – sterowanie transmisjami na żywo kanałów ErsatzTV
 
-> Stan: **L0–L3 zbudowane** (2026-11-06), gałąź `live-panel`; dalej L4–L6 (§9). Planowanie zostaje w ErsatzTV, panel prowadzi do niego kreatorem (§6a).
+> Stan: **zamknięty (2026-11-07).** L0–L3 zbudowane (2026-11-06); potem całe UI przeniesione do **VizRS Live** (ekrany „Sloty na żywo”, „Audycje LIVE”), a strona `/live`, `panel.html`, logowanie i makieta usunięte z sidecara. Zostaje live API `/api/live/*` (DOKUMENTACJA §1 „Live API”). Dalsze punkty (L4–L6) – w VizRS Live. Poniżej dokument projektowy z tamtego czasu.
+> Planowanie zostaje w ErsatzTV, panel prowadzi do niego kreatorem (§6a).
 > Sprawdzone testami kontraktu (udawany ErsatzTV) i ręcznie z sygnałem testowym ffmpeg; **do sprawdzenia na stosie Dockera**: zapytanie Smart Collection w prawdziwym ErsatzTV (pozycja trafia do kolekcji po skanie) i czas powrotu do ramówki po ZDEJMIJ przez nakładkę.
-> Opis działania: DOKUMENTACJA §1 „Live Panel”. Decyzje z §11: wariant A, osobny `VIZRS_PANEL_TOKEN`, ZDEJMIJ do ręcznego WPUŚĆ, ramówka zostaje w ErsatzTV.
+> Opis działania: DOKUMENTACJA §1 „Live API”. Decyzje z §11: wariant A, osobny `VIZRS_PANEL_TOKEN`, ZDEJMIJ do ręcznego WPUŚĆ, ramówka zostaje w ErsatzTV.
 > Powiązane: DOKUMENTACJA §1 „Live ingest” i „Audycje na żywo w ramówce”,
 > VizRS CG System `docs/plany/PLAN-kanal.md` (rola emisji, MCR).
 
@@ -109,7 +110,7 @@ Wewnętrzne, dla odbiorników (token ingest): `POST /ingest/heartbeat`,
 
 ## 6. Interfejs
 
-Makieta: [live-panel-makieta.html](live-panel-makieta.html) (statyczna; `#edycja` w adresie pokazuje okienko audycji).
+Makieta (`live-panel-makieta.html`) usunięta razem z panelem – w historii gita.
 
 Czysty JS (moduły ES), bez bibliotek i CDN, działa offline; wygląd z
 `ui.css` VizRS (te same kolory, przyciski, panele), polskie etykiety.

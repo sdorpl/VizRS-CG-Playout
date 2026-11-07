@@ -1,5 +1,5 @@
-// ErsatzTV's own API, for the Live Panel (docs/plany/PLAN-live-panel.md §6a,
-// DOKUMENTACJA §1 „Live Panel”): channel names, library scans, smart
+// ErsatzTV's own API, for the live API (docs/plany/PLAN-live-panel.md §6a,
+// DOKUMENTACJA §1 „Live API”): channel names, library scans, smart
 // collections of the live programmes, playout resets and the guide (XMLTV).
 // The key comes from `api-secrets.json` in ErsatzTV's configuration folder,
 // as for the channel sync (src/etv_sync.rs). Nothing here is on the air path.

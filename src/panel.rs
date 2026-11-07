@@ -1,12 +1,10 @@
-// VizRS Live Panel (docs/plany/PLAN-live-panel.md, DOKUMENTACJA §1 „Live
-// Panel”): the operator's page for the live sources of the channels and the
-// live programmes of ErsatzTV's schedule, built into the sidecar.
+// Live API (DOKUMENTACJA §1 „Live API”): the live sources of the channels and
+// the live programmes of ErsatzTV's schedule, for VizRS Live (the operator's
+// panel, a separate application). The sidecar has no page of its own here.
 //
-//   GET    /live                          the panel (src/panel.html); `?token=`
-//                                         sets the cookie, without one a login page
 //   GET    /api/live/state                channels: source, on air, hold, anytime,
 //                                         now and next from the guide; events
-//   PUT    /api/live/settings             {"library": id|null, "etv_public": url}
+//   PUT    /api/live/settings             {"library": id|null}
 //   POST   /api/live/channels/<n>/hold    keep the studio off the channel
 //   POST   /api/live/channels/<n>/release let it on again
 //   PUT    /api/live/channels/<n>         {"anytime": bool|null}
@@ -19,9 +17,9 @@
 //   GET    /api/live/graphics             graphics rules in force (src/graphics.rs)
 //   PUT    /api/live/graphics             replace them: graphics.json, from the next clip
 //
-// The panel token (`panel_token`) comes in `X-Panel-Token`, `Authorization:
-// Bearer` or the `vizrs_panel` cookie. Requests that change something must come
-// from the panel's own page (`Sec-Fetch-Site`, `Origin`). Decisions on channels
+// The token (`panel_token`) comes in `X-Panel-Token` or `Authorization:
+// Bearer`. Requests that change something are refused when a browser says they
+// come from another site (`Sec-Fetch-Site`, `Origin`). Decisions on channels
 // persist in `<etv_config>/vizrs-live/control.json`, operator actions go to
 // `log.jsonl` next to it. Nothing here can stop the air: ErsatzTV calls run
 // with timeouts and their failures are only shown.
@@ -41,10 +39,7 @@ use crate::http::{self, Request};
 use crate::ingest::{ChannelControl, Ingest, constant_eq};
 use crate::json::{self, Value};
 use crate::live_shows;
-use crate::overlay::quote_plus;
 
-const PAGE: &str = include_str!("panel.html");
-const COOKIE: &str = "vizrs_panel";
 /// A wrong token waits this long (slows guessing down).
 const BAD_TOKEN_DELAY: Duration = Duration::from_secs(1);
 /// ErsatzTV's channels, collections and guide are fetched this often.
@@ -58,8 +53,6 @@ const MAX_LOG: u64 = 1024 * 1024;
 struct Settings {
     /// ErsatzTV's library of the live programmes (a Remote Streams library of `/config/vizrs-live`).
     library: Option<u64>,
-    /// ErsatzTV as the operator's browser reaches it; "" = this host, port 8409.
-    etv_public: String,
     channels: BTreeMap<String, ChannelControl>,
 }
 
@@ -68,11 +61,8 @@ impl Settings {
         let channels = self.channels.iter().map(|(number, c)| {
             (number.clone(), json::object([("hold", c.hold.into()), ("anytime", c.anytime.map_or(Value::Null, Value::from))]))
         });
-        let value = json::object([
-            ("library", self.library.map_or(Value::Null, Value::from)),
-            ("etv_public", self.etv_public.as_str().into()),
-            ("channels", Value::Object(channels.collect())),
-        ]);
+        let value =
+            json::object([("library", self.library.map_or(Value::Null, Value::from)), ("channels", Value::Object(channels.collect()))]);
         format!("{value}\n")
     }
 
@@ -80,7 +70,6 @@ impl Settings {
         let value = json::parse(text).map_err(|e| e.to_string())?;
         let mut settings = Settings {
             library: value.get("library").and_then(Value::as_f64).filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u64),
-            etv_public: value.get("etv_public").and_then(Value::as_str).unwrap_or("").to_owned(),
             channels: BTreeMap::new(),
         };
         if let Some(Value::Object(channels)) = value.get("channels") {
@@ -148,21 +137,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn cookie(request: &Request, name: &str) -> Option<String> {
-    request
-        .header("cookie")?
-        .split(';')
-        .filter_map(|part| part.trim().split_once('='))
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| http::percent_decode(v))
-}
-
 /// The host part of an `Origin` (`http://host:port` → `host:port`).
 fn origin_host(origin: &str) -> &str {
     origin.split_once("://").map_or(origin, |(_, rest)| rest).trim_end_matches('/')
 }
 
-/// A request that changes something comes from the panel's own page.
+/// A request that changes something does not come from a browser on another site.
 fn same_site(request: &Request) -> bool {
     if request.header("sec-fetch-site").is_some_and(|site| site != "same-origin" && site != "none") {
         return false;
@@ -189,37 +169,6 @@ fn reply(stream: &mut TcpStream, status: u16, value: &Value) -> io::Result<()> {
 
 fn fail(stream: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
     reply(stream, status, &json::object([("error", message.into())]))
-}
-
-fn html(stream: &mut TcpStream, status: u16, page: &str, extra: &[(&str, &str)]) -> io::Result<()> {
-    let mut headers = vec![
-        ("Content-Type", "text/html; charset=utf-8"),
-        ("Cache-Control", "no-store"),
-        ("X-Frame-Options", "DENY"),
-        (
-            "Content-Security-Policy",
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:",
-        ),
-        ("Referrer-Policy", "no-referrer"),
-    ];
-    headers.extend_from_slice(extra);
-    http::respond_with(stream, status, &headers, page.as_bytes())
-}
-
-fn login_page(error: &str) -> String {
-    let message = if error.is_empty() { String::new() } else { format!("<p class=\"err\">{error}</p>") };
-    format!(
-        "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
-         <title>VizRS Live Panel – logowanie</title><style>\
-         html,body{{margin:0;height:100%;background:#121316;color:#d9dde4;font:14px/1.4 Inter,system-ui,sans-serif}}\
-         body{{display:grid;place-items:center}}form{{background:#1a1c20;border:1px solid #2e323a;border-radius:6px;padding:22px;width:320px;display:grid;gap:12px}}\
-         b{{color:#f0a020}}input,button{{font:inherit;color:inherit;border-radius:4px;padding:7px 9px;border:1px solid #2e323a;background:#0e0f12}}\
-         button{{background:#f0a020;border-color:#f0a020;color:#1a1100;font-weight:600;cursor:pointer}}.err{{color:#ff9a96;margin:0}}p{{margin:0;color:#8a909c}}\
-         </style></head><body><form method=\"get\" action=\"/live\"><div><b>VizRS</b> Live Panel</div>\
-         <p>Podaj token panelu (zmienna <code>VIZRS_PANEL_TOKEN</code> sidecara).</p>{message}\
-         <input name=\"token\" type=\"password\" autocomplete=\"current-password\" placeholder=\"token panelu\" autofocus required>\
-         <button>Zaloguj</button></form></body></html>"
-    )
 }
 
 /// `"00:30:00"`, `"45:00"` or seconds, as in `live_shows`.
@@ -304,7 +253,7 @@ impl Panel {
             ingest.set_control(number, control.clone());
         }
         if panel.enabled() {
-            crate::info!("Live Panel on /live");
+            crate::info!("live API on /api/live");
             if panel.etv.configured() {
                 let refresher = Arc::clone(&panel);
                 let _ = thread::Builder::new().name("panel-etv".into()).spawn(move || {
@@ -322,9 +271,9 @@ impl Panel {
         !self.token.is_empty()
     }
 
-    /// The panel's paths.
+    /// The live API's paths.
     pub fn owns(path: &str) -> bool {
-        path == "/live" || path == "/live/" || path == "/api/live" || path.starts_with("/api/live/")
+        path == "/api/live" || path.starts_with("/api/live/")
     }
 
     fn control_path(&self) -> Option<PathBuf> {
@@ -339,10 +288,7 @@ impl Panel {
 
     /// An operator action: the events of the panel and `log.jsonl`.
     fn record(&self, ingest: &Ingest, operator: &str, channel: &str, action: &str) {
-        crate::info!(
-            "Live Panel: {operator}: {action}{}",
-            if channel.is_empty() { String::new() } else { format!(" (channel {channel})") }
-        );
+        crate::info!("live API: {operator}: {action}{}", if channel.is_empty() { String::new() } else { format!(" (channel {channel})") });
         ingest.event(channel, format!("{operator}: {action}"));
         if self.etv_config.is_empty() {
             return;
@@ -361,7 +307,7 @@ impl Panel {
             .and_then(|()| OpenOptions::new().create(true).append(true).open(&path))
             .and_then(|mut file| writeln!(file, "{line}"));
         if let Err(e) = written {
-            crate::warn!("Live Panel log: {e}");
+            crate::warn!("live API log: {e}");
         }
     }
 
@@ -401,21 +347,17 @@ impl Panel {
             return http::respond(&mut stream, 404, None, b"");
         }
         let path = request.path.trim_end_matches('/');
-        if path == "/live" {
-            return self.page(request, stream);
-        }
         let presented = request
             .header("x-panel-token")
             .map(str::to_owned)
-            .or_else(|| request.header("authorization").and_then(|v| v.strip_prefix("Bearer ")).map(str::to_owned))
-            .or_else(|| cookie(request, COOKIE));
+            .or_else(|| request.header("authorization").and_then(|v| v.strip_prefix("Bearer ")).map(str::to_owned));
         match presented {
             Some(token) if constant_eq(token.trim().as_bytes(), self.token.as_bytes()) => {}
             Some(_) => {
                 thread::sleep(BAD_TOKEN_DELAY);
                 return fail(&mut stream, 401, "zły token panelu");
             }
-            None => return fail(&mut stream, 401, "zaloguj się do panelu"),
+            None => return fail(&mut stream, 401, "brak tokenu panelu"),
         }
         if request.method != "GET" && !same_site(request) {
             return fail(&mut stream, 403, "żądanie z obcej strony");
@@ -472,22 +414,6 @@ impl Panel {
         }
     }
 
-    fn page(&self, request: &Request, mut stream: TcpStream) -> io::Result<()> {
-        if let Some(token) = request.param("token") {
-            if constant_eq(token.trim().as_bytes(), self.token.as_bytes()) {
-                let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000", quote_plus(token.trim()));
-                let headers = [("Location", "/live"), ("Set-Cookie", cookie.as_str()), ("Cache-Control", "no-store")];
-                return http::respond_with(&mut stream, 303, &headers, b"");
-            }
-            thread::sleep(BAD_TOKEN_DELAY);
-            return html(&mut stream, 401, &login_page("Zły token."), &[]);
-        }
-        match cookie(request, COOKIE) {
-            Some(token) if constant_eq(token.trim().as_bytes(), self.token.as_bytes()) => html(&mut stream, 200, PAGE, &[]),
-            _ => html(&mut stream, 200, &login_page(""), &[]),
-        }
-    }
-
     fn etv_json(&self, cache: &Cache) -> Value {
         json::object([
             ("configured", self.etv.configured().into()),
@@ -499,11 +425,7 @@ impl Panel {
 
     fn settings_json(&self) -> Value {
         let settings = lock(&self.settings);
-        json::object([
-            ("library", settings.library.map_or(Value::Null, Value::from)),
-            ("etv_public", settings.etv_public.as_str().into()),
-            ("store", (!self.etv_config.is_empty()).into()),
-        ])
+        json::object([("library", settings.library.map_or(Value::Null, Value::from)), ("store", (!self.etv_config.is_empty()).into())])
     }
 
     /// `/api/live/state`.
@@ -625,18 +547,6 @@ impl Panel {
             Some(Value::Null) => settings.library = None,
             Some(Value::Number(n)) if *n >= 1.0 && *n < 1e9 && n.fract() == 0.0 => settings.library = Some(*n as u64),
             Some(_) => return fail(stream, 400, "biblioteka: numer ID biblioteki ErsatzTV"),
-        }
-        match body.get("etv_public") {
-            None => {}
-            Some(Value::String(url))
-                if url.is_empty()
-                    || (url.len() <= 200
-                        && (url.starts_with("http://") || url.starts_with("https://"))
-                        && !url.contains(['"', '<', '>', ' '])) =>
-            {
-                settings.etv_public = url.trim_end_matches('/').to_owned();
-            }
-            Some(_) => return fail(stream, 400, "adres ErsatzTV: http(s)://…"),
         }
         if let Err(e) = self.save_settings(&settings) {
             return fail(stream, 500, &format!("zapis ustawień: {e}"));
@@ -922,17 +832,15 @@ mod tests {
     }
 
     #[test]
-    fn cookies_and_operators() {
-        let r = request(&[("Cookie", "a=1; vizrs_panel=t%20k; b=2"), ("X-Operator", " MCR 1\u{7} ")]);
-        assert_eq!(cookie(&r, COOKIE).as_deref(), Some("t k"));
-        assert_eq!(cookie(&r, "c"), None);
+    fn operators() {
+        let r = request(&[("X-Operator", " MCR 1\u{7} ")]);
         assert_eq!(operator(&r), "MCR 1");
         assert_eq!(operator(&request(&[])), "operator");
     }
 
     #[test]
     fn settings_round_trip() {
-        let mut settings = Settings { library: Some(7), etv_public: "http://tv:8409".into(), channels: BTreeMap::new() };
+        let mut settings = Settings { library: Some(7), channels: BTreeMap::new() };
         settings.channels.insert("4".into(), ChannelControl { hold: true, anytime: Some(false) });
         assert_eq!(Settings::from_json(&settings.to_json()).unwrap(), settings);
         assert_eq!(Settings::from_json("{}").unwrap(), Settings::default());

@@ -5,7 +5,7 @@
 #   ErsatzTV     http://<server>:8409
 #   VizRS Trio   http://<server>:8788/trio   token vizrs-operator-change-me
 #   Sidecar      http://<server>:7700/health
-#   Live Panel   http://<server>:7700/live?token=<VIZRS_PANEL_TOKEN>
+#   Live API     http://<server>:7700/api/live/* for VizRS Live (token VIZRS_PANEL_TOKEN)
 #
 # Live ingest (RTMP/SRT takes a channel over, DOKUMENTACJA §1): set VIZRS_INGEST_TOKEN
 # and VIZRS_INGEST (e.g. "1=rtmp://0.0.0.0:1936/live/<key>"), then
@@ -136,16 +136,16 @@ services:
       # 1 = a live source takes any piece over; 0 = only live programmes of the schedule.
       VIZRS_INGEST_ANYTIME: ${VIZRS_INGEST_ANYTIME:-1}
       # The same listeners as the ingest service and the host publishers reach them
-      # at: the Live Panel (and VizRS Live) shows them where to send.
+      # at: VizRS Live shows them (live API) where to send.
       VIZRS_INGEST: ${VIZRS_INGEST:-1=rtmp://0.0.0.0:1936/live/change-me}
       VIZRS_INGEST_PUBLIC: ${VIZRS_INGEST_PUBLIC:-}
       VIZRS_INGEST_RTMP_PORT: ${INGEST_RTMP_PORT:-1936}
       VIZRS_INGEST_SRT_PORT: ${INGEST_SRT_PORT:-9000}
       # Live programmes as Remote Streams for the ErsatzTV schedule (/config/vizrs-live); only the
-      # first filling of vizrs-live/shows.json, which the Live Panel edits. JSON:
+      # first filling of vizrs-live/shows.json, which VizRS Live edits. JSON:
       # [{"channel":"1","title":"Wiadomości","duration":"00:30:00","plot":"…"}]
       VIZRS_LIVE_SHOWS: ${VIZRS_LIVE_SHOWS:-}
-      # Live Panel on :7700/live (studio on/off air, live programmes in ErsatzTV); empty = off.
+      # Live API on :7700/api/live for VizRS Live (studio on/off air, live programmes in ErsatzTV); empty = off.
       VIZRS_PANEL_TOKEN: ${VIZRS_PANEL_TOKEN:-}
     volumes:
       - ersatztv-config:/etv-config

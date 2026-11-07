@@ -796,7 +796,7 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
   }
 });
 
-test("graphics rules from the Live Panel API: validated, saved, in force from the next item, kept after a restart", async (t) => {
+test("graphics rules from the live API: validated, saved, in force from the next item, kept after a restart", async (t) => {
   const vizrs = await fakeVizrs();
   t.after(vizrs.close);
   const folder = mkdtempSync(path.join(os.tmpdir(), "vizrs-graphics-"));

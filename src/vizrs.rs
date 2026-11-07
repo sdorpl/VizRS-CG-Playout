@@ -286,7 +286,7 @@ impl Timeline {
 /// Clip events of one channel, sent in order.
 pub struct ChannelEvents {
     config: Arc<Config>,
-    /// Graphics rules; the Live Panel replaces them (src/graphics.rs), from the next clip.
+    /// Graphics rules; VizRS Live replaces them (src/graphics.rs), from the next clip.
     rules: RwLock<Arc<ClipRules>>,
     state: Mutex<State>,
     /// Bumped by every ad: graphics scheduled before it are not sent.

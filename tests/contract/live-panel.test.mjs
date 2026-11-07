@@ -1,5 +1,5 @@
-// VizRS Live Panel (DOKUMENTACJA §1, Live Panel; src/panel.rs): the token and
-// its cookie, refusal of other sites, the live programmes wizard against a
+// Live API for VizRS Live (DOKUMENTACJA §1, Live API; src/panel.rs): the token
+// (no page and no cookie), refusal of other sites, the live programmes wizard against a
 // fake ErsatzTV (file, library scan, smart collection, guide), holding a
 // channel through /ingest/state, and the first filling of shows.json from
 // VIZRS_LIVE_SHOWS.
@@ -103,31 +103,19 @@ async function setup(t, env = {}, config = {}) {
   return { etv, folder, cg, api };
 }
 
-test("the panel is off without a token and asks for one", async (t) => {
+test("the live API is off without a token, needs it and has no page of its own", async (t) => {
   const off = await startSidecar({ output_url: "" });
   t.after(off.stop);
-  assert.equal((await fetch(`${off.url}/live`)).status, 404);
   assert.equal((await fetch(`${off.url}/api/live/state`)).status, 404);
 
   const { cg } = await setup(t);
-  const login = await fetch(`${cg.url}/live`);
-  assert.equal(login.status, 200);
-  assert.match(await login.text(), /token panelu/);
+  assert.equal((await fetch(`${cg.url}/live`)).status, 404, "the operator's page is VizRS Live");
+  assert.equal((await fetch(`${cg.url}/live?token=${TOKEN}`)).status, 404);
   assert.equal((await fetch(`${cg.url}/api/live/state`)).status, 401);
-
-  const bad = await fetch(`${cg.url}/live?token=nope`, { redirect: "manual" });
-  assert.equal(bad.status, 401);
-  const good = await fetch(`${cg.url}/live?token=${TOKEN}`, { redirect: "manual" });
-  assert.equal(good.status, 303);
-  assert.equal(good.headers.get("location"), "/live");
-  const cookie = good.headers.get("set-cookie").split(";")[0];
-  assert.match(good.headers.get("set-cookie"), /HttpOnly; SameSite=Strict/);
-  const page = await fetch(`${cg.url}/live`, { headers: { Cookie: cookie } });
-  assert.match(await page.text(), /VizRS<\/b> Live Panel/);
-  assert.equal(page.headers.get("x-frame-options"), "DENY");
-  const state = await fetch(`${cg.url}/api/live/state`, { headers: { Cookie: cookie } });
-  assert.equal(state.status, 200);
-  assert.equal((await fetch(`${cg.url}/api/live/state`, { headers: { Cookie: "vizrs_panel=x" } })).status, 401);
+  assert.equal((await fetch(`${cg.url}/api/live/state`, { headers: { Cookie: `vizrs_panel=${TOKEN}` } })).status, 401, "no cookie login");
+  assert.equal((await fetch(`${cg.url}/api/live/state`, { headers: { "X-Panel-Token": "nope" } })).status, 401);
+  assert.equal((await fetch(`${cg.url}/api/live/state`, { headers: { "X-Panel-Token": TOKEN } })).status, 200);
+  assert.equal((await fetch(`${cg.url}/api/live/state`, { headers: { Authorization: `Bearer ${TOKEN}` } })).status, 200);
 });
 
 test("changes from other sites are refused", async (t) => {
@@ -146,7 +134,7 @@ test("a live programme from the panel is a file, a scan and a smart collection i
   assert.equal((await api("DELETE", "shows/4-rozmowa-dnia")).status, 200);
 
   assert.equal((await api("PUT", "settings", { library: "x" })).status, 400);
-  assert.equal((await api("PUT", "settings", { library: 7, etv_public: "http://tv.local:8409/" })).status, 200);
+  assert.equal((await api("PUT", "settings", { library: 7 })).status, 200);
   assert.deepEqual(JSON.parse(readFileSync(path.join(folder, "vizrs-live", "control.json"), "utf8")).library, 7);
 
   assert.equal((await api("POST", "shows", { channel: "4", title: "x".repeat(201), duration: 60 })).status, 400);
@@ -170,7 +158,7 @@ test("a live programme from the panel is a file, a scan and a smart collection i
   assert.equal(show.collection, true);
   assert.equal(show.file_ok, true);
   assert.equal(show.next.title, "Rozmowa dnia");
-  assert.equal(list.body.settings.etv_public, "http://tv.local:8409");
+  assert.equal(list.body.settings.library, 7);
 
   // A new title renames the collection; the file (the item in ErsatzTV) stays.
   const changed = await api("PUT", "shows/4-rozmowa-dnia", { channel: "4", title: "Rozmowa wieczoru", duration: "01:00:00", plot: "" });

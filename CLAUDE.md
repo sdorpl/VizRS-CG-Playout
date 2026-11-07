@@ -70,7 +70,7 @@ Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu
 | `src/ingest.rs` | live ingest w sidecarze: `POST /ingest` (MPEG-TS z odbiornika, token), `GET /ingest` (strumień od ostatniej klatki kluczowej), `GET /ingest/state`; parser PAT/PMT/klatek kluczowych |
 | `src/listener.rs` | odbiorniki live ingest (`vizrs-ffmpeg vizrs-ingest`, usługa `ingest` w profilu compose): ffmpeg `-listen` RTMP/SRT → `-c copy` MPEG-TS → sidecar |
 | `src/live_shows.rs`, `src/standby.ts` | audycje na żywo w ramówce: lista `<etv_config>/vizrs-live/shows.json` (z `live_shows` tylko pierwszy raz), definicje Remote Stream ErsatzTV obok; sekunda czerni MPEG-TS slotu bez sygnału (dla ffprobe ErsatzTV) |
-| `src/panel.rs`, `src/panel.html`, `src/etv_api.rs` | VizRS Live Panel (`/live`, `/api/live/*`, `panel_token`): stan kanałów, ZDEJMIJ / WPUŚĆ (`control.json`), kreator audycji LIVE (plik, skan, Smart Collection `LIVE · …`, reset playoutu); klient API ErsatzTV i parser XMLTV |
+| `src/panel.rs`, `src/etv_api.rs` | live API dla VizRS Live (`/api/live/*`, `panel_token`; bez własnej strony – dawny Live Panel `/live` usunięty 2026-11-07): stan kanałów, ZDEJMIJ / WPUŚĆ (`control.json`), kreator audycji LIVE (plik, skan, Smart Collection `LIVE · …`, reset playoutu); klient API ErsatzTV i parser XMLTV |
 | `src/takeover.rs` | przejęcie kawałka przez live w nakładce (`VIZRS_FFMPEG_INGEST`): przebiegi kawałek/live do tej samej playlisty HLS, `-ss`/`-t`/`-output_ts_offset` z EXTINF, komenda live z koderem i HLS ErsatzTV, przełączanie pipe'ów grafiki |
 | `etv/templates/…/vizrs.yml` | definicja elementu grafiki „VizRS” dla ErsatzTV |
 | `Dockerfile` | obraz sidecara: binarka i `vizrs-render` z wydania VizRS (`VIZRS_REF`; arm64 krzyżowo) + `chromium-headless-shell` |
@@ -78,7 +78,7 @@ Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu
 | `tests/contract/` | testy kontraktu w Node.js (`npm test`) |
 | `seed/` | dane startowe stosu: show VizRS, baza ErsatzTV (kanał 1), media testowe; obraz `vizrs-seed` z wydania – `init.sh` wypełnia puste wolumeny i daje sidecarowi dostęp, stos bez plików z hosta (Portainer z GitHuba; DOKUMENTACJA §4) |
 | `bench/` | benchmark sidecara (`sidecar.mjs`, scena `scene.html`, obraz i compose, DOKUMENTACJA §8) |
-| `docs/plany/` | plany prac (`PLAN-rust.md` – migracja z Node.js, `PLAN-plynnosc.md` – płynność animacji, `native.md` – natywny renderer VizRS zamiast Chromium, `PLAN-ampere.md` – emisja w 2 OCPU, `PLAN-live-panel.md` – VizRS Live Panel: sterowanie transmisjami na żywo, L0–L3 zbudowane, dalej L4–L6) |
+| `docs/plany/` | plany prac (`PLAN-rust.md` – migracja z Node.js, `PLAN-plynnosc.md` – płynność animacji, `native.md` – natywny renderer VizRS zamiast Chromium, `PLAN-ampere.md` – emisja w 2 OCPU, `PLAN-live-panel.md` – dawny VizRS Live Panel, zamknięty: UI przeniesione do VizRS Live, tu zostaje live API) |
 | `.github/workflows/ci.yml` | testy, binarka jako artefakt |
 | `.github/workflows/release.yml` | po znaczniku `v*`: archiwa Linux x86_64/arm64, obraz amd64 + arm64 do ghcr, wydanie GitHub |
 

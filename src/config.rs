@@ -54,7 +54,7 @@ pub struct LiveShow {
     pub plot: String,
     /// File name without `.yml`; "" = channel and title.
     pub file: String,
-    /// Its smart collection in ErsatzTV (`LIVE · <title>`), made by the Live Panel.
+    /// Its smart collection in ErsatzTV (`LIVE · <title>`), made through the live API.
     pub collection: Option<u64>,
 }
 
@@ -140,7 +140,7 @@ pub struct Config {
     pub ingest_token: String,
     /// A live source takes any piece over; false = only live programmes (`live_shows`).
     pub ingest_anytime: bool,
-    /// The listeners' `VIZRS_INGEST` (`kanał=URL; …`), for the Live Panel to show
+    /// The listeners' `VIZRS_INGEST` (`kanał=URL; …`), for VizRS Live to show
     /// publishers where to send; the listener service reads its own copy.
     pub ingest_listeners: String,
     /// Host publishers reach the listeners at ("" = the panel's own host).
@@ -149,9 +149,9 @@ pub struct Config {
     pub ingest_rtmp_port: Option<u16>,
     pub ingest_srt_port: Option<u16>,
     /// Live programmes written as Remote Streams for ErsatzTV's schedule; only
-    /// the first filling of `shows.json`, which the Live Panel edits.
+    /// the first filling of `shows.json`, which VizRS Live edits (live API).
     pub live_shows: Vec<LiveShow>,
-    /// Token of the Live Panel (`/live`, `/api/live/*`); "" = panel off.
+    /// Token of the live API (`/api/live/*`, for VizRS Live); "" = API off.
     pub panel_token: String,
     pub browser: String,
     pub no_sandbox: bool,

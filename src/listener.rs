@@ -69,7 +69,7 @@ pub fn rtmp_key(url: &str) -> Option<&str> {
     path.rsplit('/').next().filter(|k| !k.is_empty() && path.matches('/').count() >= 2)
 }
 
-/// What a publisher needs to reach a listener (Live Panel): RTMP server and
+/// What a publisher needs to reach a listener (live API, VizRS Live): RTMP server and
 /// stream key as OBS asks for them, or the SRT address and passphrase. `host`
 /// "" = unknown (the panel puts in its own); a port given replaces the
 /// listener's (compose maps the host port elsewhere).

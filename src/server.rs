@@ -21,8 +21,7 @@
 //                         live ingest: a live source of the channel in, out
 //                         to the overlay, its state (src/ingest.rs)
 //   GET  /health          captures, sessions and live sources
-//   GET  /live, /api/live/*
-//                         the Live Panel (src/panel.rs), with `panel_token`
+//   /api/live/*           the live API for VizRS Live (src/panel.rs), with `panel_token`
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -200,7 +199,7 @@ impl Server {
         let mut channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((seen, events)) = channels.get_mut(channel) {
             if *seen != generation {
-                // The Live Panel replaced the graphics rules: from this clip on.
+                // VizRS Live replaced the graphics rules: from this clip on.
                 let (config, ads, shows) = self.rules_for(channel);
                 events.set_rules(&config, ads, shows);
                 *seen = generation;

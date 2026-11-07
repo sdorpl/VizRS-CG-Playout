@@ -6,7 +6,7 @@
 // its length is the length in the schedule. The overlay plays the studio there
 // while it is on air and a standby picture while it is not (src/takeover.rs).
 // Files are written when they change and never deleted by the sync: ErsatzTV
-// would drop the item from the schedules it is in (the Live Panel deletes the
+// would drop the item from the schedules it is in (the live API deletes the
 // file of a programme the operator removes).
 //
 // The list itself lives in `<etv_config>/vizrs-live/shows.json`, which the Live
@@ -138,7 +138,7 @@ pub fn id(show: &LiveShow) -> String {
     file_name(show).trim_end_matches(".yml").to_owned()
 }
 
-/// A programme as the Live Panel takes it: limits of length and characters
+/// A programme as the live API takes it: limits of length and characters
 /// (data from a browser is hostile, as in VizRS `validate.rs`).
 pub fn validate(show: &LiveShow) -> Result<(), String> {
     let channel = show.channel.trim();
@@ -200,7 +200,7 @@ pub fn load(etv_config: &str, configured: &[LiveShow]) -> io::Result<Vec<LiveSho
             }
             let shows: Vec<LiveShow> = configured.iter().map(|s| LiveShow { file: id(s), ..s.clone() }).collect();
             save(etv_config, &shows)?;
-            crate::info!("{} live programmes of VIZRS_LIVE_SHOWS moved to {}; the Live Panel edits them now", shows.len(), path.display());
+            crate::info!("{} live programmes of VIZRS_LIVE_SHOWS moved to {}; VizRS Live edits them now", shows.len(), path.display());
             Ok(shows)
         }
         Err(e) => Err(e),

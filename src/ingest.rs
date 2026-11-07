@@ -21,7 +21,7 @@
 // second one while the first is live is refused (an active takeover is not
 // pre-empted, as in VizRS ffPlayout System).
 //
-// The Live Panel (src/panel.rs) decides per channel: a held channel is not live
+// The live API (src/panel.rs, VizRS Live) decides per channel: a held channel is not live
 // for the overlay and its readers, though its source stays connected, and
 // `anytime` of a channel overrides `ingest_anytime`.
 
@@ -337,10 +337,10 @@ impl Feed {
     }
 }
 
-/// Most events kept for the Live Panel.
+/// Most events kept for the live API.
 const MAX_EVENTS: usize = 100;
 
-/// What the operator decided for a channel (Live Panel).
+/// What the operator decided for a channel (live API).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChannelControl {
     /// The studio is kept off the channel, even with a source.
@@ -391,7 +391,7 @@ impl Ingest {
         self.control(channel).anytime.unwrap_or(self.anytime)
     }
 
-    /// A line for the Live Panel's events.
+    /// A line for the live API's events.
     pub fn event(&self, channel: &str, text: impl Into<String>) {
         let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         if events.len() >= MAX_EVENTS {

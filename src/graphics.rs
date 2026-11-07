@@ -1,5 +1,5 @@
 // Graphics rules (on_clip, on_ad, ad_match, on_end, end_seconds, shows and
-// their per-channel overrides) that the Live Panel API reads and replaces:
+// their per-channel overrides) that the live API reads and replaces:
 //
 //   GET /api/live/graphics   {"rules": {…}, "source": "config"|"file", "store": bool}
 //   PUT /api/live/graphics   {…} – the whole rules document, as in config.json
@@ -235,7 +235,7 @@ impl Store {
                         for problem in rules.problems() {
                             crate::warn!("{}: {problem}", path.display());
                         }
-                        crate::info!("graphics rules from {} (the Live Panel edits them; config.json rules are not used)", path.display());
+                        crate::info!("graphics rules from {} (VizRS Live edits them; config.json rules are not used)", path.display());
                         state.rules = rules;
                         state.from_file = true;
                     }
