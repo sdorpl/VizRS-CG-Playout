@@ -84,6 +84,23 @@ ma pierwszeństwo) podaje obszar grafiki w pikselach kanału, w zapisie
 Obszarów może być kilka, rozdzielonych przecinkami, np. pasek i logo:
 `area=1920x140+0+930,160x160+1690+30`.
 
+**`area: auto`** (`VIZRS_AREA=auto`, PLAN-strefy) – strefy mają wynikać
+z grafiki na antenie zamiast ze stałego ustawienia. Na razie (S1) grafika
+idzie w całym kanale, a sidecar uczy się **śladów stron**. Co 0,5 s dla
+każdego kanału z przechwytywaniem bierze widoczne prostokąty ostatniego obrazu
+i strony na jego antenie (`STATE`, z prefiksem `@N` przy `channel_buses`)
+i dopisuje prostokąty do śladu strony. Jest jedna strona – wszystkie jej
+prostokąty. Kilka stron – prostokąt idzie do strony, której ślad pokrywa go
+najbardziej, a nowy do strony wziętej najpóźniej (`since` w `STATE`; dwie
+wzięte w tej samej chwili – nikt się nie uczy). Ślad tylko rośnie, więc
+obejmuje też skrajne fazy animacji. Prostokąty są wyrównane do siatki 16 px
+z marginesem 16 px, sklejane przy odstępie mniejszym niż 64 px, najwyżej
+4 na stronę (więcej – ich obwiednia). Klucz to `id` i numer strony VizRS oraz
+rozmiar kanału (inne show = inne `id` = puste ślady). Ślady zapisują się co
+10 s w `<etv_config>/vizrs-live/footprints.json`; brak albo uszkodzony plik
+oznacza brak śladów. Strefy przebiegów ffmpeg ze śladów to kolejny krok planu
+(S2).
+
 - W trybie `capture_mode: frames` każdy obszar to osobna karta Chromium
   z tą samą stroną i stałym `viewport` równym obszarowi; w każdej klatce
   sidecar rysuje każdą kartę z tym samym czasem klatki, a obraz składa się
@@ -1518,7 +1535,7 @@ Zmienne środowiskowe (nadpisują plik): `LISTEN`, `VIZRS_ADDRESS`,
 `VIZRS_END_REF` (grafika przed końcem audycji, §3), `LEAD_SECONDS`, `VIZRS_RENDER_SIZE`
 (`720p`, `1280x720`, puste = rozmiar kanału; §1), `VIZRS_AREA` (obszary
 grafiki `SZERxWYS+X+Y` po przecinku, np. `1920x140+0+930,160x160+1690+30`,
-puste = cały kanał; §1), `VIZRS_MAX_FPS`
+puste = cały kanał, `auto` = ślady stron na antenie; §1), `VIZRS_MAX_FPS`
 (górna granica tempa przechwytywania, np. `25`; puste albo `0` = klatkaż
 kanału), `VIZRS_CAPTURE_MODE` (`frames` albo `screencast`, niżej),
 `VIZRS_CLOCK_OFFSET` (sekundy dodane do zegara strony grafiki, niżej),

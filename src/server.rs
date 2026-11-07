@@ -35,6 +35,7 @@ use std::time::Duration;
 use crate::area::{Area, Layout, geometries};
 use crate::capture::{Capture, CaptureMode, CaptureOptions, IDLE, find_browser};
 use crate::config::Config;
+use crate::footprint::{self, Footprints};
 use crate::frames::{Empty, Source};
 use crate::graphics;
 use crate::http::{self, Request};
@@ -47,7 +48,7 @@ use crate::scale::render_size;
 use crate::stream::{self, Control, Format, Options};
 use crate::sync;
 use crate::template::{AdMatcher, ClipContext, ShowMatcher, js_string};
-use crate::vizrs::{ChannelEvents, Timing};
+use crate::vizrs::{self, ChannelEvents, Timing};
 use crate::yuva::ffmpeg_matrix;
 
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
@@ -164,7 +165,14 @@ pub struct Server {
     empty: Empty,
     ingest: Ingest,
     panel: Arc<Panel>,
+    /// Footprints of VizRS pages (`area: auto`, PLAN-strefy).
+    pub footprints: Mutex<Footprints>,
 }
+
+/// How often the footprints learn from the pictures and `STATE` of each channel.
+const LEARN_EVERY: Duration = Duration::from_millis(500);
+/// How often learnt footprints are written to their file.
+const SAVE_EVERY: Duration = Duration::from_secs(10);
 
 impl Server {
     pub fn new(config: Config) -> Arc<Server> {
@@ -180,7 +188,9 @@ impl Server {
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
         let ingest = Ingest::new(&config.ingest_token, config.ingest_anytime);
         let panel = Panel::new(&config, &ingest, Arc::clone(&graphics));
+        let footprints = Mutex::new(Footprints::load(Footprints::default_path(&config.etv_config)));
         Arc::new(Server {
+            footprints,
             ingest,
             panel,
             config: Arc::new(config),
@@ -192,6 +202,59 @@ impl Server {
             count: AtomicUsize::new(0),
             empty: Empty::new(),
         })
+    }
+
+    /// With `area: auto`, learns the footprints of the pages on air from the
+    /// pictures of the channels' captures (PLAN-strefy S1), in the background.
+    pub fn start_footprints(self: &Arc<Self>) {
+        if !Area::is_auto(&self.config.area) {
+            return;
+        }
+        let server = Arc::clone(self);
+        let _ = thread::Builder::new().name("footprints".into()).spawn(move || {
+            let mut saved = std::time::Instant::now();
+            loop {
+                thread::sleep(LEARN_EVERY);
+                server.learn_footprints();
+                if saved.elapsed() >= SAVE_EVERY {
+                    server.footprints.lock().unwrap_or_else(|e| e.into_inner()).save();
+                    saved = std::time::Instant::now();
+                }
+            }
+        });
+        crate::info!("graphics zones: auto (footprints of the pages on air)");
+    }
+
+    /// One learning step: per channel with a capture, its last picture and the pages on its antenna.
+    fn learn_footprints(&self) {
+        let channels: Vec<(String, Arc<Capture>)> = {
+            let sessions = lock(&self.sessions);
+            let mut seen = Vec::<(String, Arc<Capture>)>::new();
+            for script in sessions.scripts.values() {
+                if let Some(capture) = &script.capture {
+                    if !seen.iter().any(|(c, _)| *c == script.channel) {
+                        seen.push((script.channel.clone(), Arc::clone(capture)));
+                    }
+                }
+            }
+            seen
+        };
+        for (channel, capture) in channels {
+            // A capture with fixed areas draws only them: nothing to learn about the rest.
+            if !capture.areas().is_empty() {
+                continue;
+            }
+            let config = self.config.for_channel(&channel);
+            let pages = match vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix) {
+                Ok(reply) => footprint::on_air(&reply).unwrap_or_default(),
+                Err(_) => continue,
+            };
+            let rects: Vec<(u32, u32, u32, u32)> = capture.current().picture().rects.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
+            let size = capture.out_size();
+            if self.footprints.lock().unwrap_or_else(|e| e.into_inner()).learn(&pages, &rects, size) {
+                crate::debug!("footprints: channel {channel} learnt from {} page(s)", pages.len());
+            }
+        }
     }
 
     fn events_for(&self, channel: &str) -> Arc<ChannelEvents> {

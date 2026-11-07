@@ -65,9 +65,18 @@ impl Area {
         self.x < other.x + other.w && other.x < self.x + self.w && self.y < other.y + other.h && other.y < self.y + self.h
     }
 
+    /// `auto`: the zones follow the graphics on air (PLAN-strefy; footprints, src/footprint.rs).
+    pub fn is_auto(spec: &str) -> bool {
+        spec.trim().eq_ignore_ascii_case("auto")
+    }
+
     /// Areas of a channel, separated by commas; empty = the whole channel.
     /// Overlapping areas become one (their bounding box): no pixel twice.
+    /// `auto` draws the whole channel (the zones of a run come from footprints).
     pub fn parse_list(spec: &str, width: u32, height: u32) -> Result<Vec<Area>, String> {
+        if Area::is_auto(spec) {
+            return Ok(Vec::new());
+        }
         let mut areas: Vec<Area> = Vec::new();
         for part in spec.split(',').filter(|p| !p.trim().is_empty()) {
             match Area::parse(part, width, height)? {
@@ -200,6 +209,7 @@ mod tests {
     #[test]
     fn lists_merge_overlaps() {
         let list = |spec| Area::parse_list(spec, 1920, 1080);
+        assert!(Area::is_auto(" AUTO ") && list("auto").unwrap().is_empty(), "auto: the whole channel (zones from footprints)");
         assert_eq!(list(""), Ok(vec![]));
         assert_eq!(list("full"), Ok(vec![]));
         assert_eq!(list("1920x140+0+930,full"), Ok(vec![]));

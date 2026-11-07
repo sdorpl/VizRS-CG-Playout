@@ -157,6 +157,18 @@ pub fn on_air(state_reply: &str) -> Option<(String, Vec<String>)> {
     (!names.is_empty()).then(|| (format!("OUT {}", names.join(",")), pages))
 }
 
+/// The `STATE` reply of an antenna (`prefix` `@N ` = a channel's).
+pub fn state(address: &str, token: &str, prefix: &str) -> Result<String, String> {
+    let mut connection = Connection::open(address)?;
+    if !token.is_empty() {
+        let reply = connection.command(&format!("AUTH {token}"))?;
+        if !reply.starts_with("OK") {
+            return Err(format!("AUTH: {reply}"));
+        }
+    }
+    connection.command(&format!("{prefix}STATE"))
+}
+
 /// Replies per command, and the pages taken out by `clear_first`.
 #[derive(Debug, Default, PartialEq)]
 pub struct Sent {

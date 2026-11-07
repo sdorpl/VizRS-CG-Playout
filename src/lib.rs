@@ -12,6 +12,7 @@ pub mod devtools;
 pub mod etv_api;
 pub mod etv_client;
 pub mod etv_sync;
+pub mod footprint;
 pub mod frames;
 pub mod graphics;
 pub mod http;
