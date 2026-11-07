@@ -13,6 +13,7 @@ pub mod etv_api;
 pub mod etv_client;
 pub mod etv_sync;
 pub mod frames;
+pub mod graphics;
 pub mod http;
 pub mod ingest;
 pub mod json;

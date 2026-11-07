@@ -199,7 +199,7 @@ impl Default for Config {
     }
 }
 
-fn string(value: &Value, name: &str) -> Result<String, String> {
+pub(crate) fn string(value: &Value, name: &str) -> Result<String, String> {
     match value {
         Value::String(s) => Ok(s.clone()),
         Value::Null => Ok(String::new()),
@@ -217,7 +217,7 @@ fn number(value: &Value, name: &str) -> Result<f64, String> {
 }
 
 /// Seconds of a time before the end: a number from 0 to a day.
-fn seconds(value: &Value, name: &str) -> Result<f64, String> {
+pub(crate) fn seconds(value: &Value, name: &str) -> Result<f64, String> {
     let n = number(value, name)?;
     if (0.0..=MAX_SECONDS).contains(&n) { Ok(n) } else { Err(format!("{name}: expected 0 to {MAX_SECONDS} seconds")) }
 }
@@ -235,7 +235,7 @@ fn boolean(value: &Value, name: &str) -> Result<bool, String> {
 }
 
 /// A `shows` array; `name` is its place in the configuration.
-fn show_overrides(value: &Value, name: &str) -> Result<Vec<ShowOverride>, String> {
+pub(crate) fn show_overrides(value: &Value, name: &str) -> Result<Vec<ShowOverride>, String> {
     let items = value.as_array().ok_or(format!("{name}: expected an array"))?;
     let mut shows = Vec::new();
     for (i, item) in items.iter().enumerate() {

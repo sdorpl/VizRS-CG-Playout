@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -286,8 +286,8 @@ impl Timeline {
 /// Clip events of one channel, sent in order.
 pub struct ChannelEvents {
     config: Arc<Config>,
-    ads: Arc<AdMatcher>,
-    shows: Arc<ShowMatcher>,
+    /// Graphics rules; the Live Panel replaces them (src/graphics.rs), from the next clip.
+    rules: RwLock<Arc<ClipRules>>,
     state: Mutex<State>,
     /// Bumped by every ad: graphics scheduled before it are not sent.
     ad_generation: Arc<AtomicU64>,
@@ -308,14 +308,23 @@ impl ChannelEvents {
                 }
             })
             .expect("vizrs sender thread");
+        let rules = RwLock::new(Arc::new(ClipRules::of(&config, ads, shows)));
         Arc::new(ChannelEvents {
             config,
-            ads,
-            shows,
+            rules,
             state: Mutex::new(State::default()),
             ad_generation: Arc::new(AtomicU64::new(0)),
             queue: Mutex::new(queue),
         })
+    }
+
+    /// New graphics rules (the channel's configuration with them, and their matchers).
+    pub fn set_rules(&self, config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) {
+        *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(ClipRules::of(config, ads, shows));
+    }
+
+    fn rules(&self) -> Arc<ClipRules> {
+        Arc::clone(&self.rules.read().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -382,8 +391,9 @@ impl ChannelEvents {
             self.ad_generation.fetch_add(1, Ordering::Relaxed);
         }
         let ad_ctx = ClipContext { title: String::new(), show_title: String::new(), source: String::new(), duration: 0.0, ..ctx.clone() };
-        let show = self.shows.find(&ctx.show_title);
-        let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&self.config.on_ad);
+        let rules = self.rules();
+        let show = rules.shows.find(&ctx.show_title);
+        let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&rules.on_ad);
         self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, &ad_ctx) });
     }
 
@@ -397,17 +407,18 @@ impl ChannelEvents {
             None => format!("{}|{}", ctx.source, ctx.start),
         };
         let Some(generation) = self.first(ctx, key) else { return };
-        let show = self.shows.find(&ctx.show_title);
-        if self.ads_for(ctx) {
-            let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&self.config.on_ad);
+        let rules = self.rules();
+        let show = rules.shows.find(&ctx.show_title);
+        if rules.is_ad(ctx) {
+            let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&rules.on_ad);
             return self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, ctx) });
         }
         let Some(custom) = custom_commands else {
-            let on_clip = render_commands(show.and_then(|s| s.on_clip.as_deref()).unwrap_or(&self.config.on_clip), ctx);
+            let on_clip = render_commands(show.and_then(|s| s.on_clip.as_deref()).unwrap_or(&rules.on_clip), ctx);
             self.timed(ctx, on_clip, Timing::of_clip(&self.config), generation);
             // "Za chwilę" before the end, scheduled on its own.
-            let on_end = render_commands(show.and_then(|s| s.on_end.as_deref()).unwrap_or(&self.config.on_end), ctx);
-            let seconds = show.and_then(|s| s.end_seconds).unwrap_or(self.config.end_seconds);
+            let on_end = render_commands(show.and_then(|s| s.on_end.as_deref()).unwrap_or(&rules.on_end), ctx);
+            let seconds = show.and_then(|s| s.end_seconds).unwrap_or(rules.end_seconds);
             if !on_end.is_empty() && self.first(ctx, format!("{}|{}|end", ctx.source, ctx.start)).is_some() {
                 self.timed(ctx, on_end, Timing::of_end(&self.config, seconds), generation);
             }
@@ -533,9 +544,32 @@ impl ChannelEvents {
             }
         });
     }
+}
+
+/// The graphics rules of a channel in force.
+struct ClipRules {
+    on_clip: String,
+    on_ad: String,
+    on_end: String,
+    end_seconds: f64,
+    ads: Arc<AdMatcher>,
+    shows: Arc<ShowMatcher>,
+}
+
+impl ClipRules {
+    fn of(config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) -> ClipRules {
+        ClipRules {
+            on_clip: config.on_clip.clone(),
+            on_ad: config.on_ad.clone(),
+            on_end: config.on_end.clone(),
+            end_seconds: config.end_seconds,
+            ads,
+            shows,
+        }
+    }
 
     /// Whether the item is an ad, by the show's rule or the global one.
-    fn ads_for(&self, ctx: &ClipContext) -> bool {
+    fn is_ad(&self, ctx: &ClipContext) -> bool {
         match self.shows.find(&ctx.show_title).and_then(|s| s.ad_matcher.as_ref()) {
             Some(matcher) => matcher.is_ad(ctx),
             None => self.ads.is_ad(ctx),

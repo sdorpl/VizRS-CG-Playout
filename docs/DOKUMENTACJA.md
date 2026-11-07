@@ -784,6 +784,24 @@ API (`/api/live/*`, JSON, token jak wyżej):
 | POST | `/api/live/shows` | `{"channel","title","duration","plot"}` → `{"show", "steps":[{"step","ok","detail"}]}` |
 | PUT · DELETE | `/api/live/shows/<id>` | zmiana · usunięcie (`id` = nazwa pliku bez `.yml`) |
 | POST | `/api/live/shows/scan` | skan biblioteki i brakujące kolekcje |
+| GET | `/api/live/graphics` | reguły grafiki w użyciu: `{"rules": {…}, "source": "config"\|"file", "store": bool}` |
+| PUT | `/api/live/graphics` | cały dokument reguł (niżej) – walidacja, zapis `graphics.json`, działa od następnej pozycji |
+
+**Reguły grafiki przez API (`/api/live/graphics`, `src/graphics.rs`).** Dokument
+ma kształt tych pól z `config.json`: `on_clip`, `on_ad`, `ad_match` (`path`,
+`title`), `on_end`, `end_seconds` (brak = 60), `shows` (§3) i `channels`
+(`{"2": {"on_clip", "on_ad", "on_end", "end_seconds", "shows"}}` – tylko reguły;
+adres, token i `output_url` kanału zostają w `config.json`). Do pierwszego `PUT`
+reguły pochodzą z `config.json` i zmiennych środowiska (`source: "config"`). `PUT`
+sprawdza dokument jak start sidecara, a wyrażenie regularne, które się nie
+kompiluje (przy starcie tylko ostrzeżenie), odrzuca (400, nic się nie zmienia).
+Przyjęty zapisuje do `<etv_config>/vizrs-live/graphics.json` (atomowo) i **od
+tej chwili plik wygrywa z regułami z `config.json`** (`source: "file"`, także
+po restarcie; żeby wrócić do `config.json`, usuń plik i zrestartuj). Kanały
+biorą nowe reguły od następnej pozycji (sesji klipu) – grafika już zaplanowana
+dla bieżącej zostaje; restart nie jest potrzebny. Każda zmiana trafia do
+zdarzeń i `log.jsonl`. Bez `etv_config` odczyt działa, zapis = 409. Z tego API
+korzysta VizRS Live (ekran Grafika kanału).
 
 Wymaga `etv_config` (zapis audycji i ustawień) i `etv_url` (ErsatzTV);
 bez nich panel pokazuje sygnały, a audycji nie zapisze (409).

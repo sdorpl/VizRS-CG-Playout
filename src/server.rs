@@ -37,6 +37,7 @@ use crate::area::{Area, Layout, geometries};
 use crate::capture::{Capture, CaptureMode, CaptureOptions, IDLE, find_browser};
 use crate::config::Config;
 use crate::frames::{Empty, Source};
+use crate::graphics;
 use crate::http::{self, Request};
 use crate::ingest::Ingest;
 use crate::json::{self, Value};
@@ -156,7 +157,9 @@ pub struct Server {
     pub config: Arc<Config>,
     ads: Arc<AdMatcher>,
     browser: Option<String>,
-    channels: Mutex<HashMap<String, Arc<ChannelEvents>>>,
+    /// Events of each channel and the generation of the graphics rules they have.
+    channels: Mutex<HashMap<String, (u64, Arc<ChannelEvents>)>>,
+    graphics: Arc<graphics::Store>,
     sessions: Shared,
     count: AtomicUsize,
     empty: Empty,
@@ -166,17 +169,18 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: Config) -> Arc<Server> {
-        let (ads, warnings) = AdMatcher::new(&config.ad_match);
+        let graphics = Arc::new(graphics::Store::new(&config));
+        let (ads, warnings) = AdMatcher::new(&graphics.applied(&config).ad_match);
         for warning in warnings {
             crate::warn!("{warning}");
         }
-        let (_, show_warnings) = ShowMatcher::new(&config.shows);
+        let (_, show_warnings) = ShowMatcher::new(&graphics.applied(&config).shows);
         for warning in show_warnings {
             crate::warn!("{warning}");
         }
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
         let ingest = Ingest::new(&config.ingest_token, config.ingest_anytime);
-        let panel = Panel::new(&config, &ingest);
+        let panel = Panel::new(&config, &ingest, Arc::clone(&graphics));
         Arc::new(Server {
             ingest,
             panel,
@@ -184,6 +188,7 @@ impl Server {
             ads: Arc::new(ads),
             browser,
             channels: Mutex::new(HashMap::new()),
+            graphics,
             sessions: Shared::default(),
             count: AtomicUsize::new(0),
             empty: Empty::new(),
@@ -191,16 +196,40 @@ impl Server {
     }
 
     fn events_for(&self, channel: &str) -> Arc<ChannelEvents> {
+        let generation = self.graphics.generation();
         let mut channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
-        let events = channels.entry(channel.to_owned()).or_insert_with(|| {
-            let config = self.config.for_channel(channel);
-            let (shows, warnings) = ShowMatcher::new(&config.shows);
+        if let Some((seen, events)) = channels.get_mut(channel) {
+            if *seen != generation {
+                // The Live Panel replaced the graphics rules: from this clip on.
+                let (config, ads, shows) = self.rules_for(channel);
+                events.set_rules(&config, ads, shows);
+                *seen = generation;
+            }
+            return Arc::clone(events);
+        }
+        let (config, ads, shows) = self.rules_for(channel);
+        let events = ChannelEvents::new(Arc::new(config), ads, shows);
+        channels.insert(channel.to_owned(), (generation, Arc::clone(&events)));
+        events
+    }
+
+    /// The channel's configuration with the graphics rules in force, and their matchers.
+    fn rules_for(&self, channel: &str) -> (Config, Arc<AdMatcher>, Arc<ShowMatcher>) {
+        let config = self.graphics.applied(&self.config).for_channel(channel);
+        let ads = if self.graphics.generation() == 0 {
+            Arc::clone(&self.ads)
+        } else {
+            let (ads, warnings) = AdMatcher::new(&config.ad_match);
             for warning in warnings {
                 crate::warn!("channel {channel}: {warning}");
             }
-            ChannelEvents::new(Arc::new(config), Arc::clone(&self.ads), Arc::new(shows))
-        });
-        Arc::clone(events)
+            Arc::new(ads)
+        };
+        let (shows, warnings) = ShowMatcher::new(&config.shows);
+        for warning in warnings {
+            crate::warn!("channel {channel}: {warning}");
+        }
+        (config, ads, Arc::new(shows))
     }
 
     /// One capture per /output page, channel size, render size and graphics area, shared by the channels that have them.

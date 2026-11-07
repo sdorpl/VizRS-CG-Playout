@@ -16,6 +16,8 @@
 //   PUT    /api/live/shows/<id>           change (the file and the item in ErsatzTV stay)
 //   DELETE /api/live/shows/<id>           remove: file and collection
 //   POST   /api/live/shows/scan           scan the library, make missing collections
+//   GET    /api/live/graphics             graphics rules in force (src/graphics.rs)
+//   PUT    /api/live/graphics             replace them: graphics.json, from the next clip
 //
 // The panel token (`panel_token`) comes in `X-Panel-Token`, `Authorization:
 // Bearer` or the `vizrs_panel` cookie. Requests that change something must come
@@ -131,6 +133,7 @@ impl Step {
 
 pub struct Panel {
     token: String,
+    graphics: Arc<crate::graphics::Store>,
     etv_config: String,
     configured: Vec<LiveShow>,
     anytime: bool,
@@ -262,9 +265,10 @@ fn programme_json(p: &Programme, live: bool) -> Value {
 }
 
 impl Panel {
-    pub fn new(config: &Config, ingest: &Ingest) -> Arc<Panel> {
+    pub fn new(config: &Config, ingest: &Ingest, graphics: Arc<crate::graphics::Store>) -> Arc<Panel> {
         let panel = Arc::new(Panel {
             token: config.panel_token.clone(),
+            graphics,
             etv_config: config.etv_config.clone(),
             configured: config.live_shows.clone(),
             anytime: config.ingest_anytime,
@@ -430,12 +434,28 @@ impl Panel {
                     Err(e) => fail(&mut stream, 502, &e.to_string()),
                 }
             }
+            ("GET", ["graphics"]) => reply(&mut stream, 200, &self.graphics.to_json()),
+            ("PUT", ["graphics"]) => self.put_graphics(&body, &mut stream, ingest, &who),
             ("GET", ["shows"]) => reply(&mut stream, 200, &self.shows_state()),
             ("POST", ["shows", "scan"]) => self.scan(&mut stream, ingest, &who),
             ("POST", ["shows"]) => self.create(&body, &mut stream, ingest, &who),
             ("PUT", ["shows", id]) => self.update(id, &body, &mut stream, ingest, &who),
             ("DELETE", ["shows", id]) => self.delete(id, &mut stream, ingest, &who),
             _ => fail(&mut stream, 404, "nie ma takiego adresu API"),
+        }
+    }
+
+    /// `PUT /api/live/graphics`: the whole rules document, in force from the next clip.
+    fn put_graphics(&self, body: &Value, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        use crate::graphics::Replace;
+        match self.graphics.replace(body) {
+            Ok(()) => {
+                self.record(ingest, who, "", "reguły grafiki zmienione (od następnej pozycji)");
+                reply(stream, 200, &self.graphics.to_json())
+            }
+            Err(Replace::Invalid(e)) => fail(stream, 400, &format!("reguły grafiki: {e}")),
+            Err(Replace::NoStore) => fail(stream, 409, "brak etv_config – reguł nie ma gdzie zapisać"),
+            Err(Replace::Io(e)) => fail(stream, 500, &format!("zapis graphics.json: {e}")),
         }
     }
 
