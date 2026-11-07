@@ -11,6 +11,17 @@ use vizrs_cg::vizrs::on_air;
 
 use common::{assert_same, vectors};
 
+/// The vectors were made in UTC (as CI runs); `{next_start_full}` of a `Z`
+/// time is the process's wall clock, so these tests run with `TZ=UTC` whatever
+/// the host's zone is. Every test here calls this first: the variable is set
+/// once, before any of them reads the time zone.
+fn utc() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: every test of this binary waits on ONCE before reading the
+    // environment or the time zone, so nothing reads it while it is set.
+    ONCE.call_once(|| unsafe { std::env::set_var("TZ", "UTC") });
+}
+
 fn cases<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).and_then(Value::as_array).unwrap_or_else(|| panic!("{key}"))
 }
@@ -45,6 +56,7 @@ fn context(v: &Value) -> ClipContext {
 
 #[test]
 fn clip_context_matches_node() {
+    utc();
     let v = vectors("template");
     for case in cases(&v, "contexts") {
         let ctx = ClipContext::from_data(case.get("data").unwrap());
@@ -54,6 +66,7 @@ fn clip_context_matches_node() {
 
 #[test]
 fn commands_match_node() {
+    utc();
     let v = vectors("template");
     for case in cases(&v, "commands") {
         let ctx = context(case.get("ctx").unwrap());
@@ -64,6 +77,7 @@ fn commands_match_node() {
 
 #[test]
 fn time_spans_clocks_and_values_match_node() {
+    utc();
     let v = vectors("template");
     for case in cases(&v, "time_spans") {
         let input = case.get("input").filter(|i| !i.is_null());
@@ -83,6 +97,7 @@ fn time_spans_clocks_and_values_match_node() {
 
 #[test]
 fn ads_match_node() {
+    utc();
     let v = vectors("template");
     for case in cases(&v, "ads") {
         let m = case.get("ad_match").unwrap();
@@ -96,6 +111,7 @@ fn ads_match_node() {
 
 #[test]
 fn dates_match_node() {
+    utc();
     let v = vectors("template");
     for case in cases(&v, "dates") {
         let expected = case.get("ms").unwrap().as_f64().map(|ms| ms as i64);
@@ -105,6 +121,7 @@ fn dates_match_node() {
 
 #[test]
 fn state_replies_match_node() {
+    utc();
     let v = vectors("vizrs");
     for case in cases(&v, "on_air") {
         let result = match on_air(&text(case, "reply")) {
