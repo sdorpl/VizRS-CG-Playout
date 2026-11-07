@@ -35,6 +35,7 @@ use std::time::Duration;
 use crate::area::{Area, Layout, geometries};
 use crate::capture::{Capture, CaptureMode, CaptureOptions, IDLE, find_browser};
 use crate::config::Config;
+use crate::footprint::{self, Footprints};
 use crate::frames::{Empty, Source};
 use crate::graphics;
 use crate::http::{self, Request};
@@ -47,7 +48,7 @@ use crate::scale::render_size;
 use crate::stream::{self, Control, Format, Options};
 use crate::sync;
 use crate::template::{AdMatcher, ClipContext, ShowMatcher, js_string};
-use crate::vizrs::{ChannelEvents, Timing};
+use crate::vizrs::{self, ChannelEvents, Timing};
 use crate::yuva::ffmpeg_matrix;
 
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
@@ -110,6 +111,10 @@ struct Script {
     /// `render` and `area` of the session, for `/ffmpeg/resume`.
     render: String,
     area: String,
+    /// With `area: auto`, the zones the overlay got for this run (PLAN-strefy S2).
+    zones: Mutex<Option<Vec<Area>>>,
+    /// Pictures with graphics outside those zones (cut off until the next run, S3a).
+    outside: AtomicUsize,
     capture: Option<Arc<Capture>>,
     /// The session as a reader of `capture`.
     reader: u64,
@@ -164,7 +169,14 @@ pub struct Server {
     empty: Empty,
     ingest: Ingest,
     panel: Arc<Panel>,
+    /// Footprints of VizRS pages (`area: auto`, PLAN-strefy).
+    pub footprints: Mutex<Footprints>,
 }
+
+/// How often the footprints learn from the pictures and `STATE` of each channel.
+const LEARN_EVERY: Duration = Duration::from_millis(500);
+/// How often learnt footprints are written to their file.
+const SAVE_EVERY: Duration = Duration::from_secs(10);
 
 impl Server {
     pub fn new(config: Config) -> Arc<Server> {
@@ -180,7 +192,9 @@ impl Server {
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
         let ingest = Ingest::new(&config.ingest_token, config.ingest_anytime);
         let panel = Panel::new(&config, &ingest, Arc::clone(&graphics));
+        let footprints = Mutex::new(Footprints::load(Footprints::default_path(&config.etv_config)));
         Arc::new(Server {
+            footprints,
             ingest,
             panel,
             config: Arc::new(config),
@@ -192,6 +206,89 @@ impl Server {
             count: AtomicUsize::new(0),
             empty: Empty::new(),
         })
+    }
+
+    /// With `area: auto`, learns the footprints of the pages on air from the
+    /// pictures of the channels' captures (PLAN-strefy S1), in the background.
+    pub fn start_footprints(self: &Arc<Self>) {
+        if !Area::is_auto(&self.config.area) {
+            return;
+        }
+        let server = Arc::clone(self);
+        let _ = thread::Builder::new().name("footprints".into()).spawn(move || {
+            let mut saved = std::time::Instant::now();
+            loop {
+                thread::sleep(LEARN_EVERY);
+                server.learn_footprints();
+                if saved.elapsed() >= SAVE_EVERY {
+                    server.footprints.lock().unwrap_or_else(|e| e.into_inner()).save();
+                    saved = std::time::Instant::now();
+                }
+            }
+        });
+        crate::info!("graphics zones: auto (footprints of the pages on air)");
+    }
+
+    /// The zones of a run of `channel` (PLAN-strefy S2): footprints of the pages
+    /// on its antenna and of the pages its rules take; `None` = the whole channel.
+    fn zones_for(&self, channel: &str, size: (u32, u32)) -> Option<Vec<Area>> {
+        let config = self.graphics.applied(&self.config.for_channel(channel));
+        let on_air = footprint::on_air(&vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix).ok()?)?;
+        let mut lines: Vec<String> = Vec::new();
+        let mut add = |text: &str| lines.extend(text.lines().map(str::to_owned));
+        add(&config.on_clip);
+        add(&config.on_end);
+        for show in &config.shows {
+            add(show.on_clip.as_deref().unwrap_or(""));
+            add(show.on_end.as_deref().unwrap_or(""));
+        }
+        let numbers: Vec<String> = vizrs::taken_pages(&lines).into_iter().filter(|p| !p.contains('{')).collect();
+        let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
+        footprint::zones(&footprints, &on_air, &numbers, size)
+    }
+
+    /// One learning step: per channel with a capture, its last picture and the pages on its antenna.
+    fn learn_footprints(&self) {
+        // Graphics outside the zones of a running overlay: cut off until its next run.
+        let running: Vec<Arc<Script>> =
+            lock(&self.sessions).scripts.values().filter(|s| s.claimed.load(Ordering::Relaxed)).cloned().collect();
+        for script in running {
+            let Some(capture) = &script.capture else { continue };
+            let zones = script.zones.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let Some(zones) = zones.filter(|z| !z.is_empty()) else { continue };
+            let rects: Vec<(u32, u32, u32, u32)> = capture.current().picture().rects.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
+            if !footprint::covered(&zones, &rects) && script.outside.fetch_add(1, Ordering::Relaxed) == 0 {
+                crate::warn!("channel {}: graphics outside the zones of this run, cut off until the next run", script.channel);
+            }
+        }
+        let channels: Vec<(String, Arc<Capture>)> = {
+            let sessions = lock(&self.sessions);
+            let mut seen = Vec::<(String, Arc<Capture>)>::new();
+            for script in sessions.scripts.values() {
+                if let Some(capture) = &script.capture {
+                    if !seen.iter().any(|(c, _)| *c == script.channel) {
+                        seen.push((script.channel.clone(), Arc::clone(capture)));
+                    }
+                }
+            }
+            seen
+        };
+        for (channel, capture) in channels {
+            // A capture with fixed areas draws only them: nothing to learn about the rest.
+            if !capture.areas().is_empty() {
+                continue;
+            }
+            let config = self.config.for_channel(&channel);
+            let pages = match vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix) {
+                Ok(reply) => footprint::on_air(&reply).unwrap_or_default(),
+                Err(_) => continue,
+            };
+            let rects: Vec<(u32, u32, u32, u32)> = capture.current().picture().rects.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
+            let size = capture.out_size();
+            if self.footprints.lock().unwrap_or_else(|e| e.into_inner()).learn(&pages, &rects, size) {
+                crate::debug!("footprints: channel {channel} learnt from {} page(s)", pages.len());
+            }
+        }
     }
 
     fn events_for(&self, channel: &str) -> Arc<ChannelEvents> {
@@ -308,11 +405,39 @@ impl Server {
                 capture
             })
             .collect();
+        // `area: auto` (PLAN-strefy S5): the zones of the overlay runs and the pages with footprints.
+        let zones = Area::is_auto(&self.config.area).then(|| {
+            let runs: Vec<Value> = sessions
+                .scripts
+                .values()
+                .filter(|s| s.claimed.load(Ordering::Relaxed))
+                .map(|s| {
+                    let zones = s.zones.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let channel = f64::from(s.ctx.width) * f64::from(s.ctx.height);
+                    let (geometry, share) = match zones.filter(|z| !z.is_empty()) {
+                        Some(z) => {
+                            let pixels: u64 = z.iter().map(|a| u64::from(a.w) * u64::from(a.h)).sum();
+                            (Value::from(geometries(&z)), (100.0 * pixels as f64 / channel).round())
+                        }
+                        None => (Value::Null, 100.0),
+                    };
+                    json::object([
+                        ("channel", s.channel.as_str().into()),
+                        ("zones", geometry),
+                        ("share_percent", share.into()),
+                        ("outside", (s.outside.load(Ordering::Relaxed) as u64).into()),
+                    ])
+                })
+                .collect();
+            let pages = self.footprints.lock().unwrap_or_else(|e| e.into_inner()).len();
+            json::object([("runs", Value::Array(runs)), ("pages", (pages as u64).into())])
+        });
         json::object([
             ("sessions", (self.count.load(Ordering::Relaxed) as u64).into()),
             ("captures", Value::Array(captures)),
             ("overlay", sessions.overlay.iter().map(String::as_str).collect::<Vec<_>>().into()),
             ("ingest", if self.ingest.enabled() { self.ingest.health() } else { Value::Null }),
+            ("zones", zones.unwrap_or(Value::Null)),
         ])
     }
 
@@ -435,7 +560,24 @@ impl Server {
         crate::info!("channel {channel}: ffmpeg overlay took over the graphics of {}", script.ctx.title);
         // Frames of the graphics areas only for an overlay that places them (area=1).
         let placed = request.param("area") == Some("1");
+        if placed && Area::is_auto(&self.config.area) && script.capture.as_ref().is_some_and(|c| c.areas().is_empty()) {
+            let zones = self.zones_for(&channel, (script.ctx.width, script.ctx.height));
+            match &zones {
+                Some(z) => {
+                    let pixels: u64 = z.iter().map(|a| u64::from(a.w) * u64::from(a.h)).sum();
+                    let share = 100.0 * pixels as f64 / (f64::from(script.ctx.width) * f64::from(script.ctx.height));
+                    crate::info!("channel {channel}: graphics zones {} ({share:.0}% of the channel)", geometries(z));
+                }
+                None => crate::info!("channel {channel}: graphics zones: the whole channel"),
+            }
+            *script.zones.lock().unwrap_or_else(|e| e.into_inner()) = zones;
+        }
         let layout = frame_layout(&script, placed);
+        // A resumed overlay must get the same zones as its running ffmpeg graph, not `auto`.
+        let graphics = match script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            Some(zones) if placed && !zones.is_empty() => geometries(zones),
+            _ => script.area.clone(),
+        };
         let mut reply = json::object([
             ("session", script.id.into()),
             ("width", u64::from(layout.width).into()),
@@ -450,7 +592,7 @@ impl Server {
                     script.ctx.width,
                     script.ctx.height,
                     quote_plus(&script.render),
-                    quote_plus(&script.area)
+                    quote_plus(&graphics)
                 )
                 .into(),
             ),
@@ -612,6 +754,8 @@ impl Server {
                     fps,
                     render: spec.clone(),
                     area: area.clone(),
+                    zones: Mutex::new(None),
+                    outside: AtomicUsize::new(0),
                     capture: capture.clone(),
                     reader,
                     stream: Arc::clone(&control),
@@ -658,6 +802,11 @@ impl Server {
 /// What a session's raw frames carry: its graphics areas stacked when the
 /// overlay places them (`area`), else the whole channel.
 fn frame_layout(script: &Script, area: bool) -> Layout {
+    if area {
+        if let Some(zones) = script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|z| !z.is_empty()) {
+            return Layout::atlas(zones);
+        }
+    }
     match script.capture.as_ref().map(|c| c.areas()) {
         Some(areas) if area && !areas.is_empty() => Layout::atlas(areas),
         _ => Layout::whole(script.ctx.width, script.ctx.height),

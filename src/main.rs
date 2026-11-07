@@ -131,6 +131,7 @@ fn main() -> ExitCode {
 
     etv_sync::start(&config);
     let server = Server::new(config);
+    server.start_footprints();
     let stopping = Arc::clone(&server);
     std::thread::spawn(move || {
         sys::wait_for_stop();

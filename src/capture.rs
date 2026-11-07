@@ -348,6 +348,11 @@ impl Capture {
         format!("{}x{}", self.options.out_width, self.options.out_height)
     }
 
+    /// Channel size in pixels (the frames).
+    pub fn out_size(&self) -> (u32, u32) {
+        (self.options.out_width, self.options.out_height)
+    }
+
     /// Render size of the page.
     pub fn render(&self) -> String {
         format!("{}x{}", self.options.width, self.options.height)
