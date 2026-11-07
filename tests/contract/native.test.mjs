@@ -156,3 +156,52 @@ test("renderer native with several areas: one process, each area drawn on its ow
   assert.equal(runs.length, 1);
   assert.match(runs[0], /--area 10,150,300,20 --area 270,10,40,20/);
 });
+
+test("area auto: footprints of the page on air become the zones of the overlay's run", { timeout: 60000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "virtrs-native-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "vizrs-render");
+  writeFileSync(bin, FAKE);
+  chmodSync(bin, 0o755);
+  writeFileSync(join(dir, "started"), "1"); // no exit in this test
+  // A fake VizRS: page 4001 on air (STATE), every other command OK.
+  const { createServer } = await import("node:net");
+  const vizrs = createServer((socket) => {
+    let rest = "";
+    socket.on("data", (d) => {
+      rest += d;
+      let i;
+      while ((i = rest.indexOf("\n")) >= 0) {
+        const line = rest.slice(0, i);
+        rest = rest.slice(i + 1);
+        socket.write(line.endsWith("STATE") ? 'OK {"layers":[{"layer":"main","page":{"id":"p9","number":4001},"since":1}]}\n' : "OK\n");
+      }
+    });
+  });
+  await new Promise((resolve) => vizrs.listen(0, "127.0.0.1", resolve));
+  t.after(() => vizrs.close());
+  const cg = await startSidecar(
+    {
+      vizrs: { address: `127.0.0.1:${vizrs.address().port}`, token: "" },
+      output_url: "http://127.0.0.1:9/output",
+      lead_seconds: 0,
+      renderer: "native",
+      renderer_bin: bin,
+      area: "auto",
+    },
+    { FAKE_DIR: dir },
+  );
+  t.after(cg.stop);
+  const [width, height] = [320, 180];
+  const data = { Resolution: { Width: width, Height: height }, FrameRate: 25, MediaItem_Path: "/m/News.mp4" };
+  const script = runClient(`${cg.url}/etv?channel=1`, data, 8000);
+  // the learner looks every 0.5 s
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  const claim = await (await fetch(`${cg.url}/ffmpeg?channel=1&wait=5000&area=1`)).json();
+  // the red box 120x20 at 40,100, snapped out to 16 px with a 16 px margin
+  assert.deepEqual(claim.areas, [{ x: 16, y: 80, w: 160, h: 64 }]);
+  assert.equal(claim.width, 160);
+  assert.equal(claim.height, 64);
+  assert.match(claim.resume, /graphics=160x64%2B16%2B80/);
+  await script.catch(() => {});
+});

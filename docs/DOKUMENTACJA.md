@@ -85,8 +85,9 @@ Obszarów może być kilka, rozdzielonych przecinkami, np. pasek i logo:
 `area=1920x140+0+930,160x160+1690+30`.
 
 **`area: auto`** (`VIZRS_AREA=auto`, PLAN-strefy) – strefy mają wynikać
-z grafiki na antenie zamiast ze stałego ustawienia. Na razie (S1) grafika
-idzie w całym kanale, a sidecar uczy się **śladów stron**. Co 0,5 s dla
+z grafiki na antenie zamiast ze stałego ustawienia. Renderer rysuje cały
+kanał, a sidecar uczy się **śladów stron** i z nich składa strefy każdego
+przebiegu nakładki ffmpeg. Co 0,5 s dla
 każdego kanału z przechwytywaniem bierze widoczne prostokąty ostatniego obrazu
 i strony na jego antenie (`STATE`, z prefiksem `@N` przy `channel_buses`)
 i dopisuje prostokąty do śladu strony. Jest jedna strona – wszystkie jej
@@ -98,8 +99,17 @@ z marginesem 16 px, sklejane przy odstępie mniejszym niż 64 px, najwyżej
 4 na stronę (więcej – ich obwiednia). Klucz to `id` i numer strony VizRS oraz
 rozmiar kanału (inne show = inne `id` = puste ślady). Ślady zapisują się co
 10 s w `<etv_config>/vizrs-live/footprints.json`; brak albo uszkodzony plik
-oznacza brak śladów. Strefy przebiegów ffmpeg ze śladów to kolejny krok planu
-(S2).
+oznacza brak śladów.
+
+Przy przejęciu sesji przez nakładkę (`GET /ffmpeg?…&area=1`, start przebiegu)
+strefy przebiegu to ślady stron na antenie kanału (`STATE`) i stron, które
+mogą wziąć reguły (`TAKE` z `on_clip`, `on_end` i reguł audycji, po
+zastosowaniu reguł z live API), sklejone jak wyżej. Nakładka dostaje je tak
+jak stały `area` (`areas`, atlas), a `resume` niesie wyliczone strefy, nie
+`auto` (nakładka po restarcie sidecara dostaje ten sam atlas, co jej graf
+ffmpeg). Cały kanał, gdy którakolwiek strona nie ma jeszcze śladu, gdy nic
+nie jest znane albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
+<strefy> (N% of the channel)` albo `graphics zones: the whole channel`.
 
 - W trybie `capture_mode: frames` każdy obszar to osobna karta Chromium
   z tą samą stroną i stałym `viewport` równym obszarowi; w każdej klatce

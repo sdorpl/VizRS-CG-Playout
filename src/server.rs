@@ -111,6 +111,8 @@ struct Script {
     /// `render` and `area` of the session, for `/ffmpeg/resume`.
     render: String,
     area: String,
+    /// With `area: auto`, the zones the overlay got for this run (PLAN-strefy S2).
+    zones: Mutex<Option<Vec<Area>>>,
     capture: Option<Arc<Capture>>,
     /// The session as a reader of `capture`.
     reader: u64,
@@ -223,6 +225,24 @@ impl Server {
             }
         });
         crate::info!("graphics zones: auto (footprints of the pages on air)");
+    }
+
+    /// The zones of a run of `channel` (PLAN-strefy S2): footprints of the pages
+    /// on its antenna and of the pages its rules take; `None` = the whole channel.
+    fn zones_for(&self, channel: &str, size: (u32, u32)) -> Option<Vec<Area>> {
+        let config = self.graphics.applied(&self.config.for_channel(channel));
+        let on_air = footprint::on_air(&vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix).ok()?)?;
+        let mut lines: Vec<String> = Vec::new();
+        let mut add = |text: &str| lines.extend(text.lines().map(str::to_owned));
+        add(&config.on_clip);
+        add(&config.on_end);
+        for show in &config.shows {
+            add(show.on_clip.as_deref().unwrap_or(""));
+            add(show.on_end.as_deref().unwrap_or(""));
+        }
+        let numbers: Vec<String> = vizrs::taken_pages(&lines).into_iter().filter(|p| !p.contains('{')).collect();
+        let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
+        footprint::zones(&footprints, &on_air, &numbers, size)
     }
 
     /// One learning step: per channel with a capture, its last picture and the pages on its antenna.
@@ -498,7 +518,24 @@ impl Server {
         crate::info!("channel {channel}: ffmpeg overlay took over the graphics of {}", script.ctx.title);
         // Frames of the graphics areas only for an overlay that places them (area=1).
         let placed = request.param("area") == Some("1");
+        if placed && Area::is_auto(&self.config.area) && script.capture.as_ref().is_some_and(|c| c.areas().is_empty()) {
+            let zones = self.zones_for(&channel, (script.ctx.width, script.ctx.height));
+            match &zones {
+                Some(z) => {
+                    let pixels: u64 = z.iter().map(|a| u64::from(a.w) * u64::from(a.h)).sum();
+                    let share = 100.0 * pixels as f64 / (f64::from(script.ctx.width) * f64::from(script.ctx.height));
+                    crate::info!("channel {channel}: graphics zones {} ({share:.0}% of the channel)", geometries(z));
+                }
+                None => crate::info!("channel {channel}: graphics zones: the whole channel"),
+            }
+            *script.zones.lock().unwrap_or_else(|e| e.into_inner()) = zones;
+        }
         let layout = frame_layout(&script, placed);
+        // A resumed overlay must get the same zones as its running ffmpeg graph, not `auto`.
+        let graphics = match script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            Some(zones) if placed && !zones.is_empty() => geometries(zones),
+            _ => script.area.clone(),
+        };
         let mut reply = json::object([
             ("session", script.id.into()),
             ("width", u64::from(layout.width).into()),
@@ -513,7 +550,7 @@ impl Server {
                     script.ctx.width,
                     script.ctx.height,
                     quote_plus(&script.render),
-                    quote_plus(&script.area)
+                    quote_plus(&graphics)
                 )
                 .into(),
             ),
@@ -675,6 +712,7 @@ impl Server {
                     fps,
                     render: spec.clone(),
                     area: area.clone(),
+                    zones: Mutex::new(None),
                     capture: capture.clone(),
                     reader,
                     stream: Arc::clone(&control),
@@ -721,6 +759,11 @@ impl Server {
 /// What a session's raw frames carry: its graphics areas stacked when the
 /// overlay places them (`area`), else the whole channel.
 fn frame_layout(script: &Script, area: bool) -> Layout {
+    if area {
+        if let Some(zones) = script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|z| !z.is_empty()) {
+            return Layout::atlas(zones);
+        }
+    }
     match script.capture.as_ref().map(|c| c.areas()) {
         Some(areas) if area && !areas.is_empty() => Layout::atlas(areas),
         _ => Layout::whole(script.ctx.width, script.ctx.height),

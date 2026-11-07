@@ -101,7 +101,7 @@ Wniosek dla S2: atlas układa strefy jedna pod drugą z szerokością najszersze
 |---|---|---|---|
 | S0 | Pomiar wyjściowy na lokalnym stosie: CPU sidecara i ErsatzTV, pamięć GPU, ruch pipe przy pełnym ekranie (benchmark `bench/`, `VIZRS_FFMPEG_FPS=25` i `50`) | – | zrobione (2026-11-07, wyniki niżej) |
 | S1 | Rejestr śladów stron: uczenie z `visible_rects` przy znanych stronach na antenie, normalizacja, `footprints.json`, testy jednostkowe (przypisanie pikseli, sklejanie, unieważnienie przy zmianie show) | S0 | zrobione (2026-11-07; `src/footprint.rs`, uczenie co 0,5 s w wątku sidecara, `VIZRS_AREA=auto`) |
-| S2 | `VIZRS_AREA=auto`: zestaw stref przebiegu przy `GET /ffmpeg` (strony na antenie + reguły kawałka), sklejanie, nieznana strona → cały ekran; test kontraktu nakładki z atlasem zmiennym między przebiegami | S1 | do zrobienia |
+| S2 | `VIZRS_AREA=auto`: zestaw stref przebiegu przy `GET /ffmpeg` (strony na antenie + reguły kawałka), sklejanie, nieznana strona → cały ekran; test kontraktu nakładki z atlasem zmiennym między przebiegami | S1 | zrobione (2026-11-07; renderer dalej rysuje cały kanał – oszczędność na strumieniu, wysyłce na GPU i nakładaniu; pakowanie atlasu obok siebie – osobno) |
 | S3 | Poszerzenie w trakcie przebiegu: flaga z wyprzedzenia (`TAKE`, `STATE`) i z pikseli poza strefami, nowy przebieg przez ścieżkę przebiegów `takeover.rs`, limit 1/10 s | S2 | do zrobienia |
 | S4 | Zwężanie przy naturalnym starcie przebiegu (histereza) | S3 | do zrobienia |
 | S5 | `/health` i log (strefy, % ekranu, poszerzenia), DOKUMENTACJA §1 i §5 (`VIZRS_AREA=auto`); w VizRS Live – wiersz w „Stan” Diagnostyki | S2 | do zrobienia |

@@ -193,6 +193,41 @@ impl Footprints {
     }
 }
 
+/// Zones covering more of the channel than this are not worth an atlas: the whole channel.
+pub const WHOLE_SHARE: f64 = 0.6;
+
+/// The zones of an ffmpeg run (PLAN-strefy S2): the footprints of the pages on
+/// air (`on_air`, keys `id:number`) and of the pages the rules may take in the
+/// piece (`numbers`, as in `TAKE 4001`), merged. `None` = the whole channel:
+/// a page without a footprint, no graphics known at all, or zones over
+/// `WHOLE_SHARE` of the channel.
+pub fn zones(footprints: &Footprints, on_air: &[OnAir], numbers: &[String], size: (u32, u32)) -> Option<Vec<Area>> {
+    let mut areas = Vec::new();
+    for page in on_air {
+        areas.extend_from_slice(footprints.get(&page.page, size)?);
+    }
+    for number in numbers {
+        let suffix = format!(":{number}@{}x{}", size.0, size.1);
+        let mut found = false;
+        for (key, list) in &footprints.pages {
+            if key.ends_with(&suffix) {
+                areas.extend_from_slice(list);
+                found = true;
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+    if areas.is_empty() {
+        return None;
+    }
+    let areas = merge(areas, size);
+    let pixels: u64 = areas.iter().map(|a| u64::from(a.w) * u64::from(a.h)).sum();
+    let share = pixels as f64 / (f64::from(size.0) * f64::from(size.1));
+    (share <= WHOLE_SHARE).then_some(areas)
+}
+
 /// A rectangle snapped out to the grid, with the margin, even and inside the channel.
 fn snap((x, y, w, h): (u32, u32, u32, u32), (cw, ch): (u32, u32)) -> Area {
     let down = |v: u32| v.saturating_sub(MARGIN) / GRID * GRID;
@@ -299,6 +334,24 @@ mod tests {
         assert_eq!(f.get("title:2", HD).unwrap(), [Area { x: 80, y: 832, w: 848, h: 160 }]);
         // two pages taken at the same moment, a new rectangle owned by none: nobody learns
         assert!(!f.learn(&[page("c:3", 9), page("d:4", 9)], &[(800, 400, 100, 100)], HD));
+    }
+
+    #[test]
+    fn zones_of_a_run_from_pages_on_air_and_rule_pages() {
+        let mut f = Footprints::default();
+        f.learn(&[page("logo:3001", 1)], &[(1700, 40, 160, 160)], HD);
+        f.learn(&[page("p9:4001", 1)], &[(100, 850, 800, 120)], HD);
+        // logo on air, the title will be taken by on_clip (TAKE 4001)
+        let z = zones(&f, &[page("logo:3001", 1)], &["4001".into()], HD).unwrap();
+        assert_eq!(z.len(), 2);
+        // a page with no footprint: the whole channel
+        assert_eq!(zones(&f, &[page("x:9", 1)], &[], HD), None);
+        assert_eq!(zones(&f, &[], &["5005".into()], HD), None);
+        // nothing known: the whole channel
+        assert_eq!(zones(&f, &[], &[], HD), None);
+        // a full-screen page: over WHOLE_SHARE = the whole channel
+        f.learn(&[page("full:7", 1)], &[(0, 0, 1920, 1080)], HD);
+        assert_eq!(zones(&f, &[page("full:7", 1)], &[], HD), None);
     }
 
     #[test]
