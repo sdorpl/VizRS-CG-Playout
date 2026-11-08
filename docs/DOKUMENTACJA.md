@@ -2,7 +2,7 @@
 
 > Do 2026-10-31 projekt nazywał się **VirtRS CG Playout** (repozytorium `sdorpl/VirtRS-CG-Playout`, GitHub przekierowuje stary adres). Nazwy techniczne zostają bez zmian: binarka `vizrs-cg`, obraz `ghcr.io/sdorpl/vizrs-cg`, zmienne `VIRTRS_*`.
 
-1. [Jak to działa](#1-jak-to-działa)
+1. [Jak to działa](#1-jak-to-działa) – w tym [pakiet VizRS i zgodność](#pakiet-vizrs--zgodność-aplikacji)
 2. [Odpowiedniki w VizRS ffPlayout System](#2-odpowiedniki-w-vizrs-ffplayout-system)
 3. [Komendy i symbole zastępcze](#3-komendy-i-symbole-zastępcze)
 4. [Uruchamianie w Dockerze](#4-uruchamianie-w-dockerze)
@@ -842,6 +842,23 @@ korzysta VizRS Live (ekran Grafika kanału).
 
 Wymaga `etv_config` (zapis audycji i ustawień) i `etv_url` (ErsatzTV);
 bez nich panel pokazuje sygnały, a audycji nie zapisze (409).
+
+### Pakiet VizRS – zgodność aplikacji
+
+VizRS CG Playout to jedna z czterech aplikacji pakietu VizRS, które mają być **zawsze ze sobą zgodne** (bieżące wersje działają razem).
+
+| Repozytorium | Rola | Styk z tą aplikacją |
+|---|---|---|
+| [VizRS CG System](../../VizRS%20CG%20System) | silnik grafiki (Rust): Trio (playout stron), wyjście `/output` (też anteny kanałów `bus=ch-N`), API TCP 6100 / HTTP / SSE (opis: `docs/API.md`), serwer `vizrs` | protokół VizRS: TCP 6100 (`AUTH`, `STATE`, `TAKE`, `OUT`…), strona `/output`, renderer `vizrs-render stream` (dostawca styku: VizRS CG System, `docs/API.md`) |
+| **VizRS CG Playout** (to repo) | grafika VizRS i sloty na żywo (live ingest RTMP/SRT) na kanałach ErsatzTV (sidecar `cg`, bez zmian w ErsatzTV) | – |
+| [VizRS Live](../../VizRS%20Live) | panel kanału nad ErsatzTV legacy (sterowanie kanałami, ramówką, playoutami bez web GUI legacy) | API CG Playout `/health`, `/etv/pages`, `/ingest/state`, `/api/live/*` z tokenem panelu (`panel_token`), przez pośrednika w serwerze panelu; wspólny stos `compose.cg-playout.yml` z repo VizRS Live (dostawca styku: CG Playout, §1 „Live API”) |
+| [VizRS CG Artist](../../VizRS%20CG%20Artist) | samodzielny edytor grafik i animacji (Tauri 2), sceny dla VizRS CG System | brak bezpośredniego – sceny z Artist trafiają na serwer `vizrs` (VizRS CG System), a stamtąd na kanał |
+
+Zasady zgodności:
+
+- **Styk zmienia się w obu repozytoriach naraz.** Zmiana API, pól odpowiedzi, parametrów lub zmiennych wspólnego stosu (`compose.cg-playout.yml`) po jednej stronie wymaga dostosowania drugiej strony i jej dokumentacji, zanim wejdzie do wydania. Opis styku jest po stronie dostawcy: dla API CG Playout (`/health`, `/etv/pages`, `/ingest/state`, `/api/live/*`) dostawcą jest ta aplikacja (§1 „Live API”), a dla protokołu VizRS (TCP 6100, `/output`) dostawcą jest VizRS CG System (`docs/API.md`).
+- **Starsza wersja sąsiada nie psuje aplikacji.** Rozszerzenia API w CG Playout zachowują kompatybilność wsteczną ze starszą wersją VizRS Live; z kolei przy współpracy z serwerem VizRS CG System brak nowych możliwości serwera grafiki nie może powodować błędu krytycznego ani przerywać emisji kanału.
+- **Wydania razem.** Przed wydaniem sprawdź z bieżącymi wersjami pozostałych aplikacji pakietu (VizRS CG System i VizRS Live); zmianę wymagającą nowszej wersji sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
 
 ## 2. Odpowiedniki w VizRS ffPlayout System
 

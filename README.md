@@ -25,17 +25,21 @@ Sidecar to jeden plik binarny w Ruście (`vizrs-cg`) obok bezgłowego Chromium;
 wydania: obraz `ghcr.io/sdorpl/vizrs-cg` (amd64, arm64) i archiwa dla Linuksa
 x86_64 i arm64 (DOKUMENTACJA §4, §7).
 
-## Rodzina VizRS
+## Pakiet VizRS
+
+VizRS CG Playout to jedna z czterech aplikacji pakietu VizRS, które mają być ze sobą **zawsze zgodne**: [VizRS CG System](../VizRS%20CG%20System) (silnik grafiki, Trio, `/output`), **VizRS CG Playout** (to repo), [VizRS Live](../VizRS%20Live) (panel kanału nad ErsatzTV legacy) i [VizRS CG Artist](../VizRS%20CG%20Artist) (edytor grafik i animacji). Styki i zasady zgodności: [DOKUMENTACJA §1](docs/DOKUMENTACJA.md#pakiet-vizrs--zgodność-aplikacji).
 
 | Repozytorium | Rola |
 |---|---|
-| [VizRS CG System](../VizRS%20CG%20System) | silnik grafiki: Artist (sceny), Trio (playout stron), `/output`, API TCP 6100 / HTTP / SSE |
-| [VizRS ffPlayout System](../VizRS%20ffPlayout%20System) | **archiwum** (od 2026-10-24): porzucony playout 24/7 (fork ffplayout, GPL-3.0), wzorzec integracji |
+| [VizRS CG System](../VizRS%20CG%20System) | silnik grafiki: Trio (playout stron), `/output`, API TCP 6100 / HTTP / SSE |
 | **VizRS CG Playout** (to repo) | ta sama integracja VizRS dla kanałów ErsatzTV, bez zmian w ErsatzTV |
+| [VizRS Live](../VizRS%20Live) | panel kanału nad ErsatzTV legacy (sterowanie kanałami, ramówką, playoutami bez web GUI legacy) |
+| [VizRS CG Artist](../VizRS%20CG%20Artist) | samodzielny edytor grafik i animacji (Tauri 2), sceny dla VizRS CG System |
+| [VizRS ffPlayout System](../VizRS%20ffPlayout%20System) | **archiwum** (od 2026-10-24): porzucony playout 24/7 (fork ffplayout, GPL-3.0), wzorzec integracji |
 
-Aplikacje łączy tylko protokół VizRS (TCP 6100, `/output`), opisany w
-[API.md](../VizRS%20CG%20System/docs/API.md) systemu VizRS. Konfiguracja
-celowo odpowiada ustawieniom grafiki w VizRS ffPlayout System (dziś
+Z VizRS CG System aplikację łączy tylko protokół VizRS (TCP 6100, `/output`), opisany w
+[API.md](../VizRS%20CG%20System/docs/API.md) systemu VizRS; VizRS Live korzysta z
+Live API (`/api/live/*`, DOKUMENTACJA §1). Konfiguracja celowo odpowiada ustawieniom grafiki w VizRS ffPlayout System (dziś
 archiwum i wzorzec) – szablony komend przenosi się bez zmian.
 
 ## Szybki start
