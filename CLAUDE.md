@@ -4,10 +4,12 @@ Sidecar (jeden plik binarny w Ruście + bezgłowy Chromium) łączący **ErsatzT
 reklamy bez grafiki i wtapianie `/output` – przez nakładkę ffmpeg (grafika wprost do ffmpeg ErsatzTV) albo element grafiki „script” ErsatzTV –
 oraz live ingest (RTMP/SRT przejmuje kanał, jak w ffPlayout). Kod ErsatzTV zostaje niezmieniony.
 
-Rodzina VizRS (repozytoria obok, `../`):
-- **VizRS CG System** (`../VizRS CG System`) – silnik grafiki (Rust): Artist, Trio, `/output`, API TCP 6100 / HTTP / SSE. Plan kanału: `docs/plany/PLAN-kanal.md`.
-- **VizRS ffPlayout System** (`../VizRS ffPlayout System`) – **archiwum od 2026-10-24**: porzucony własny playout 24/7 (fork ffplayout, GPL-3.0). Zostaje jako wzorzec integracji VizRS, nie jest rozwijany.
+Pakiet VizRS (repozytoria obok, `../`) – aplikacje pakietu mają być **zawsze ze sobą zgodne** (DOKUMENTACJA §1 „Pakiet VizRS”); zmiana styku = dostosowanie drugiej strony w tym samym cyklu:
+- **VizRS CG System** (`../VizRS CG System`) – silnik grafiki (Rust): Trio, `/output`, API TCP 6100 / HTTP / SSE. Plan kanału: `docs/plany/PLAN-kanal.md`.
 - **VizRS CG Playout** (to repo, do 2026-10-31 „VirtRS CG Playout”) – ta integracja dla ErsatzTV. Zmieniona tylko nazwa w tekstach; od 2.6.0 binarka, crate i obraz to `vizrs-cg` (wcześniej `virtrs-cg`); usługi compose i zmienne `VIRTRS_*` bez zmian; repozytorium GitHub: `sdorpl/VizRS-CG-Playout`.
+- **VizRS Live** (`../VizRS Live`) – panel kanału nad ErsatzTV legacy; korzysta z live API tego repo (`/api/live/*`, `/health`, `/etv/pages`, `/ingest/state`) i ma nakładkę `compose.cg-playout.yml` na stos stąd.
+- **VizRS CG Artist** (`../VizRS CG Artist`) – edytor grafik i animacji; sceny wysyła na serwer VizRS CG System, z tym repo nie styka się bezpośrednio.
+- **VizRS ffPlayout System** (`../VizRS ffPlayout System`) – **archiwum od 2026-10-24**: porzucony własny playout 24/7 (fork ffplayout, GPL-3.0). Zostaje jako wzorzec integracji VizRS, nie jest rozwijany.
 
 Język pracy z użytkownikiem i dokumentacji: **polski**. Kod, komentarze i komunikaty logu są po angielsku — pisz zgodnie z otoczeniem.
 
@@ -26,6 +28,17 @@ Język pracy z użytkownikiem i dokumentacji: **polski**. Kod, komentarze i komu
 - **Bez GPU na ścieżce grafiki**: Chromium renderuje programowo; docelowo także Oracle Cloud Ampere A1 (arm64) – pamiętaj o budżecie CPU. Obraz buduje się na amd64 i arm64.
 - **Mało zależności**: zależności runtime to tylko `png` i `regex` (bez domyślnych funkcji; wersje w `Cargo.lock`, budowa z `--locked`). Nowej nie dodawaj bez potrzeby – JSON, HTTP, base64, DevTools i skalowanie są własne. Testy kontraktu w Node.js – tylko biblioteka standardowa.
 - **Gdzie co opisywać**: README tylko wprowadza i odsyła; opis działania, opcje i zmienne środowiskowe tylko w `docs/DOKUMENTACJA.md`. Nowa opcja = `src/config.rs` + `config.example.json` (gdy dotyczy) + `docker-compose.yml` + DOKUMENTACJA §5 + test.
+
+## Współpraca z Gemini
+
+To repo nie ma własnego `docs/AGENCI.md` – obowiązuje wspólny podział pakietu VizRS opisany w `../VizRS Live/docs/AGENCI.md` (tam też „AGENCI §4/§5” niżej). W skrócie:
+
+- **Claude dowodzi i jako jedyny pisze kod** (`src/**`, `tests/**`, `Cargo.toml`, `Dockerfile`, `docker-compose*.yml`, `etv/`, `seed/`, `bench/`, `.github/`, `config.example.json`, `CLAUDE.md`, `GEMINI.md`) oraz plany w `docs/plany/`.
+- **Gemini wykonuje lekkie zadania:** redaguje wskazane pliki `.md`, uruchamia bramkę (`cargo fmt --check`, `cargo clippy`, `cargo test`, `npm test`) z krótkim raportem, streszcza długie wyjścia, przeszukuje źródła (także ErsatzTV i `../VizRS CG System`). Nie commituje i nie rusza działających stosów Dockera.
+- **Kontekst Gemini:** `AGENTS.md` to dowiązanie do tego pliku – `agy` sam wczytuje `AGENTS.md` i `GEMINI.md`, także w `-p` (pomiar agy 1.5.3, 2026-11-08: plik 19 KB w całości); importów `@plik` nie rozwija. Zasady zmieniaj tylko tutaj, `GEMINI.md` opisuje wyłącznie rolę wykonawcy i niczego stąd nie powiela.
+- **Wywołanie:** `~/.gemini/bin/agy` (poza `PATH`), przełączniki – AGENCI §5. Wygodniej przez wrapper wtyczki antigravity: `PATH="$HOME/.gemini/bin:$PATH" agy-delegate [--tier flash|flash-lo] [--digest] [--mode plan] --dir . "<zlecenie>"`. Wrapper sam stawia `-p` na końcu i odcina stdin. Zamiast kodu 0 zwraca kod błędu: 10 – limit, 11 – logowanie, 12 – przekroczony czas, 14 – brak modelu, 15 – odmowa uprawnień, 3 – pusta odpowiedź. Na stderr wypisuje wiersz `AGY_USAGE` z tokenami i modelem. Tylko subskrypcja Google (bez kluczy API). `--yolo` / `--dangerously-skip-permissions` – nigdy: daje zgodę na cały komputer, a `--sandbox` jej nie ogranicza.
+- **Próg opłacalności:** każde zlecenie ma koszt stały (zlecenie, czekanie, przegląd). Małe, jednorazowe i wymagające decyzji zadania rób sam – ich zlecanie to zmierzona strata. Zlecaj duże porcje tekstu przy niewielu decyzjach: prozę dokumentacji (też w kilku repozytoriach naraz, AGENCI §5), przeszukanie dużych źródeł, nieustrukturyzowane logi. Jedno duże zlecenie zamiast wielu małych. Bierz streszczenie (`--digest`), nie surowe wyjście; plików, które przerobił Gemini, nie czytaj ponownie – przeglądaj diff. Logi (bramka, kompilacja, testy) czytaj sam przez plik i filtr (`tail`, `grep`) – AGENCI §4.
+- **Weryfikacja:** przed zleceniem migawka `git status` (i `git diff`, gdy pliki mają już zmiany), po zleceniu przegląd diffu – razem z usuniętymi wierszami. Kod 0 i raport „gotowe” niczego nie dowodzą. Bramkę uruchom sam, w czystym stanie – `agy` potrafi zmienić środowisko (połatać pakiety, podstawić atrapy), żeby test przeszedł. Każdą liczbę, ścieżkę i stan etapu sprawdź z kodem (Gemini dopowiada fakty).
 
 ## Uruchamianie
 
