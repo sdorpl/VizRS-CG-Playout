@@ -227,6 +227,8 @@ services:
       VIZRS_INGEST_TOKEN: ${VIZRS_INGEST_TOKEN:-}
       # channel=URL, separated by ";": rtmp://0.0.0.0:1936/live/<key> (the key is the
       # password), srt://0.0.0.0:9000?passphrase=<10-79 characters> (MPEG-TS, mode=caller).
+      # Only the first filling: once inputs are set in VizRS Live, the sidecar's
+      # list (/config/vizrs-live/inputs.json) is in force, taken over without a restart.
       VIZRS_INGEST: ${VIZRS_INGEST:-1=rtmp://0.0.0.0:1936/live/change-me}
       # A publisher silent this long has ended (ms).
       VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-2000}
@@ -235,6 +237,9 @@ services:
     ports:
       - "${INGEST_RTMP_PORT:-1936}:1936"
       - "${INGEST_SRT_PORT:-9000}:9000/udp"
+      # More inputs (VizRS Live): RTMP 1937-1943, SRT 9001-9007, the same ports on the host.
+      - "1937-1943:1937-1943"
+      - "9001-9007:9001-9007/udp"
 
 volumes:
   vizrs-data:

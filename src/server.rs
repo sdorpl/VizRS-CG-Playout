@@ -17,6 +17,7 @@
 //   GET  /ffmpeg/frames?session=N[&fps=25/1][&area=1]
 //                         raw yuva420p frames of that session for ffmpeg:
 //                         the channel, or with area=1 its graphics areas
+//   GET /ingest/listeners  the listeners in force (VIZRS_INGEST or VizRS Live), for vizrs-ingest
 //   POST /ingest?channel=1, GET /ingest?channel=1, GET /ingest/state?channel=1
 //                         live ingest: a live source of the channel in, out
 //                         to the overlay, its state (src/ingest.rs)
@@ -459,6 +460,7 @@ impl Server {
                 self.frames_request(&request, stream);
                 Ok(())
             }
+            ("GET", "/ingest/listeners") => self.panel.listeners_request(&request, stream, &self.ingest),
             ("GET", "/ingest/state") => self.ingest.state_request(&request, stream),
             ("GET", "/ingest") => self.ingest.read_request(&request, stream),
             ("POST", "/ingest") => self.ingest.source_request(&request, stream),

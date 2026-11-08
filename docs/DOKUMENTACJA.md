@@ -605,6 +605,14 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    późniejsze przejęcie); ścieżka, która zacznie się później, przepada
    (dźwięk: cisza do końca sygnału). Każdy pakiet idzie od razu (`-flush_packets 1`).
    Do 16 odbiorników, każdy z innym adresem; kilka może zasilać jeden kanał.
+   **Lista odbiorników z sidecara:** co 5 s usługa pyta `GET /ingest/listeners`
+   (ten sam token; odpowiedź w formacie `VIZRS_INGEST`) i sama uruchamia nowe
+   oraz zatrzymuje zmienione odbiorniki – bez restartu, pozostałe trwają.
+   Sidecar podaje wejścia ustawione w VizRS Live (`PUT /api/live/inputs`,
+   plik `<etv_config>/vizrs-live/inputs.json`), a bez pliku – swoje `VIZRS_INGEST`.
+   Starszy sidecar (404) albo nieosiągalny przy starcie = `VIZRS_INGEST` usługi.
+   Wejścia z VizRS Live używają tylko portów, które compose wystawia: RTMP
+   1936–1943, SRT 9000–9007 (UDP), po jednym odbiorniku na port.
 2. **Stan w sidecarze** ([src/ingest.rs](../src/ingest.rs)): kanał jest „live”
    od pierwszej klatki kluczowej obrazu (flaga *random access* w MPEG-TS albo
    IDR/SPS H.264, IRAP/VPS/SPS HEVC) do końca połączenia albo 5 s ciszy.
@@ -823,6 +831,8 @@ API (`/api/live/*`, JSON, token jak wyżej):
 | POST | `/api/live/shows/scan` | skan biblioteki i brakujące kolekcje |
 | GET | `/api/live/graphics` | reguły grafiki w użyciu: `{"rules": {…}, "source": "config"\|"file", "store": bool}` |
 | PUT | `/api/live/graphics` | cały dokument reguł (niżej) – walidacja, zapis `graphics.json`, działa od następnej pozycji |
+| GET | `/api/live/inputs` | wejścia studia w użyciu: `{"listeners":[{"channel","url"}], "from":"env"\|"panel", "store", "ingest", "ports":{"rtmp":[1936,1943],"srt":[9000,9007]}}` (adresy z kluczami – sekrety) |
+| PUT | `/api/live/inputs` | `{"listeners":[{"channel":"2","url":"rtmp://0.0.0.0:1937/live/<klucz>"}]}` – cała lista; walidacja (rtmp/srt, port z zakresu, jeden odbiornik na port, klucz RTMP, hasło SRT 10–79 znaków), zapis `inputs.json`, odbiorniki przejmują ją w ciągu kilku sekund; pusta lista = bez wejść |
 
 **Reguły grafiki przez API (`/api/live/graphics`, `src/graphics.rs`).** Dokument
 ma kształt tych pól z `config.json`: `on_clip`, `on_ad`, `ad_match` (`path`,
@@ -1565,7 +1575,8 @@ samym JSON-em; błędny JSON w env trafia do logu i jest pomijany, błędny wpis
 w pliku zatrzymuje start z nazwą pola): §1, Audycje na żywo w ramówce.
 `panel_token` (env `VIZRS_PANEL_TOKEN`; ustawiona pusta zmienna wyłącza
 token z pliku): token live API dla VizRS Live, puste = API wyłączone (§1, Live API).
-`ingest` (env `VIZRS_INGEST`, ta sama wartość co w usłudze odbiorników),
+`ingest` (env `VIZRS_INGEST`, ta sama wartość co w usłudze odbiorników; tylko
+pierwsze wypełnienie – po zapisie wejść w VizRS Live obowiązuje `inputs.json`),
 `ingest_public` (env `VIZRS_INGEST_PUBLIC`: host, pod którym nadawcy widzą
 odbiorniki, np. `studio.example.pl` albo IP serwera; puste = host, z którego
 operator otwiera VizRS Live) i porty na hoście `VIZRS_INGEST_RTMP_PORT`,

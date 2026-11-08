@@ -3,6 +3,9 @@
 // Each listener is an ffmpeg that waits for a publisher (RTMP `-listen 1`,
 // SRT `mode=listener`), remuxes it to MPEG-TS without transcoding and hands
 // it to the sidecar (`POST /ingest?channel=N`); then it listens again.
+// The list comes from the sidecar (`GET /ingest/listeners`, set in VizRS Live
+// through the live API) every few seconds; changed listeners restart, the
+// others go on. An older sidecar without it: `VIZRS_INGEST`.
 //
 //     VIZRS_INGEST         channel=URL, separated by ";" or white space:
 //                          "1=rtmp://0.0.0.0:1936/live/KEY; 2=srt://0.0.0.0:9000?passphrase=…"
@@ -19,7 +22,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -30,6 +33,11 @@ const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
 const DEFAULT_IDLE_MS: u64 = 2000;
 const AGAIN: Duration = Duration::from_secs(1);
 const MAX_LISTENERS: usize = 16;
+/// How often the list is asked for from the sidecar.
+const POLL: Duration = Duration::from_secs(5);
+/// Ports in the container the compose file maps to the host (listeners set in VizRS Live use only these).
+pub const RTMP_PORTS: std::ops::RangeInclusive<u16> = 1936..=1943;
+pub const SRT_PORTS: std::ops::RangeInclusive<u16> = 9000..=9007;
 
 /// A listener: the channel it feeds and the URL it listens on.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,14 +79,23 @@ pub fn rtmp_key(url: &str) -> Option<&str> {
 
 /// What a publisher needs to reach a listener (live API, VizRS Live): RTMP server and
 /// stream key as OBS asks for them, or the SRT address and passphrase. `host`
-/// "" = unknown (the panel puts in its own); a port given replaces the
-/// listener's (compose maps the host port elsewhere).
+/// "" = unknown (the panel puts in its own); a port given replaces the first
+/// port of the range (compose maps `INGEST_RTMP_PORT`/`INGEST_SRT_PORT` to it), the
+/// other ports of the range are the same on the host.
 pub fn publisher(listener: &Listener, host: &str, rtmp_port: Option<u16>, srt_port: Option<u16>) -> crate::json::Value {
     use crate::json;
     let url = Url::split(&listener.url);
     let kind = url.as_ref().map_or(String::new(), |u| u.scheme.to_ascii_lowercase());
     let own_port = url.as_ref().and_then(|u| u.netloc.rsplit_once(':')).and_then(|(_, p)| p.parse::<u16>().ok());
-    let port = if kind == "rtmp" { rtmp_port.or(own_port).unwrap_or(1935) } else { srt_port.or(own_port).unwrap_or(0) };
+    let base = |own: Option<u16>, first: u16, given: Option<u16>| match own {
+        Some(p) if p != first => Some(p),
+        _ => given.or(own),
+    };
+    let port = if kind == "rtmp" {
+        base(own_port, *RTMP_PORTS.start(), rtmp_port).unwrap_or(1935)
+    } else {
+        base(own_port, *SRT_PORTS.start(), srt_port).unwrap_or(0)
+    };
     let path = url.as_ref().map_or("", |u| u.path);
     let key = if kind == "rtmp" { rtmp_key(&listener.url).unwrap_or("") } else { "" };
     let app = if key.is_empty() { path } else { &path[..path.len() - key.len() - 1] };
@@ -93,6 +110,41 @@ pub fn publisher(listener: &Listener, host: &str, rtmp_port: Option<u16>, srt_po
         ("passphrase", param("passphrase").into()),
         ("streamid", param("streamid").into()),
     ])
+}
+
+/// The port a listener URL binds.
+pub fn port_of(url: &str) -> Option<u16> {
+    Url::split(url).and_then(|u| u.netloc.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
+}
+
+/// What is wrong with a listener set in VizRS Live (ports the compose file maps,
+/// one listener per port, SRT passphrase 10–79 characters); `None` = fine.
+pub fn check_listeners(listeners: &[Listener]) -> Option<String> {
+    let mut ports = Vec::new();
+    for l in listeners {
+        let rtmp = l.url.to_ascii_lowercase().starts_with("rtmp");
+        let range = if rtmp { RTMP_PORTS } else { SRT_PORTS };
+        let Some(port) = port_of(&l.url).filter(|p| range.contains(p)) else {
+            return Some(format!("kanał {}: port spoza {}–{}", l.channel, range.start(), range.end()));
+        };
+        if ports.contains(&(rtmp, port)) {
+            return Some(format!("kanał {}: port {port} już zajęty przez inne wejście", l.channel));
+        }
+        ports.push((rtmp, port));
+        if rtmp && rtmp_key(&l.url).is_none() {
+            return Some(format!("kanał {}: RTMP bez klucza (rtmp://0.0.0.0:{port}/live/<klucz>)", l.channel));
+        }
+        let query = l.url.split_once('?').map_or("", |(_, q)| q);
+        if let Some(pass) = query.split('&').find_map(|kv| kv.strip_prefix("passphrase=")) {
+            if !(10..=79).contains(&pass.len()) {
+                return Some(format!("kanał {}: hasło SRT musi mieć 10–79 znaków", l.channel));
+            }
+        }
+        if l.url.contains(|c: char| c.is_whitespace() || c == ';') {
+            return Some(format!("kanał {}: adres ze spacją albo średnikiem", l.channel));
+        }
+    }
+    None
 }
 
 /// ffmpeg's arguments for a listener: the publisher remuxed to MPEG-TS on stdout.
@@ -137,6 +189,7 @@ pub struct Settings {
     pub sidecar: String,
     pub token: String,
     pub idle: Duration,
+    /// `VIZRS_INGEST`: in force while the sidecar does not give its list.
     pub listeners: Vec<Listener>,
 }
 
@@ -163,9 +216,6 @@ impl Settings {
         }
         if settings.token.is_empty() {
             return Err("VIZRS_INGEST_TOKEN is empty".into());
-        }
-        if settings.listeners.is_empty() {
-            return Err("VIZRS_INGEST has no listeners (channel=rtmp://… or channel=srt://…)".into());
         }
         Ok(settings)
     }
@@ -243,10 +293,27 @@ fn serve(settings: &Settings, listener: &Listener, child: &mut Child) -> bool {
     }
 }
 
-/// One listener, forever: ffmpeg listens, a publisher comes, goes, ffmpeg listens again.
-fn listen(settings: &Settings, listener: &Listener) -> ! {
+/// A running listener: asked to stop, its ffmpeg (0 = none now).
+#[derive(Default)]
+struct Running {
+    stop: AtomicBool,
+    pid: AtomicU32,
+}
+
+impl Running {
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let pid = self.pid.load(Ordering::Relaxed);
+        if pid != 0 {
+            crate::sys::send_signal(pid, crate::sys::SIGTERM);
+        }
+    }
+}
+
+/// One listener until stopped: ffmpeg listens, a publisher comes, goes, ffmpeg listens again.
+fn listen(settings: &Settings, listener: &Listener, running: &Running) {
     let key = listener.url.to_ascii_lowercase().starts_with("rtmp").then(|| rtmp_key(&listener.url)).flatten().map(str::to_owned);
-    loop {
+    while !running.stop.load(Ordering::Relaxed) {
         let mut command = Command::new(&settings.ffmpeg);
         command.args(listen_args(&listener.url)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // SAFETY: only async-signal-safe calls in the forked child. ffmpeg goes
@@ -256,7 +323,13 @@ fn listen(settings: &Settings, listener: &Listener) -> ! {
         }
         let spawned = command.spawn();
         let mut child = match spawned {
-            Ok(child) => child,
+            Ok(child) => {
+                running.pid.store(child.id(), Ordering::Relaxed);
+                if running.stop.load(Ordering::Relaxed) {
+                    running.stop();
+                }
+                child
+            }
             Err(e) => {
                 log(format_args!("{}: {e}", settings.ffmpeg.to_string_lossy()));
                 std::thread::sleep(AGAIN * 5);
@@ -283,6 +356,11 @@ fn listen(settings: &Settings, listener: &Listener) -> ! {
         let served = serve(settings, listener, &mut child);
         let _ = child.kill();
         let _ = child.wait();
+        running.pid.store(0, Ordering::Relaxed);
+        if running.stop.load(Ordering::Relaxed) {
+            log(format_args!("channel {}: stopped listening on {}", listener.channel, listener.url));
+            return;
+        }
         if served && !wrong.load(Ordering::Relaxed) {
             log(format_args!("channel {}: publisher gone; listening on {}", listener.channel, listener.url));
         }
@@ -290,16 +368,61 @@ fn listen(settings: &Settings, listener: &Listener) -> ! {
     }
 }
 
-/// `vizrs-ffmpeg vizrs-ingest`: runs the listeners; returns only on a configuration error.
+/// The sidecar's list (`GET /ingest/listeners`); `None` = an older sidecar without it.
+fn sidecar_listeners(settings: &Settings) -> io::Result<Option<Vec<Listener>>> {
+    let headers = format!("Authorization: Bearer {}\r\n", settings.token);
+    match crate::net::request("GET", &format!("{}/ingest/listeners", settings.sidecar), &headers, None)? {
+        (200, body) => {
+            let (listeners, errors) = parse_listeners(&body);
+            for e in errors {
+                log(format_args!("sidecar list: {e}"));
+            }
+            Ok(Some(listeners))
+        }
+        (404, _) => Ok(None),
+        (401, _) => Err(error("the sidecar refused VIZRS_INGEST_TOKEN".into())),
+        (status, _) => Err(error(format!("sidecar: HTTP {status}"))),
+    }
+}
+
+/// `vizrs-ffmpeg vizrs-ingest`: runs the listeners, as the sidecar lists them, forever.
 pub fn run(settings: Settings) -> i32 {
     let settings = Arc::new(settings);
-    for listener in settings.listeners.clone() {
-        log(format_args!("channel {}: listening on {}", listener.channel, listener.url));
-        let settings = Arc::clone(&settings);
-        std::thread::spawn(move || listen(&settings, &listener));
-    }
+    let mut running: Vec<(Listener, Arc<Running>)> = Vec::new();
+    let mut last_error = String::new();
     loop {
-        std::thread::park();
+        let wanted = match sidecar_listeners(&settings) {
+            Ok(Some(list)) => Some(list),
+            Ok(None) => Some(settings.listeners.clone()),
+            Err(e) => {
+                if e.to_string() != last_error {
+                    log(format_args!("{e}; listeners stay as they are"));
+                    last_error = e.to_string();
+                }
+                // Before the sidecar answers once: VIZRS_INGEST.
+                running.is_empty().then(|| settings.listeners.clone())
+            }
+        };
+        if let Some(wanted) = wanted {
+            running.retain(|(listener, handle)| {
+                let keep = wanted.contains(listener);
+                if !keep {
+                    handle.stop();
+                }
+                keep
+            });
+            for listener in wanted {
+                if running.iter().any(|(l, _)| *l == listener) {
+                    continue;
+                }
+                log(format_args!("channel {}: listening on {}", listener.channel, listener.url));
+                let handle = Arc::new(Running::default());
+                running.push((listener.clone(), Arc::clone(&handle)));
+                let settings = Arc::clone(&settings);
+                std::thread::spawn(move || listen(&settings, &listener, &handle));
+            }
+        }
+        std::thread::sleep(POLL);
     }
 }
 
@@ -339,6 +462,17 @@ mod tests {
     }
 
     #[test]
+    fn listeners_from_the_panel() {
+        let check = |text: &str| check_listeners(&parse_listeners(text).0);
+        assert_eq!(check("1=rtmp://0.0.0.0:1936/live/a 2=srt://0.0.0.0:9001?passphrase=0123456789"), None);
+        assert!(check("1=rtmp://0.0.0.0:1935/live/a").unwrap().contains("port spoza"));
+        assert!(check("1=rtmp://0.0.0.0:1936/live/a 2=rtmp://0.0.0.0:1936/live/b").unwrap().contains("zajęty"));
+        assert!(check("1=rtmp://0.0.0.0:1936/live").unwrap().contains("bez klucza"));
+        assert!(check("1=srt://0.0.0.0:9000?passphrase=krotkie").unwrap().contains("10–79"));
+        assert_eq!(check("1=rtmp://0.0.0.0:1936/live/a 1=srt://0.0.0.0:9000"), None);
+    }
+
+    #[test]
     fn publisher_settings() {
         use crate::json::Value;
         let get = |v: &Value, k: &str| v.get(k).map(|x| x.to_string()).unwrap_or_default();
@@ -349,6 +483,8 @@ mod tests {
             ("\"rtmp\"".into(), "1936".into(), "\"/live\"".into(), "\"studio\"".into())
         );
         assert_eq!(get(&publisher(&rtmp, "", Some(1940), None), "port"), "1940");
+        let second = Listener { channel: "2".into(), url: "rtmp://0.0.0.0:1937/live/b".into() };
+        assert_eq!(get(&publisher(&second, "", Some(1940), None), "port"), "1937");
         let srt = Listener { channel: "1".into(), url: "srt://0.0.0.0:9000?passphrase=tajne-haslo-1&latency=200000".into() };
         let v = publisher(&srt, "", None, Some(9100));
         assert_eq!(

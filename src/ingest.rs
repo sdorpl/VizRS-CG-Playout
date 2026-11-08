@@ -494,6 +494,12 @@ impl Ingest {
         http::respond(&mut stream, 200, Some("application/json"), state.to_string().as_bytes())
     }
 
+    /// The listeners' token in `Authorization: Bearer` (ingest on).
+    pub fn authorized(&self, request: &Request) -> bool {
+        let bearer = request.header("authorization").and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("");
+        self.enabled() && constant_eq(bearer.trim().as_bytes(), self.token.as_bytes())
+    }
+
     /// `POST /ingest`: a source of a channel, MPEG-TS until the connection closes.
     pub fn source_request(&self, request: &Request, mut stream: TcpStream) -> io::Result<()> {
         let channel = request.param("channel").unwrap_or("").to_owned();

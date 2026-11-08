@@ -16,6 +16,9 @@
 //   POST   /api/live/shows/scan           scan the library, make missing collections
 //   GET    /api/live/graphics             graphics rules in force (src/graphics.rs)
 //   PUT    /api/live/graphics             replace them: graphics.json, from the next clip
+//   GET    /api/live/inputs               studio inputs (listeners) and the ports they may use
+//   PUT    /api/live/inputs               {"listeners":[{"channel","url"}]}: inputs.json; the
+//                                         listener service takes them over within seconds
 //
 // The token (`panel_token`) comes in `X-Panel-Token` or `Authorization:
 // Bearer`. Requests that change something are refused when a browser says they
@@ -85,6 +88,19 @@ impl Settings {
     }
 }
 
+/// `inputs.json`: `{"listeners": "1=rtmp://…; 2=srt://…"}` (`VIZRS_INGEST`'s format).
+fn inputs_to_json(list: &[crate::listener::Listener]) -> String {
+    let text = list.iter().map(|l| format!("{}={}", l.channel, l.url)).collect::<Vec<_>>().join("; ");
+    format!("{}\n", json::object([("listeners", text.into())]))
+}
+
+fn inputs_from_json(text: &str) -> Result<Vec<crate::listener::Listener>, String> {
+    let value = json::parse(text).map_err(|e| e.to_string())?;
+    let listeners = value.get("listeners").and_then(Value::as_str).ok_or("listeners?")?;
+    let (list, errors) = crate::listener::parse_listeners(listeners);
+    errors.first().map_or(Ok(list), |e| Err(e.clone()))
+}
+
 /// What the panel last got from ErsatzTV.
 #[derive(Default)]
 struct Cache {
@@ -122,8 +138,10 @@ impl Step {
 
 pub struct Panel {
     token: String,
-    /// Live ingest listeners (`VIZRS_INGEST`) and how publishers reach them.
-    inputs: Vec<(String, Value)>,
+    /// Live ingest listeners in force: `inputs.json` (VizRS Live) or `VIZRS_INGEST`, and whether from the file.
+    listeners: Mutex<(Vec<crate::listener::Listener>, bool)>,
+    /// How publishers reach the listeners: host, host ports of the first port of each range.
+    public: (String, Option<u16>, Option<u16>),
     graphics: Arc<crate::graphics::Store>,
     etv_config: String,
     configured: Vec<LiveShow>,
@@ -221,15 +239,10 @@ impl Panel {
         for error in errors {
             crate::warn!("VIZRS_INGEST: {error}");
         }
-        let inputs = listeners
-            .iter()
-            .map(|l| {
-                (l.channel.clone(), crate::listener::publisher(l, &config.ingest_public, config.ingest_rtmp_port, config.ingest_srt_port))
-            })
-            .collect();
         let panel = Arc::new(Panel {
             token: config.panel_token.clone(),
-            inputs,
+            listeners: Mutex::new((listeners, false)),
+            public: (config.ingest_public.clone(), config.ingest_rtmp_port, config.ingest_srt_port),
             graphics,
             etv_config: config.etv_config.clone(),
             configured: config.live_shows.clone(),
@@ -244,6 +257,14 @@ impl Panel {
                     Ok(settings) => *lock(&panel.settings) = settings,
                     Err(e) => crate::warn!("{}: {e}; panel settings start empty", path.display()),
                 },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => crate::warn!("{}: {e}", path.display()),
+            }
+        }
+        if let Some(path) = panel.inputs_path() {
+            match fs::read_to_string(&path).map(|text| inputs_from_json(&text)) {
+                Ok(Ok(list)) => *lock(&panel.listeners) = (list, true),
+                Ok(Err(e)) => crate::warn!("{}: {e}; inputs from VIZRS_INGEST", path.display()),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => crate::warn!("{}: {e}", path.display()),
             }
@@ -278,6 +299,80 @@ impl Panel {
 
     fn control_path(&self) -> Option<PathBuf> {
         (!self.etv_config.is_empty()).then(|| live_shows::folder(&self.etv_config).join("control.json"))
+    }
+
+    fn inputs_path(&self) -> Option<PathBuf> {
+        (!self.etv_config.is_empty()).then(|| live_shows::folder(&self.etv_config).join("inputs.json"))
+    }
+
+    /// Inputs of a channel as publishers see them.
+    fn inputs_of(&self, number: &str) -> Vec<Value> {
+        let (host, rtmp, srt) = &self.public;
+        let listeners = lock(&self.listeners);
+        listeners.0.iter().filter(|l| l.channel == number).map(|l| crate::listener::publisher(l, host, *rtmp, *srt)).collect()
+    }
+
+    /// `GET /ingest/listeners` (the listener service, ingest token): `VIZRS_INGEST`'s format.
+    pub fn listeners_request(&self, request: &Request, mut stream: TcpStream, ingest: &Ingest) -> io::Result<()> {
+        if !ingest.authorized(request) {
+            return http::respond(&mut stream, 401, None, b"");
+        }
+        let text = lock(&self.listeners).0.iter().map(|l| format!("{}={}", l.channel, l.url)).collect::<Vec<_>>().join("; ");
+        http::respond(&mut stream, 200, Some("text/plain; charset=utf-8"), text.as_bytes())
+    }
+
+    fn inputs_json(&self, ingest: &Ingest) -> Value {
+        use crate::listener::{RTMP_PORTS, SRT_PORTS};
+        let (listeners, from_file) = lock(&self.listeners).clone();
+        let range = |r: std::ops::RangeInclusive<u16>| Value::Array(vec![f64::from(*r.start()).into(), f64::from(*r.end()).into()]);
+        let items = listeners.iter().map(|l| json::object([("channel", l.channel.as_str().into()), ("url", l.url.as_str().into())]));
+        json::object([
+            ("listeners", Value::Array(items.collect())),
+            ("from", if from_file { "panel" } else { "env" }.into()),
+            ("store", (!self.etv_config.is_empty()).into()),
+            ("ingest", ingest.enabled().into()),
+            ("ports", json::object([("rtmp", range(RTMP_PORTS)), ("srt", range(SRT_PORTS))])),
+        ])
+    }
+
+    /// `PUT /api/live/inputs`: the whole list of inputs.
+    fn put_inputs(&self, body: &Value, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        let Some(Value::Array(items)) = body.get("listeners") else {
+            return fail(stream, 400, "listeners: lista {channel, url}");
+        };
+        let mut entries = Vec::new();
+        for item in items {
+            let channel = item.get("channel").and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_f64().map(|n| n.to_string())));
+            let url = item.get("url").and_then(Value::as_str);
+            match (channel, url) {
+                (Some(c), Some(u)) if Self::valid_channel(c.trim()) => entries.push(format!("{}={}", c.trim(), u.trim())),
+                _ => return fail(stream, 400, "wejście: kanał (np. 2) i adres rtmp:// albo srt://"),
+            }
+        }
+        let (list, errors) = crate::listener::parse_listeners(&entries.join("; "));
+        if let Some(e) = errors.first() {
+            return fail(stream, 400, &format!("wejścia: {e}"));
+        }
+        if let Some(e) = crate::listener::check_listeners(&list) {
+            return fail(stream, 400, &format!("wejścia: {e}"));
+        }
+        let Some(path) = self.inputs_path() else {
+            return fail(stream, 409, "brak etv_config – wejść nie ma gdzie zapisać");
+        };
+        let written = fs::create_dir_all(live_shows::folder(&self.etv_config))
+            .and_then(|()| crate::sync::write_atomic(&path, &inputs_to_json(&list)));
+        if let Err(e) = written {
+            return fail(stream, 500, &format!("zapis inputs.json: {e}"));
+        }
+        let channels: Vec<&str> = list.iter().map(|l| l.channel.as_str()).collect();
+        self.record(
+            ingest,
+            who,
+            "",
+            &format!("wejścia studia zmienione: {}", if channels.is_empty() { "brak".into() } else { channels.join(", ") }),
+        );
+        *lock(&self.listeners) = (list, true);
+        reply(stream, 200, &self.inputs_json(ingest))
     }
 
     fn save_settings(&self, settings: &Settings) -> io::Result<()> {
@@ -391,6 +486,8 @@ impl Panel {
             }
             ("GET", ["graphics"]) => reply(&mut stream, 200, &self.graphics.to_json()),
             ("PUT", ["graphics"]) => self.put_graphics(&body, &mut stream, ingest, &who),
+            ("GET", ["inputs"]) => reply(&mut stream, 200, &self.inputs_json(ingest)),
+            ("PUT", ["inputs"]) => self.put_inputs(&body, &mut stream, ingest, &who),
             ("GET", ["shows"]) => reply(&mut stream, 200, &self.shows_state()),
             ("POST", ["shows", "scan"]) => self.scan(&mut stream, ingest, &who),
             ("POST", ["shows"]) => self.create(&body, &mut stream, ingest, &who),
@@ -442,7 +539,7 @@ impl Panel {
             .into_iter()
             .chain(shows.iter().map(|s| s.channel.clone()))
             .chain(settings.channels.keys().cloned())
-            .chain(self.inputs.iter().map(|(c, _)| c.clone()));
+            .chain(lock(&self.listeners).0.iter().map(|l| l.channel.clone()).collect::<Vec<_>>());
         for number in extra {
             if !numbers.contains(&number) {
                 numbers.push(number);
@@ -474,7 +571,7 @@ impl Panel {
                     ("anytime_own", control.anytime.map_or(Value::Null, Value::from)),
                     ("now", current.map_or(Value::Null, |p| programme_json(p, in_slot))),
                     ("next_live", next_live.map_or(Value::Null, |p| programme_json(p, true))),
-                    ("inputs", Value::Array(self.inputs.iter().filter(|(c, _)| c == number).map(|(_, v)| v.clone()).collect())),
+                    ("inputs", Value::Array(self.inputs_of(number))),
                 ])
             })
             .collect();
@@ -836,6 +933,14 @@ mod tests {
         let r = request(&[("X-Operator", " MCR 1\u{7} ")]);
         assert_eq!(operator(&r), "MCR 1");
         assert_eq!(operator(&request(&[])), "operator");
+    }
+
+    #[test]
+    fn inputs_round_trip() {
+        let (list, _) = crate::listener::parse_listeners("1=rtmp://0.0.0.0:1936/live/a; 2=srt://0.0.0.0:9000?passphrase=0123456789");
+        assert_eq!(inputs_from_json(&inputs_to_json(&list)).unwrap(), list);
+        assert_eq!(inputs_from_json(r#"{"listeners":""}"#).unwrap(), []);
+        assert!(inputs_from_json(r#"{"listeners":"1=http://x"}"#).is_err());
     }
 
     #[test]
