@@ -1,0 +1,81 @@
+# VizRS Live zamiast web GUI ErsatzTV (panel kanału, osobne repozytorium sdorpl/VizRS-Live).
+# Nakładka bez plików z hosta i bez budowania – działa też w Portainerze (stos z GitHuba,
+# „Additional paths”: docker-compose.live.yml, na Ampere po docker-compose.ampere.yml):
+#
+#   docker compose -f docker-compose.yml [-f docker-compose.ampere.yml] -f docker-compose.live.yml up -d
+#
+# Zmienne (Portainer: Environment variables; min. 16 znaków: litery, cyfry, -._~):
+#   VIZRS_BRIDGE_TOKEN  token mostu w legacy (panel ↔ ErsatzTV, tylko sieć Dockera)
+#   VIZRS_LIVE_TOKEN    token logowania do panelu
+#   VIZRS_PANEL_TOKEN   token live API sidecara (/api/live) – ten sam, którym panel steruje slotami
+#
+# Zmiana w stosie:
+#   ersatztv  oficjalne legacy z mostem VizRS Bridge (ghcr.io/sdorpl/vizrs-live-legacy, amd64/arm64),
+#             te same wolumeny; port 8409 już nie wprost
+#   proxy     :8409 na zewnątrz tylko dla widzów (/iptv/*, /artwork/*, HDHomeRun); web GUI legacy = 403
+#   live      panel http://<serwer>:8090/
+# Caddyfile proxy to kopia docker/proxy.Caddyfile z VizRS Live (wpisana tu, bo Portainer nie montuje plików repo).
+services:
+  ersatztv:
+    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:1.2.2}
+    environment:
+      VIZRS_BRIDGE_TOKEN: ${VIZRS_BRIDGE_TOKEN:?ustaw VIZRS_BRIDGE_TOKEN}
+    ports: !reset []
+    expose: ["8409"]
+
+  proxy:
+    image: ${PROXY_IMAGE:-caddy:2.10.2-alpine}
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    restart: unless-stopped
+    depends_on: [ersatztv]
+    configs:
+      - source: live-proxy
+        target: /etc/caddy/Caddyfile
+    ports:
+      - "${ETV_PORT:-8409}:8409"
+
+  live:
+    image: ${LIVE_IMAGE:-ghcr.io/sdorpl/vizrs-live:1.2.2}
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    restart: unless-stopped
+    depends_on: [ersatztv, cg]
+    environment:
+      TZ: Europe/Warsaw
+      VIZRS_LIVE_BRIDGE: http://ersatztv:8409
+      VIZRS_LIVE_BRIDGE_TOKEN: ${VIZRS_BRIDGE_TOKEN}
+      VIZRS_LIVE_TOKEN: ${VIZRS_LIVE_TOKEN:?ustaw VIZRS_LIVE_TOKEN}
+      VIZRS_LIVE_STREAM_URL: ${VIZRS_LIVE_STREAM_URL:-}
+      # VizRS widziany z przeglądarki: sam port = host, pod którym otwarto panel
+      VIZRS_LIVE_VIZRS_URL: ${VIZRS_LIVE_VIZRS_URL:-:${VIZRS_PORT:-8788}}
+      VIZRS_LIVE_VIZRS_OUTPUT_TOKEN: ${VIZRS_OUTPUT_TOKEN:-vizrs-output-change-me}
+      VIZRS_LIVE_VIZRS_CHANNELS: ${VIZRS_CHANNEL_BUSES:-0}
+      VIZRS_LIVE_CG_URL: http://cg:7700
+      VIZRS_LIVE_CG_TOKEN: ${VIZRS_PANEL_TOKEN:?ustaw VIZRS_PANEL_TOKEN (live API sidecara)}
+    ports:
+      - "${VIZRS_LIVE_PORT:-8090}:8090"
+
+configs:
+  live-proxy:
+    content: |
+      {
+      	admin off
+      	auto_https off
+      }
+
+      :8409 {
+      	@public {
+      		method GET HEAD
+      		path /iptv/* /artwork/* /discover.json /device.xml /lineup.json /lineup_status.json
+      	}
+      	handle @public {
+      		reverse_proxy ersatztv:8409 {
+      			flush_interval -1
+      		}
+      	}
+      	handle {
+      		header Content-Type "text/plain; charset=utf-8"
+      		respond "403: web GUI ErsatzTV legacy jest zamkniete - operatorzy pracuja w panelu VizRS Live." 403
+      	}
+      }
