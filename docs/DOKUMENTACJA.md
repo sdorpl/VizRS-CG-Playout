@@ -1288,6 +1288,30 @@ zapisuje go na `main`. Stos w Portainerze ma włączone **GitOps updates** z
 programy ErsatzTV.
 Odtworzenie `cg` zamraża grafikę do końca pozycji; naprawą jest restart ErsatzTV.
 
+### VizRS Live zamiast web GUI ErsatzTV (`docker-compose.live.yml`)
+
+Nakładka [docker-compose.live.yml](../docker-compose.live.yml) wpina w stos panel
+**VizRS Live** (osobne repozytorium `sdorpl/VizRS-Live`), w którym operator
+pracuje zamiast w web GUI ErsatzTV. Nie montuje plików z hosta i niczego nie
+buduje, więc działa także w Portainerze: **Additional paths** →
+`docker-compose.live.yml` (na Ampere po `docker-compose.ampere.yml`).
+
+- `ersatztv` dostaje obraz `ghcr.io/sdorpl/vizrs-live-legacy` – oficjalne legacy
+  z mostem VizRS Bridge (komendy legacy dla panelu, tylko sieć Dockera); wolumeny
+  te same, port 8409 nie jest już wystawiony wprost;
+- `proxy` (Caddy) wystawia `:8409` tylko dla widzów: `/iptv/*`, `/artwork/*`,
+  HDHomeRun; web GUI i API legacy oraz `/vizrs-bridge/*` odpowiadają 403;
+- `live` – panel na `:8090` (`VIZRS_LIVE_PORT`), z sidecarem przez `http://cg:7700`.
+
+Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
+`VIZRS_BRIDGE_TOKEN` (most), `VIZRS_LIVE_TOKEN` (logowanie do panelu),
+`VIZRS_PANEL_TOKEN` (live API sidecara, §„Live API”); opcjonalnie
+`VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Obrazy `LIVE_IMAGE` i
+`LIVE_LEGACY_IMAGE` są przypięte do wydania VizRS Live (1.2.2) – podnosi je
+nowe wydanie panelu. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
+zmiana jednego wymaga zmiany drugiego. Cofnięcie: usunięcie nakładki ze stosu
+i redeploy (ErsatzTV wraca na oficjalny obraz z tą samą bazą).
+
 ### Dane startowe (`seed/`)
 
 Pierwszy start stosu dostaje gotową konfigurację instancji wzorcowej. Usługa
