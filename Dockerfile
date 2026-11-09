@@ -1,5 +1,6 @@
 # VizRS CG Playout sidecar: Rust binary + vizrs-render + headless Chromium (no GPU),
-# amd64 and arm64. vizrs-render comes from the VizRS CG System release VIZRS_REF.
+# amd64 and arm64 (tuned for Ampere A1 Neoverse-N1 on arm64). vizrs-render comes
+# from the VizRS CG System release VIZRS_REF.
 # The binary is built on the build host's platform and cross-compiled for the
 # target (pure Rust, no C libraries): no emulation, minutes instead of an hour
 # under QEMU. chromium-headless-shell renders /output with about half the CPU
@@ -11,8 +12,8 @@ ARG BUILDARCH
 # Built on arm64 itself (e.g. `up --build` on an Ampere A1) the native gcc
 # links: Debian has no cross gcc for aarch64 on arm64 hosts.
 RUN case "$TARGETARCH" in \
-      amd64) echo x86_64-unknown-linux-gnu > /target ;; \
-      arm64) echo aarch64-unknown-linux-gnu > /target \
+      amd64) echo x86_64-unknown-linux-gnu > /target; echo "" > /rust-opts ;; \
+      arm64) echo aarch64-unknown-linux-gnu > /target; echo "-C target-cpu=neoverse-n1 -C opt-level=3" > /rust-opts \
              && if [ "$BUILDARCH" != arm64 ]; then \
                   dpkg --add-architecture arm64 \
                   && apt-get update \
@@ -30,16 +31,16 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src src
-RUN cargo build --release --locked --target "$(cat /target)" \
+RUN RUSTFLAGS="$(cat /rust-opts)" cargo build --release --locked --target "$(cat /target)" \
     && cp "target/$(cat /target)/release/vizrs-cg" /vizrs-cg \
-    && cargo build --release --locked --bin vizrs-etv-client --bin vizrs-ffmpeg --target "$(cat /target-musl)" \
+    && RUSTFLAGS="$(cat /rust-opts)" cargo build --release --locked --bin vizrs-etv-client --bin vizrs-ffmpeg --target "$(cat /target-musl)" \
     && mkdir /client \
     && cp "target/$(cat /target-musl)/release/vizrs-etv-client" "target/$(cat /target-musl)/release/vizrs-ffmpeg" /client/
 
-ARG VIZRS_REF=v2.0.12
+ARG VIZRS_REF=v2.0.20
 RUN git clone --depth 1 --branch "$VIZRS_REF" https://github.com/sdorpl/VizRS-CG-System.git /vizrs \
     && cd /vizrs/source/render \
-    && cargo build --release --locked --target "$(cat /target)" \
+    && RUSTFLAGS="$(cat /rust-opts)" cargo build --release --locked --target "$(cat /target)" \
     && cp "target/$(cat /target)/release/vizrs-render" /vizrs-render
 
 FROM debian:bookworm-slim

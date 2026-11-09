@@ -45,6 +45,10 @@ services:
     cpu_shares: 2048
     environment:
       VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-veryfast}
+      # Optymalizacja .NET CLR na 4 OCPU ARM (brak zacięć GC podczas transkodowania)
+      DOTNET_gcServer: "0"
+      DOTNET_GCHeapHardLimit: "0x60000000"
+      DOTNET_EnableWriteXorExecute: "0"
     tmpfs: !override
       # HLS segments in RAM (24 GB on the free shape); keeps the boot volume idle.
       - /transcode:size=${TRANSCODE_TMPFS:-4g}
