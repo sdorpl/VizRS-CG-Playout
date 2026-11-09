@@ -44,6 +44,11 @@ const PROBE_WAIT: Duration = Duration::from_secs(3);
 /// keep live off the channel and hold the GPU.
 const STOP_GRACE: Duration = Duration::from_secs(3);
 const KILL_GRACE: Duration = Duration::from_secs(2);
+/// A live run reads a source that never ends, and ffmpeg with `-t` reached
+/// can wait on its inputs instead of exiting (ErsatzTV then sees the piece
+/// stalled for a minute and the viewers' players freeze). The live run goes at
+/// the clock: alive this long past the rest of the piece, it is stopped.
+const LIVE_OVERRUN: Duration = Duration::from_secs(3);
 /// Global options of ErsatzTV's command that the live run keeps (the rest
 /// before the first input are options of the media input).
 const GLOBAL_FLAGS: [&str; 5] = ["-hide_banner", "-nostdin", "-nostats", "-y", "-benchmark"];
@@ -564,6 +569,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         runner.current.store(child.id(), Ordering::Relaxed);
         let mut interrupted = false;
         let mut stop = Stop::default();
+        let started = Instant::now();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -572,6 +578,12 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
             }
             if source.is_none() && !interrupted && !runner.stopping.load(Ordering::Relaxed) && live() {
                 // ffmpeg ends on SIGINT as on `q`: the segment it writes is closed and listed.
+                crate::sys::send_signal(child.id(), crate::sys::SIGINT);
+                interrupted = true;
+                stop.since = Some(Instant::now());
+            }
+            if source.is_some() && !interrupted && overran(started.elapsed(), job.duration - elapsed) {
+                log(format_args!("channel {}: the live run did not end with the piece; stopping it", job.channel));
                 crate::sys::send_signal(child.id(), crate::sys::SIGINT);
                 interrupted = true;
                 stop.since = Some(Instant::now());
@@ -598,6 +610,11 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         }
         elapsed = elapsed.max(now);
     }
+}
+
+/// A live run alive `running` with `remaining` seconds of the piece to produce has overrun.
+fn overran(running: Duration, remaining: f64) -> bool {
+    running > Duration::from_secs_f64(remaining.max(0.0)) + LIVE_OVERRUN
 }
 
 /// Stopping a run after SIGINT: SIGTERM after `STOP_GRACE`, SIGKILL `KILL_GRACE` later.
@@ -715,6 +732,16 @@ mod tests {
         assert_eq!(steps, ["SIGTERM", "SIGKILL"]);
         assert!(!status.success());
         assert!(start.elapsed() >= STOP_GRACE + KILL_GRACE);
+    }
+
+    #[test]
+    fn live_run_past_the_piece_is_overrun() {
+        use super::{LIVE_OVERRUN, overran};
+        use std::time::Duration;
+        assert!(!overran(Duration::from_secs(44), 44.0));
+        assert!(!overran(Duration::from_secs(44) + LIVE_OVERRUN, 44.0));
+        assert!(overran(Duration::from_secs(48), 44.0));
+        assert!(overran(Duration::from_secs(4), -1.0));
     }
 
     use super::*;

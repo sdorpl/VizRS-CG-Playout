@@ -644,7 +644,12 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
      proporcji i czarne pasy do rozmiaru kanału, klatkaż kanału, dźwięk 48 kHz
      stereo (bez ścieżki dźwięku: cisza), grafika VizRS nałożona jak w kawałku
      (te same obszary, §1, Obszar grafiki), a koder, jego opcje, `-r` i opcje
-     HLS z komendy ErsatzTV; trwa do końca sygnału albo kawałka;
+     HLS z komendy ErsatzTV; trwa do końca sygnału albo kawałka. Źródło live
+     nie kończy się samo, a ffmpeg po osiągnięciu `-t` potrafi czekać na swoje
+     wejścia zamiast wyjść – ErsatzTV widział wtedy kawałek stojący ok. minuty
+     („ffmpeg stalled”), a odtwarzacze widzów zastygały. Przebieg live idzie
+     z zegarem, więc gdy żyje dłużej niż pozostały czas kawałka plus 3 s,
+     nakładka kończy go `SIGINT` (dalej jak wyżej: `SIGTERM`, `SIGKILL`);
    - po zejściu sygnału znowu komenda kawałka od miejsca, w którym jest już
      harmonogram (`-ss` przesunięte o czas, który kawałek wyprodukował).
    Każdy przebieg dostaje `-t` z pozostałym czasem i `-output_ts_offset`
