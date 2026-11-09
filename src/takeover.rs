@@ -523,6 +523,69 @@ fn log(message: impl std::fmt::Display) {
     let _ = writeln!(io::stderr(), "vizrs-ffmpeg: {message}");
 }
 
+/// A trace file past this size is moved to `….1` (one old file kept).
+const TRACE_MAX: u64 = 2 * 1024 * 1024;
+
+/// Trace file of the channel: `$ETV_CONFIG_FOLDER/logs/vizrs-takeover-<channel>.log`
+/// (it outlives the session and the container), else beside the playlist.
+fn trace_path(job: &Job) -> Option<PathBuf> {
+    let name: String = job.channel.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let file = format!("vizrs-takeover-{name}.log");
+    match std::env::var_os("ETV_CONFIG_FOLDER").filter(|v| !v.is_empty()) {
+        Some(config) => Some(Path::new(&config).join("logs").join(file)),
+        None => Some(job.playlist.parent()?.join(file)),
+    }
+}
+
+/// State of the playlist as ErsatzTV Next reads it: media sequence, segments
+/// listed, the last one with its PROGRAM-DATE-TIME, and segment files on disk.
+fn playlist_state(path: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return "playlist missing".to_owned();
+    };
+    let sequence = text.lines().find_map(|l| l.trim().strip_prefix("#EXT-X-MEDIA-SEQUENCE:")).unwrap_or("?");
+    let mut date = "?";
+    let mut last_date = "?";
+    let mut last = "-";
+    let mut listed = 0;
+    for line in text.lines().map(str::trim) {
+        if let Some(d) = line.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
+            date = d;
+        } else if !line.is_empty() && !line.starts_with('#') {
+            listed += 1;
+            last = line;
+            last_date = date;
+        }
+    }
+    let on_disk = path
+        .parent()
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .map_or(0, |dir| dir.filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "ts")).count());
+    format!("seq {sequence}, listed {listed}, last {last} @ {last_date}, ts on disk {on_disk}")
+}
+
+/// `log` plus a line in the channel's trace file with the time and the playlist state:
+/// the runs of a piece leave no other trace (ErsatzTV Next does not keep ffmpeg's stderr).
+fn trace(job: &Job, message: impl std::fmt::Display) {
+    let message = message.to_string();
+    log(&message);
+    let Some(path) = trace_path(job) else { return };
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > TRACE_MAX) {
+        let mut old = path.clone().into_os_string();
+        old.push(".1");
+        let _ = std::fs::rename(&path, old);
+    }
+    let line = format!(
+        "{} pid {} {message} | {}\n",
+        crate::time::iso_time(crate::time::now_ms()),
+        std::process::id(),
+        playlist_state(&job.playlist)
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 fn code(status: io::Result<ExitStatus>) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     match status {
@@ -537,6 +600,13 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
     let poller = Poller::start(runner.sidecar, &job.channel, live_now, audio_now);
     let source_url = format!("{}/ingest?channel={}", runner.sidecar, quote_plus(&job.channel));
     let mut elapsed = 0.0;
+    trace(
+        job,
+        format_args!(
+            "channel {}: piece of {:.1} s (offset {:.1} s, live {live_now}, slot {})",
+            job.channel, job.duration, job.offset, job.slot
+        ),
+    );
     // A live source that gave no picture is left alone until it goes or for `SUPPRESS`.
     let quiet: Mutex<Option<Instant>> = Mutex::new(None);
     let live = || {
@@ -553,17 +623,17 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         }
         let source = live().then(|| Source { url: source_url.clone(), audio: poller.audio.load(Ordering::Relaxed) });
         if source.is_some() {
-            log(format_args!("channel {}: live from {elapsed:.1} s of the piece", job.channel));
+            trace(job, format_args!("channel {}: live from {elapsed:.1} s of the piece", job.channel));
         }
         let mut child = match (runner.run)(elapsed, source.as_ref()) {
             Ok(child) => child,
             Err(e) if source.is_some() => {
-                log(format_args!("live run: {e}; the schedule goes on"));
+                trace(job, format_args!("live run: {e}; the schedule goes on"));
                 *quiet.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + SUPPRESS);
                 continue;
             }
             Err(e) => {
-                log(format_args!("ffmpeg: {e}"));
+                trace(job, format_args!("ffmpeg: {e}"));
                 return 127;
             }
         };
@@ -584,13 +654,13 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
                 stop.since = Some(Instant::now());
             }
             if source.is_some() && !interrupted && overran(started.elapsed(), job.duration - elapsed) {
-                log(format_args!("channel {}: the live run did not end with the piece; stopping it", job.channel));
+                trace(job, format_args!("channel {}: the live run did not end with the piece; stopping it", job.channel));
                 crate::sys::send_signal(child.id(), crate::sys::SIGINT);
                 interrupted = true;
                 stop.since = Some(Instant::now());
             }
             if let Some(step) = stop.escalate(&mut child) {
-                log(format_args!("channel {}: the piece did not stop on SIGINT; {step}", job.channel));
+                trace(job, format_args!("channel {}: the piece did not stop on SIGINT; {step}", job.channel));
             }
             std::thread::sleep(Duration::from_millis(50));
         };
@@ -601,13 +671,20 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         }
         if source.is_some() {
             let brought = now - elapsed;
-            log(format_args!("channel {}: live run ended after {brought:.1} s (exit {})", job.channel, code(status)));
+            trace(job, format_args!("channel {}: live run ended after {brought:.1} s (exit {})", job.channel, code(status)));
             if brought < SHORT_LIVE {
-                log(format_args!("channel {}: the live source gave no picture; the schedule goes on", job.channel));
+                trace(job, format_args!("channel {}: the live source gave no picture; the schedule goes on", job.channel));
                 *quiet.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + SUPPRESS);
             }
         } else if !interrupted {
-            return code(status);
+            let exit = code(status);
+            trace(job, format_args!("channel {}: piece ended (exit {exit})", job.channel));
+            return exit;
+        } else {
+            trace(
+                job,
+                format_args!("channel {}: piece stopped for live after {:.1} s (exit {})", job.channel, now - elapsed, code(status)),
+            );
         }
         elapsed = elapsed.max(now);
     }
@@ -733,6 +810,24 @@ mod tests {
         assert_eq!(steps, ["SIGTERM", "SIGKILL"]);
         assert!(!status.success());
         assert!(start.elapsed() >= STOP_GRACE + KILL_GRACE);
+    }
+
+    #[test]
+    fn playlist_state_lists_the_last_segment_and_files() {
+        let dir = std::env::temp_dir().join(format!("vizrs-trace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let playlist = dir.join("ffmpeg.m3u8");
+        std::fs::write(
+            &playlist,
+            "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:7\n#EXTINF:4.0,\n#EXT-X-PROGRAM-DATE-TIME:T1\nlive000007.ts\n\
+             #EXTINF:4.0,\n#EXT-X-PROGRAM-DATE-TIME:T2\nlive000008.ts\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("live000008.ts"), b"").unwrap();
+        let state = super::playlist_state(&playlist);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(state, "seq 7, listed 2, last live000008.ts @ T2, ts on disk 1");
+        assert_eq!(super::playlist_state(&dir.join("none.m3u8")), "playlist missing");
     }
 
     #[test]
