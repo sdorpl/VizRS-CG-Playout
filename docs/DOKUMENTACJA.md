@@ -836,6 +836,7 @@ API (`/api/live/*`, JSON, token jak wyżej):
 | POST | `/api/live/shows/scan` | skan biblioteki i brakujące kolekcje |
 | GET | `/api/live/graphics` | reguły grafiki w użyciu: `{"rules": {…}, "source": "config"\|"file", "store": bool}` |
 | PUT | `/api/live/graphics` | cały dokument reguł (niżej) – walidacja, zapis `graphics.json`, działa od następnej pozycji |
+| POST | `/api/live/graphics/off` · `/on` | ZDEJMIJ · PRZYWRÓĆ GRAFIKĘ: cała grafika wszystkich kanałów zdjęta z anteny od następnej klatki (przezroczyste klatki – i w pakietach ETV, i w nakładce ffmpeg) · z powrotem; stan w `control.json` (`graphics_off`, przetrwa restart), widać go w `settings.graphics_off` stanu |
 | GET | `/api/live/inputs` | wejścia studia w użyciu: `{"listeners":[{"channel","url"}], "from":"env"\|"panel", "store", "ingest", "ports":{"rtmp":[1936,1943],"srt":[9000,9007]}}` (adresy z kluczami – sekrety) |
 | PUT | `/api/live/inputs` | `{"listeners":[{"channel":"2","url":"rtmp://0.0.0.0:1937/live/<klucz>"}]}` – cała lista; walidacja (rtmp/srt, port z zakresu, jeden odbiornik na port, klucz RTMP, hasło SRT 10–79 znaków), zapis `inputs.json`, odbiorniki przejmują ją w ciągu kilku sekund; pusta lista = bez wejść |
 

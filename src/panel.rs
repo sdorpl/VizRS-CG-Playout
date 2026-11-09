@@ -15,6 +15,7 @@
 //   DELETE /api/live/shows/<id>           remove: file and collection
 //   POST   /api/live/shows/scan           scan the library, make missing collections
 //   GET    /api/live/graphics             graphics rules in force (src/graphics.rs)
+//   POST   /api/live/graphics/off · /on   all graphics off the air at once · back (control.json)
 //   PUT    /api/live/graphics             replace them: graphics.json, from the next clip
 //   GET    /api/live/inputs               studio inputs (listeners) and the ports they may use
 //   PUT    /api/live/inputs               {"listeners":[{"channel","url"}]}: inputs.json; the
@@ -57,6 +58,8 @@ struct Settings {
     /// ErsatzTV's library of the live programmes (a Remote Streams library of `/config/vizrs-live`).
     library: Option<u64>,
     channels: BTreeMap<String, ChannelControl>,
+    /// All graphics taken off the air (ZDEJMIJ GRAFIKĘ in VizRS Live), on every channel.
+    graphics_off: bool,
 }
 
 impl Settings {
@@ -64,8 +67,11 @@ impl Settings {
         let channels = self.channels.iter().map(|(number, c)| {
             (number.clone(), json::object([("hold", c.hold.into()), ("anytime", c.anytime.map_or(Value::Null, Value::from))]))
         });
-        let value =
-            json::object([("library", self.library.map_or(Value::Null, Value::from)), ("channels", Value::Object(channels.collect()))]);
+        let value = json::object([
+            ("library", self.library.map_or(Value::Null, Value::from)),
+            ("channels", Value::Object(channels.collect())),
+            ("graphics_off", self.graphics_off.into()),
+        ]);
         format!("{value}\n")
     }
 
@@ -74,6 +80,7 @@ impl Settings {
         let mut settings = Settings {
             library: value.get("library").and_then(Value::as_f64).filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u64),
             channels: BTreeMap::new(),
+            graphics_off: value.get("graphics_off").and_then(Value::as_bool).unwrap_or(false),
         };
         if let Some(Value::Object(channels)) = value.get("channels") {
             for (number, c) in channels {
@@ -269,6 +276,8 @@ impl Panel {
                 Err(e) => crate::warn!("{}: {e}", path.display()),
             }
         }
+        // Graphics taken off stay off after a restart, as a hold does.
+        crate::frames::set_graphics_off(lock(&panel.settings).graphics_off);
         // A hold survives a restart: the studio must not come back on by itself.
         for (number, control) in &lock(&panel.settings).channels {
             ingest.set_control(number, control.clone());
@@ -484,6 +493,7 @@ impl Panel {
                     Err(e) => fail(&mut stream, 502, &e.to_string()),
                 }
             }
+            ("POST", ["graphics", action @ ("off" | "on")]) => self.graphics_switch(*action == "off", &mut stream, ingest, &who),
             ("GET", ["graphics"]) => reply(&mut stream, 200, &self.graphics.to_json()),
             ("PUT", ["graphics"]) => self.put_graphics(&body, &mut stream, ingest, &who),
             ("GET", ["inputs"]) => reply(&mut stream, 200, &self.inputs_json(ingest)),
@@ -495,6 +505,23 @@ impl Panel {
             ("DELETE", ["shows", id]) => self.delete(id, &mut stream, ingest, &who),
             _ => fail(&mut stream, 404, "nie ma takiego adresu API"),
         }
+    }
+
+    /// `POST /api/live/graphics/off` · `/on`: every channel's graphics off the air at
+    /// once (transparent frames from the next frame) or back. Kept in `control.json`.
+    fn graphics_switch(&self, off: bool, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        crate::frames::set_graphics_off(off);
+        let next = {
+            let mut settings = lock(&self.settings);
+            settings.graphics_off = off;
+            settings.clone()
+        };
+        self.record(ingest, who, "", if off { "ZDEJMIJ GRAFIKĘ – cała grafika zdjęta z anteny" } else { "PRZYWRÓĆ GRAFIKĘ" });
+        // The switch works even when the disk fails; it is only not kept.
+        if let Err(e) = self.save_settings(&next) {
+            crate::warn!("control.json: {e}");
+        }
+        reply(stream, 200, &self.settings_json())
     }
 
     /// `PUT /api/live/graphics`: the whole rules document, in force from the next clip.
@@ -522,7 +549,11 @@ impl Panel {
 
     fn settings_json(&self) -> Value {
         let settings = lock(&self.settings);
-        json::object([("library", settings.library.map_or(Value::Null, Value::from)), ("store", (!self.etv_config.is_empty()).into())])
+        json::object([
+            ("library", settings.library.map_or(Value::Null, Value::from)),
+            ("store", (!self.etv_config.is_empty()).into()),
+            ("graphics_off", crate::frames::graphics_off().into()),
+        ])
     }
 
     /// `/api/live/state`.
@@ -945,7 +976,7 @@ mod tests {
 
     #[test]
     fn settings_round_trip() {
-        let mut settings = Settings { library: Some(7), channels: BTreeMap::new() };
+        let mut settings = Settings { library: Some(7), channels: BTreeMap::new(), graphics_off: true };
         settings.channels.insert("4".into(), ChannelControl { hold: true, anytime: Some(false) });
         assert_eq!(Settings::from_json(&settings.to_json()).unwrap(), settings);
         assert_eq!(Settings::from_json("{}").unwrap(), Settings::default());

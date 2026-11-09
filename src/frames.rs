@@ -144,6 +144,24 @@ pub trait Source: Send + Sync {
     fn frame_at(&self, time: Instant) -> Arc<Frame>;
 }
 
+/// All graphics off the air (`POST /api/live/graphics/off`): every stream sends
+/// transparent frames until it is switched back on.
+static GRAPHICS_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn graphics_off() -> bool {
+    GRAPHICS_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_graphics_off(off: bool) {
+    GRAPHICS_OFF.store(off, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The transparent frame every stream sends while the graphics are off.
+pub fn blank() -> Arc<Frame> {
+    static BLANK: OnceLock<Arc<Frame>> = OnceLock::new();
+    Arc::clone(BLANK.get_or_init(|| Arc::new(Frame::new(0, Vec::new(), Instant::now()))))
+}
+
 /// Transparent frames: burn-in off, or the channel size unknown.
 pub struct Empty(Arc<Frame>);
 

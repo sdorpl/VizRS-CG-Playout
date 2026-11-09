@@ -166,6 +166,8 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
         at.unwrap_or(base)
     };
     let frame_at = |base: Instant, n: u64| source.frame_at(moment(base, n));
+    // Graphics off the air (VizRS Live): transparent frames, whatever the source has.
+    let off = crate::frames::graphics_off;
     let kept = Duration::from_secs_f64(lead_s) + SAMPLE_DELAY + LATE;
 
     while !control.is_closed() {
@@ -191,7 +193,9 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
         let due = ((elapsed / frame_s).floor() + 1.0 + lead as f64).max(0.0) as u64;
         while sent < due {
             let raw = matches!(options.format, Format::Yuva { .. });
-            let frame = if raw {
+            let frame = if off() {
+                crate::frames::blank()
+            } else if raw {
                 let now = Instant::now();
                 let (oldest, newest) = (now.checked_sub(kept).unwrap_or(now), now.checked_sub(SAMPLE_DELAY).unwrap_or(now));
                 source.frame_at(picture_moment(moment(base, sent), &mut shift, oldest, newest))
