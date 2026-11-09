@@ -656,6 +656,13 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    zwiększony o wyprodukowany czas (z EXTINF nowych segmentów playlisty, tak
    jak liczy go ErsatzTV), więc znaczniki czasu idą dalej jak z jednego
    ffmpeg, a kawałek kończy się dokładnie wtedy, kiedy ErsatzTV tego oczekuje.
+   Ślad przebiegów: każdy kawałek, przejście na live, koniec przebiegu
+   i zatrzymanie (`SIGINT`/`SIGTERM`/`SIGKILL`) trafia – poza stderr, którego
+   ErsatzTV Next nie zachowuje – do pliku
+   `$ETV_CONFIG_FOLDER/logs/vizrs-takeover-<kanał>.log` (bez tej zmiennej obok
+   playlisty): czas UTC, PID nakładki, komunikat i stan playlisty (media
+   sequence, liczba segmentów, ostatni z `PROGRAM-DATE-TIME`, pliki `.ts`
+   na dysku). Plik powyżej 2 MB przechodzi w `….1` (jeden stary zostaje).
    Live zastępuje harmonogram, nie przesuwa go: program po powrocie idzie
    od bieżącego miejsca, a ominięta część przepada (w ffPlayout program był
    wstrzymywany). Kawałek, który zaczyna się w trakcie live, od razu idzie
