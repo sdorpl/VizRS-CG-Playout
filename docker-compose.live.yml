@@ -17,7 +17,7 @@
 # Caddyfile proxy to kopia docker/proxy.Caddyfile z VizRS Live (wpisana tu, bo Portainer nie montuje plików repo).
 services:
   ersatztv:
-    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:1.2.3}
+    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:1.2.4}
     environment:
       VIZRS_BRIDGE_TOKEN: ${VIZRS_BRIDGE_TOKEN:?ustaw VIZRS_BRIDGE_TOKEN}
     ports: !reset []
@@ -36,7 +36,7 @@ services:
       - "${ETV_PORT:-8409}:8409"
 
   live:
-    image: ${LIVE_IMAGE:-ghcr.io/sdorpl/vizrs-live:1.2.3}
+    image: ${LIVE_IMAGE:-ghcr.io/sdorpl/vizrs-live:1.2.4}
     labels:
       com.centurylinklabs.watchtower.enable: "false"
     restart: unless-stopped
