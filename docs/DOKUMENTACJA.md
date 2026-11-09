@@ -1339,9 +1339,11 @@ buduje, więc działa także w Portainerze: **Additional paths** →
 Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
 `VIZRS_BRIDGE_TOKEN` (most), `VIZRS_LIVE_TOKEN` (logowanie do panelu),
 `VIZRS_PANEL_TOKEN` (live API sidecara, §„Live API”); opcjonalnie
-`VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Obrazy `LIVE_IMAGE` i
-`LIVE_LEGACY_IMAGE` są przypięte do wydania VizRS Live (1.2.4) – podnosi je
-nowe wydanie panelu. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
+`VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Panel (`LIVE_IMAGE`) i proxy
+(`PROXY_IMAGE`) to zawsze najnowsze wydania (`vizrs-live:latest`,
+`caddy:alpine`; od 2026-11-09), a ErsatzTV z mostem (`LIVE_LEGACY_IMAGE`)
+zostaje przypięty do wydania VizRS Live (1.2.7) – podnosi go nowe wydanie
+panelu, które zmienia most. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
 zmiana jednego wymaga zmiany drugiego. Cofnięcie: usunięcie nakładki ze stosu
 i redeploy (ErsatzTV wraca na oficjalny obraz z tą samą bazą).
 
