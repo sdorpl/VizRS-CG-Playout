@@ -31,6 +31,7 @@ services:
   cg:
     image: ${CG_IMAGE:-ghcr.io/sdorpl/vizrs-cg:latest}
     platform: linux/arm64
+    build: !reset null
     cpus: ${CG_CPUS:-2}
     mem_limit: ${CG_MEMORY:-2g}
     environment:
