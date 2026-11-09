@@ -6,9 +6,9 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread;
 use std::time::Duration;
 
@@ -255,6 +255,8 @@ struct Batch {
     /// Pages taken out for a break come back first (not before an `OUT`).
     restore: bool,
     commands: Vec<String>,
+    /// VizRS Live took all graphics off (`Some(true)`) or back (`Some(false)`).
+    switch: Option<bool>,
 }
 
 #[derive(Default)]
@@ -315,19 +317,34 @@ impl ChannelEvents {
             .spawn(move || {
                 // Pages taken out for the break, owned by the sender as in the Node.js queue.
                 let mut cleared: Option<Vec<String>> = None;
+                // While VizRS Live keeps the graphics off: the pages to take back in.
+                let mut parked: Option<Vec<String>> = None;
                 for batch in batches {
-                    send_clip(&sender_config, &mut cleared, batch);
+                    match batch.switch {
+                        Some(true) => switch_out(&sender_config, &mut parked),
+                        Some(false) => switch_in(&sender_config, &mut parked),
+                        None if parked.is_some() => park(parked.as_mut().unwrap(), &mut cleared, &batch),
+                        None => send_clip(&sender_config, &mut cleared, batch),
+                    }
                 }
             })
             .expect("vizrs sender thread");
+        // Graphics off already (kept from before a restart): nothing goes on air until they come back.
+        if GRAPHICS_OFF.load(Ordering::Relaxed) {
+            let _ = queue.send(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(true) });
+        }
         let rules = RwLock::new(Arc::new(ClipRules::of(&config, ads, shows)));
-        Arc::new(ChannelEvents {
+        let events = Arc::new(ChannelEvents {
             config,
             rules,
             state: Mutex::new(State::default()),
             ad_generation: Arc::new(AtomicU64::new(0)),
             queue: Mutex::new(queue),
-        })
+        });
+        let mut all = CHANNELS.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|w| w.strong_count() > 0);
+        all.push(Arc::downgrade(&events));
+        events
     }
 
     /// New graphics rules (the channel's configuration with them, and their matchers).
@@ -406,7 +423,7 @@ impl ChannelEvents {
         let rules = self.rules();
         let show = rules.shows.find(&ctx.show_title);
         let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&rules.on_ad);
-        self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, &ad_ctx) });
+        self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, &ad_ctx), switch: None });
     }
 
     /// Events for a clip that starts (or is joined) now. ErsatzTV starts the
@@ -423,7 +440,7 @@ impl ChannelEvents {
         let show = rules.shows.find(&ctx.show_title);
         if rules.is_ad(ctx) {
             let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&rules.on_ad);
-            return self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, ctx) });
+            return self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, ctx), switch: None });
         }
         let Some(custom) = custom_commands else {
             let on_clip = render_commands(show.and_then(|s| s.on_clip.as_deref()).unwrap_or(&rules.on_clip), ctx);
@@ -519,7 +536,7 @@ impl ChannelEvents {
             }
         }
 
-        let take = Batch { ad: false, restore: true, commands };
+        let take = Batch { ad: false, restore: true, commands, switch: None };
         let take = match take_at {
             Some(take_at) if take_at > now => Some(take),
             _ => {
@@ -532,7 +549,7 @@ impl ChannelEvents {
         }
         let (queue, ads) = (self.sender(), Arc::clone(&self.ad_generation));
         let current = move || ads.load(Ordering::Relaxed);
-        let out = Batch { ad: false, restore: false, commands: vec![format!("OUT {}", pages.join(","))] };
+        let out = Batch { ad: false, restore: false, commands: vec![format!("OUT {}", pages.join(","))], switch: None };
         let _ = thread::Builder::new().name("vizrs-timed".into()).spawn(move || {
             // Until the item time is made by the latest timeline (a later piece moves it).
             let wait_until = |item_ms: i64| loop {
@@ -589,7 +606,120 @@ impl ClipRules {
     }
 }
 
-fn send_clip(config: &Config, cleared: &mut Option<Vec<String>>, Batch { ad, restore, mut commands }: Batch) {
+/// All graphics off the air (VizRS Live), and every channel's events to tell.
+static GRAPHICS_OFF: AtomicBool = AtomicBool::new(false);
+static SWITCHES: AtomicU64 = AtomicU64::new(0);
+static CHANNELS: Mutex<Vec<Weak<ChannelEvents>>> = Mutex::new(Vec::new());
+
+/// How long VizRS plays the OUT animations before the frames go transparent.
+pub fn out_animation() -> Duration {
+    let seconds = std::env::var("VIZRS_GRAPHICS_OUT_SECONDS").ok().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(3.0);
+    Duration::from_secs_f64(seconds.clamp(0.0, 30.0))
+}
+
+/// VizRS Live's ZDEJMIJ / PRZYWRÓĆ GRAFIKĘ. Off: every channel's antenna plays
+/// OUT for its layers on air (STATE → OUT), then, after `out_animation`, the
+/// frames go transparent (a safety net for anything left). Clip commands that
+/// come meanwhile are not sent; the sender only follows which pages they would
+/// put on air. On: frames come back at once, then one TAKE of those pages plays
+/// their IN animations. `animate: false` (a restart with graphics off) blanks
+/// at once and sends nothing.
+pub fn graphics_switch(off: bool, animate: bool) {
+    GRAPHICS_OFF.store(off, Ordering::Relaxed);
+    let generation = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+    if animate {
+        let channels: Vec<Arc<ChannelEvents>> =
+            CHANNELS.lock().unwrap_or_else(|e| e.into_inner()).iter().filter_map(Weak::upgrade).collect();
+        for events in channels {
+            events.enqueue(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(off) });
+        }
+    }
+    if !off {
+        crate::frames::set_graphics_off(false);
+        return;
+    }
+    let wait = if animate { out_animation() } else { Duration::ZERO };
+    let _ = thread::Builder::new().name("vizrs-off".into()).spawn(move || {
+        thread::sleep(wait);
+        if SWITCHES.load(Ordering::Relaxed) == generation {
+            crate::frames::set_graphics_off(true);
+        }
+    });
+}
+
+/// Graphics off: OUT for everything on the channel's antenna; its pages are kept for the TAKE back.
+fn switch_out(config: &Config, parked: &mut Option<Vec<String>>) {
+    if parked.is_some() {
+        return;
+    }
+    let pages = match send(&config.vizrs.address, &config.vizrs.token, &config.command_prefix, &[], true) {
+        Ok(sent) => {
+            for (command, reply) in &sent.replies {
+                crate::info!("VizRS {command} (graphics off): {reply}");
+            }
+            sent.cleared_pages
+        }
+        Err(error) => {
+            crate::error!("VizRS (graphics off): {error}");
+            Vec::new()
+        }
+    };
+    *parked = Some(pages);
+}
+
+/// Graphics back: one TAKE of the pages that are to be on air now (IN animations).
+fn switch_in(config: &Config, parked: &mut Option<Vec<String>>) {
+    let Some(pages) = parked.take() else { return };
+    if pages.is_empty() {
+        return;
+    }
+    match send(&config.vizrs.address, &config.vizrs.token, &config.command_prefix, &[format!("TAKE {}", pages.join(","))], false) {
+        Ok(sent) => {
+            for (command, reply) in &sent.replies {
+                crate::info!("VizRS {command} (graphics back): {reply}");
+            }
+        }
+        Err(error) => crate::error!("VizRS (graphics back): {error}"),
+    }
+}
+
+/// A batch while the graphics are off: not sent; `pages` follow what it would put on air.
+fn park(pages: &mut Vec<String>, cleared: &mut Option<Vec<String>>, batch: &Batch) {
+    if batch.ad {
+        // The break takes everything out; its pages come back with the next clip.
+        if cleared.is_none() && !pages.is_empty() {
+            *cleared = Some(std::mem::take(pages));
+        }
+        pages.clear();
+    } else if batch.restore {
+        for page in cleared.take().unwrap_or_default() {
+            if !pages.contains(&page) {
+                pages.push(page);
+            }
+        }
+    }
+    follow_pages(pages, &batch.commands);
+}
+
+/// Pages on air after `commands`: TAKE puts them on, OUT takes them off.
+fn follow_pages(pages: &mut Vec<String>, commands: &[String]) {
+    for command in commands {
+        let mut words = command.split_whitespace();
+        let verb = words.next().unwrap_or("");
+        let list: Vec<&str> = words.next().unwrap_or("").split(',').filter(|p| !p.is_empty()).collect();
+        if verb.eq_ignore_ascii_case("TAKE") {
+            for page in list {
+                if !pages.iter().any(|p| p == page) {
+                    pages.push(page.to_owned());
+                }
+            }
+        } else if verb.eq_ignore_ascii_case("OUT") {
+            pages.retain(|p| !list.contains(&p.as_str()));
+        }
+    }
+}
+
+fn send_clip(config: &Config, cleared: &mut Option<Vec<String>>, Batch { ad, restore, mut commands, .. }: Batch) {
     // Graphics taken out for the break come back before the clip's own commands.
     let restore = if restore { cleared.take() } else { None };
     if let Some(pages) = &restore {
@@ -626,6 +756,41 @@ fn send_clip(config: &Config, cleared: &mut Option<Vec<String>>, Batch { ad, res
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn parked_pages_follow_commands() {
+        let mut pages = vec!["1001".to_string()];
+        let mut cleared = None;
+        let batch = |ad, restore, c: &[&str]| Batch { ad, restore, commands: c.iter().map(|s| s.to_string()).collect(), switch: None };
+        park(&mut pages, &mut cleared, &batch(false, true, &["TAKE 2001,2002 title=x", "UPDATE 1 a=b"]));
+        assert_eq!(pages, ["1001", "2001", "2002"]);
+        park(&mut pages, &mut cleared, &batch(false, false, &["OUT 2002"]));
+        assert_eq!(pages, ["1001", "2001"]);
+        park(&mut pages, &mut cleared, &batch(true, false, &["TAKE 3001"]));
+        assert_eq!((pages.clone(), cleared.clone()), (vec!["3001".to_string()], Some(vec!["1001".to_string(), "2001".to_string()])));
+        park(&mut pages, &mut cleared, &batch(false, true, &["OUT 3001"]));
+        assert_eq!((pages, cleared), (vec!["1001".to_string(), "2001".to_string()], None));
+    }
+
+    #[test]
+    fn switch_out_and_in_animate() {
+        let (address, server) = fake(|line| match line {
+            "STATE" => Some(r#"OK {"layers":[{"layer":"main","page":{"number":1001}},{"layer":"bug","page":"7"}]}"#.into()),
+            "END" => None,
+            _ => Some("OK {}".into()),
+        });
+        let mut config = Config::default();
+        config.vizrs.address = address.clone();
+        let mut parked = None;
+        switch_out(&config, &mut parked);
+        assert_eq!(parked.as_deref(), Some(&["1001".to_string(), "7".to_string()][..]));
+        assert_eq!(server.join().unwrap(), ["STATE", "OUT main,bug"]);
+        let (address, server) = fake(|line| if line == "END" { None } else { Some("OK {}".into()) });
+        config.vizrs.address = address;
+        switch_in(&config, &mut parked);
+        assert!(parked.is_none());
+        assert_eq!(server.join().unwrap(), ["TAKE 1001,7"]);
+    }
     use std::net::TcpListener;
 
     use super::*;

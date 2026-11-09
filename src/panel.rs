@@ -277,7 +277,9 @@ impl Panel {
             }
         }
         // Graphics taken off stay off after a restart, as a hold does.
-        crate::frames::set_graphics_off(lock(&panel.settings).graphics_off);
+        if lock(&panel.settings).graphics_off {
+            crate::vizrs::graphics_switch(true, false);
+        }
         // A hold survives a restart: the studio must not come back on by itself.
         for (number, control) in &lock(&panel.settings).channels {
             ingest.set_control(number, control.clone());
@@ -510,13 +512,18 @@ impl Panel {
     /// `POST /api/live/graphics/off` · `/on`: every channel's graphics off the air at
     /// once (transparent frames from the next frame) or back. Kept in `control.json`.
     fn graphics_switch(&self, off: bool, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
-        crate::frames::set_graphics_off(off);
+        crate::vizrs::graphics_switch(off, true);
         let next = {
             let mut settings = lock(&self.settings);
             settings.graphics_off = off;
             settings.clone()
         };
-        self.record(ingest, who, "", if off { "ZDEJMIJ GRAFIKĘ – cała grafika zdjęta z anteny" } else { "PRZYWRÓĆ GRAFIKĘ" });
+        self.record(
+            ingest,
+            who,
+            "",
+            if off { "ZDEJMIJ GRAFIKĘ – OUT grafiki na wszystkich kanałach" } else { "PRZYWRÓĆ GRAFIKĘ – TAKE stron z powrotem" },
+        );
         // The switch works even when the disk fails; it is only not kept.
         if let Err(e) = self.save_settings(&next) {
             crate::warn!("control.json: {e}");
