@@ -646,6 +646,29 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    w live API (niżej) ma `"hold":true` i `"live":false` mimo sygnału, a jego
    `GET /ingest` odpowiada jak bez sygnału (bieżący czytelnik kończy się
    w ciągu sekundy).
+   **Ciągłość przebiegów live:** sidecar trzyma ostatnie 20 s sygnału (całe
+   grupy obrazów, wg PTS; najwyżej 32 MiB) i kursor kanału. Czytelnik z `take`
+   (przebieg live nakładki) zaczyna od klatki kluczowej najbliższej kursorowi,
+   który zostawił poprzedni przebieg (jego klatka startowa + `take`), a kursor
+   przesuwa się o `take`. ffmpeg czyta wtedy od razu sekundy stracone na start
+   i kanał trzyma czas rzeczywisty przez kolejne kawałki ErsatzTV (44 s). Bez
+   tego każdy przebieg zaczynał od bieżącej chwili, a start nowego ffmpeg
+   (ok. 1 s) i przerwa ErsatzTV między kawałkami (ok. 0,6 s) przepadały:
+   zmierzone 0,96× czasu rzeczywistego, zapas HLS kanału topniał i odtwarzacze
+   z czasem coraz częściej stawały. Kursor dalej niż 12 s za sygnałem (kanał
+   wstrzymany, przebiegi zbyt wolne), brak kursora (pierwszy przebieg, nowy
+   nadawca) i źródło bez PTS = bieżąca chwila, jak każdy inny czytelnik
+   (`GET /ingest`, slot). Log sidecara: `ingest: channel N: live run of 44.0 s
+   from 1.2 s behind the source`. Live na kanale jest przez to o te sekundy
+   (zwykle 1–2 s) dalej od źródła. Nadrobienie wymaga jeszcze dwóch rzeczy
+   w nakładce: strumień grafiki kawałka między przebiegami czeka na następny
+   przebieg zamiast wyrzucać klatki (sidecar odmierza je zegarem od startu
+   kawałka i zaległe wysyła naraz), a wejście live ma `-t` pozostałego czasu
+   kawałka (niżej). Pomiar na lokalnym stosie (nadawca RTMP 1280×720, widz
+   HLS, 10 min live): 1,001× czasu rzeczywistego, kawałki 44 s co 43,9–44,3 s,
+   żaden przebieg nie zatrzymany po czasie; wcześniej 0,963× (od bieżącej
+   chwili) i 0,937× (sama ciągłość: przebiegi nadrabiały, ale stały do
+   `LIVE_OVERRUN`).
 3. **Przejęcie** (`VIZRS_FFMPEG_INGEST=1` w ErsatzTV, [src/takeover.rs](../src/takeover.rs)):
    nakładka ffmpeg pyta sidecara o stan kanału przy każdym transkodowaniu
    kawałka do HLS (`-f hls` z `-t`, wideo kodowane, nie kopiowane). Kanał to
@@ -659,16 +682,20 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
      2 s `SIGKILL` (zawieszony ffmpeg, np. CUDA z pipe'em grafiki, nie może
      trzymać live poza anteną ani pamięci GPU – wcześniej nakładka czekała bez
      końca, a ErsatzTV Next restartował sesję po „ffmpeg stall”);
-   - przebieg live: wejście `GET /ingest?channel=N`, skalowanie z zachowaniem
+   - przebieg live: wejście `GET /ingest?channel=N&take=<pozostały czas kawałka, s>`
+     (ciągłość niżej), skalowanie z zachowaniem
      proporcji i czarne pasy do rozmiaru kanału, klatkaż kanału, dźwięk 48 kHz
      stereo (bez ścieżki dźwięku: cisza), grafika VizRS nałożona jak w kawałku
      (te same obszary, §1, Obszar grafiki), a koder, jego opcje, `-r` i opcje
      HLS z komendy ErsatzTV; trwa do końca sygnału albo kawałka. Źródło live
      nie kończy się samo, a ffmpeg po osiągnięciu `-t` potrafi czekać na swoje
      wejścia zamiast wyjść – ErsatzTV widział wtedy kawałek stojący ok. minuty
-     („ffmpeg stalled”), a odtwarzacze widzów zastygały. Przebieg live idzie
-     z zegarem, więc gdy żyje dłużej niż pozostały czas kawałka plus 3 s,
-     nakładka kończy go `SIGINT` (dalej jak wyżej: `SIGTERM`, `SIGKILL`);
+     („ffmpeg stalled”), a odtwarzacze widzów zastygały. Dlatego wejście live
+     ma `-t` pozostałego czasu kawałka: koniec wejścia kończy nakładanie
+     (`shortest=1`) i przebieg, gdy tylko kawałek jest gotowy – także wtedy,
+     gdy przebieg nadrobił start i doszedł do końca przed zegarem. Gdyby mimo
+     to żył dłużej niż pozostały czas kawałka plus 3 s, nakładka kończy go
+     `SIGINT` (dalej jak wyżej: `SIGTERM`, `SIGKILL`);
    - po zejściu sygnału znowu komenda kawałka od miejsca, w którym jest już
      harmonogram (`-ss` przesunięte o czas, który kawałek wyprodukował).
    Każdy przebieg dostaje `-t` z pozostałym czasem i `-output_ts_offset`

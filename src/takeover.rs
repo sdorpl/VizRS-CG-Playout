@@ -5,7 +5,8 @@
 //
 //   the piece from where it is (`-ss` + produced, `-t` remaining)
 //   └─ live on the channel → that run stops (SIGINT: ffmpeg closes the segment)
-//      the live source of the sidecar (GET /ingest) until it ends or the piece does
+//      the live source of the sidecar (GET /ingest?take=<rest of the piece>) until
+//      it ends or the piece does; the next live run goes on where it stopped
 //      └─ the piece again, from where the schedule is by now
 //
 // Every run gets `-output_ts_offset` of what the piece produced so far, so the
@@ -23,7 +24,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -299,10 +300,14 @@ pub fn live_args(
                 "mpegts",
                 "-rw_timeout",
                 "5000000",
-                "-i",
-                &source.url,
             ];
             out.extend(live.iter().map(OsString::from));
+            // The input itself ends with the piece: ffmpeg with only the output's `-t`
+            // reached waits on its inputs instead of exiting, and a live run that has
+            // made up its start (src/ingest.rs) got there early and stood until
+            // LIVE_OVERRUN stopped it (47 s for a 44 s piece). With the source's end
+            // the overlay (`shortest=1`) and the run end as soon as the piece is made.
+            out.extend(["-t".into(), ms(job.duration - elapsed), "-i".into(), source.url.as_str().into()]);
             if source.audio {
                 "0:a:0".to_owned()
             } else {
@@ -621,7 +626,11 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         if job.duration - elapsed < DONE {
             return 0;
         }
-        let source = live().then(|| Source { url: source_url.clone(), audio: poller.audio.load(Ordering::Relaxed) });
+        // `take`: the sidecar goes on from where the live run before stopped (src/ingest.rs).
+        let source = live().then(|| Source {
+            url: format!("{source_url}&take={:.3}", job.duration - elapsed),
+            audio: poller.audio.load(Ordering::Relaxed),
+        });
         if source.is_some() {
             trace(job, format_args!("channel {}: live from {elapsed:.1} s of the piece", job.channel));
         }
@@ -722,13 +731,18 @@ impl Stop {
 }
 
 /// Frames of the overlay for runs one after another: each run gets its own
-/// frame socket (`overlay::frame_channel`), switched at a frame boundary; frames with no run to take them are
-/// dropped, so the graphics stay on time.
+/// frame socket (`overlay::frame_channel`), switched at a frame boundary.
+/// Between runs (a new ffmpeg starting) the stream waits for the next one
+/// instead of dropping frames: the sidecar then sends the frames it owes at
+/// once (its timeline is the clock), so a run can make up its start, as
+/// ErsatzTV's piece after a slow start does. Frames dropped would hold every
+/// run to the clock from the moment it attached: ~1 s lost per run, a live
+/// channel at 0.96x.
 pub struct Sink {
     pipe: Option<UnixStream>,
     frame: usize,
     offset: usize,
-    shared: Arc<Mutex<SinkShared>>,
+    shared: Arc<(Mutex<SinkShared>, Condvar)>,
 }
 
 #[derive(Default)]
@@ -739,42 +753,56 @@ struct SinkShared {
 
 /// Hands new frame sockets to a `Sink` and closes it.
 #[derive(Clone)]
-pub struct SinkControl(Arc<Mutex<SinkShared>>);
+pub struct SinkControl(Arc<(Mutex<SinkShared>, Condvar)>);
 
 impl Sink {
     pub fn new(frame: usize) -> (Sink, SinkControl) {
-        let shared = Arc::new(Mutex::new(SinkShared::default()));
+        let shared = Arc::new((Mutex::new(SinkShared::default()), Condvar::new()));
         (Sink { pipe: None, frame: frame.max(1), offset: 0, shared: Arc::clone(&shared) }, SinkControl(shared))
     }
 }
 
 impl SinkControl {
-    /// The next frames go to `pipe`.
-    pub fn attach(&self, pipe: UnixStream) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).pending = Some(pipe);
+    fn update(&self, change: impl FnOnce(&mut SinkShared)) {
+        let (lock, changed) = &*self.0;
+        change(&mut lock.lock().unwrap_or_else(|e| e.into_inner()));
+        changed.notify_all();
     }
 
-    /// The relay ends with its next write.
+    /// The next frames go to `pipe`.
+    pub fn attach(&self, pipe: UnixStream) {
+        self.update(|shared| shared.pending = Some(pipe));
+    }
+
+    /// The relay ends with its next write (also one waiting for a run).
     pub fn close(&self) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        self.update(|shared| shared.closed = true);
     }
 }
 
 impl Write for Sink {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         if self.offset == 0 {
-            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-            if shared.closed {
-                return Err(io::ErrorKind::BrokenPipe.into());
-            }
-            if let Some(pipe) = shared.pending.take() {
-                self.pipe = Some(pipe);
+            let (lock, changed) = &*self.shared;
+            let mut shared = lock.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if shared.closed {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                if let Some(pipe) = shared.pending.take() {
+                    self.pipe = Some(pipe);
+                }
+                if self.pipe.is_some() {
+                    break;
+                }
+                // No run: the stream waits for the next one.
+                shared = changed.wait(shared).unwrap_or_else(|e| e.into_inner());
             }
         }
         let n = data.len().min(self.frame - self.offset);
         if let Some(pipe) = self.pipe.as_mut() {
             if pipe.write_all(&data[..n]).is_err() {
-                // The run is over; frames are dropped until the next one.
+                // The run is over: the rest of this frame is dropped, the next one waits for a run.
                 self.pipe = None;
             }
         }
@@ -988,6 +1016,8 @@ mod tests {
             "mpegts",
             "-rw_timeout",
             "5000000",
+            "-t",
+            "40000ms",
             "-i",
             "http://cg:7700/ingest?channel=1",
             "-filter_complex",
@@ -1119,25 +1149,43 @@ mod tests {
     }
 
     #[test]
-    fn sink_switches_frame_sockets_at_frame_boundaries() {
+    fn sink_waits_for_a_run_and_switches_at_frame_boundaries() {
         use std::io::Read;
         let (mut sink, control) = Sink::new(4);
-        // No frame socket yet: dropped.
-        sink.write_all(b"ab").unwrap();
-        let (mut reader, writer) = crate::overlay::frame_channel().unwrap();
-        control.attach(writer);
-        // The rest of the frame is still dropped; the next frame goes to the socket.
-        sink.write_all(b"cdEFGHij").unwrap();
-        let (mut second, writer) = crate::overlay::frame_channel().unwrap();
-        control.attach(writer);
-        sink.write_all(b"klMNOP").unwrap();
+        // No run yet: the stream waits for one (nothing is dropped).
+        let writer = std::thread::spawn(move || {
+            sink.write_all(b"abcd").unwrap();
+            sink
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!writer.is_finished(), "waits for a run");
+        let (mut reader, socket) = crate::overlay::frame_channel().unwrap();
+        control.attach(socket);
+        let mut sink = writer.join().unwrap();
+        sink.write_all(b"EF").unwrap();
+        // The next run takes over at the frame boundary.
+        let (mut second, socket) = crate::overlay::frame_channel().unwrap();
+        control.attach(socket);
+        sink.write_all(b"GHijkl").unwrap();
         drop(sink);
         let mut first = Vec::new();
         reader.read_to_end(&mut first).unwrap();
-        assert_eq!(first, b"EFGHijkl");
+        assert_eq!(first, b"abcdEFGH");
         let mut next = Vec::new();
         second.read_to_end(&mut next).unwrap();
-        assert_eq!(next, b"MNOP");
+        assert_eq!(next, b"ijkl");
+
+        // A run gone in the middle of a frame: its rest is dropped, the next frame waits.
+        let (mut sink, control) = Sink::new(4);
+        let (reader, socket) = crate::overlay::frame_channel().unwrap();
+        control.attach(socket);
+        drop(reader);
+        sink.write_all(b"wxyz").unwrap();
+        let closer = control.clone();
+        let waiting = std::thread::spawn(move || sink.write_all(b"1234"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        closer.close();
+        assert!(waiting.join().unwrap().is_err(), "closed while waiting");
 
         let (mut sink, control) = Sink::new(2);
         control.close();
