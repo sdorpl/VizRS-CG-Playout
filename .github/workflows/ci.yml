@@ -34,4 +34,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: current
+      # ffmpeg dla testów live ingest (bez niego są pomijane: odbiornik RTMP, przejęcie, slot live).
+      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
       - run: npm test
