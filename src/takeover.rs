@@ -19,6 +19,7 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -721,10 +722,10 @@ impl Stop {
 }
 
 /// Frames of the overlay for runs one after another: each run gets its own
-/// pipe, switched at a frame boundary; frames with no run to take them are
+/// frame socket (`overlay::frame_channel`), switched at a frame boundary; frames with no run to take them are
 /// dropped, so the graphics stay on time.
 pub struct Sink {
-    pipe: Option<io::PipeWriter>,
+    pipe: Option<UnixStream>,
     frame: usize,
     offset: usize,
     shared: Arc<Mutex<SinkShared>>,
@@ -732,11 +733,11 @@ pub struct Sink {
 
 #[derive(Default)]
 struct SinkShared {
-    pending: Option<io::PipeWriter>,
+    pending: Option<UnixStream>,
     closed: bool,
 }
 
-/// Hands new pipes to a `Sink` and closes it.
+/// Hands new frame sockets to a `Sink` and closes it.
 #[derive(Clone)]
 pub struct SinkControl(Arc<Mutex<SinkShared>>);
 
@@ -749,7 +750,7 @@ impl Sink {
 
 impl SinkControl {
     /// The next frames go to `pipe`.
-    pub fn attach(&self, pipe: io::PipeWriter) {
+    pub fn attach(&self, pipe: UnixStream) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).pending = Some(pipe);
     }
 
@@ -1118,16 +1119,16 @@ mod tests {
     }
 
     #[test]
-    fn sink_switches_pipes_at_frame_boundaries() {
+    fn sink_switches_frame_sockets_at_frame_boundaries() {
         use std::io::Read;
         let (mut sink, control) = Sink::new(4);
-        // No pipe yet: dropped.
+        // No frame socket yet: dropped.
         sink.write_all(b"ab").unwrap();
-        let (mut reader, writer) = io::pipe().unwrap();
+        let (mut reader, writer) = crate::overlay::frame_channel().unwrap();
         control.attach(writer);
-        // The rest of the frame is still dropped; the next frame goes to the pipe.
+        // The rest of the frame is still dropped; the next frame goes to the socket.
         sink.write_all(b"cdEFGHij").unwrap();
-        let (mut second, writer) = io::pipe().unwrap();
+        let (mut second, writer) = crate::overlay::frame_channel().unwrap();
         control.attach(writer);
         sink.write_all(b"klMNOP").unwrap();
         drop(sink);
