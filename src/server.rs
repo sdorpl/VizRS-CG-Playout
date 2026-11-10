@@ -181,6 +181,7 @@ const SAVE_EVERY: Duration = Duration::from_secs(10);
 
 impl Server {
     pub fn new(config: Config) -> Arc<Server> {
+        crate::asrun::set_webhook(&config.alert_webhook);
         let graphics = Arc::new(graphics::Store::new(&config));
         let (ads, warnings) = AdMatcher::new(&graphics.applied(&config).ad_match);
         for warning in warnings {
@@ -191,7 +192,7 @@ impl Server {
             crate::warn!("{warning}");
         }
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
-        let ingest = Ingest::new(&config.ingest_token, config.ingest_anytime);
+        let ingest = Ingest::with_config(&config.ingest_token, config.ingest_anytime, config.etv_config.clone());
         let panel = Panel::new(&config, &ingest, Arc::clone(&graphics));
         let footprints = Mutex::new(Footprints::load(Footprints::default_path(&config.etv_config)));
         Arc::new(Server {
@@ -305,7 +306,7 @@ impl Server {
             return Arc::clone(events);
         }
         let (config, ads, shows) = self.rules_for(channel);
-        let events = ChannelEvents::new(Arc::new(config), ads, shows);
+        let events = ChannelEvents::new(Arc::new(config), ads, shows, channel.to_owned());
         channels.insert(channel.to_owned(), (generation, Arc::clone(&events)));
         events
     }

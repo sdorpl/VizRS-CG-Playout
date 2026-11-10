@@ -38,6 +38,7 @@
   "renderer_bin": "",
   "ingest_token": "",
   "panel_token": "",
+  "alert_webhook": "",
   "ingest_anytime": true,
   "ingest": "",
   "ingest_public": "",

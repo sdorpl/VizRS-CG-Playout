@@ -157,6 +157,38 @@ pub fn on_air(state_reply: &str) -> Option<(String, Vec<String>)> {
     (!names.is_empty()).then(|| (format!("OUT {}", names.join(",")), pages))
 }
 
+/// The layers on air in a `STATE` reply, for VizRS Live (K12): `[{layer, page, name?, scene?}]`.
+/// VizRS reports a page as an object (`{id, number, name}`) or, in older builds, as its number.
+pub fn layers(state_reply: &str) -> Vec<Value> {
+    let Some(rest) = state_reply.strip_prefix("OK") else { return Vec::new() };
+    let Ok(state) = json::parse(rest.trim()) else { return Vec::new() };
+    let layers = state.get("layers").and_then(Value::as_array).unwrap_or(&[]);
+    layers
+        .iter()
+        .filter_map(|l| {
+            let name = l.get("layer")?;
+            let page = l.get("page");
+            let number = match page {
+                Some(page @ Value::Object(_)) => page.get("number").map(js_string),
+                Some(page) => Some(js_string(page)),
+                None => None,
+            };
+            let mut members = vec![("layer".to_owned(), name.clone()), ("page".to_owned(), number.map_or(Value::Null, Value::from))];
+            for (field, from) in [("name", "name"), ("scene", "scene")] {
+                let value = match page {
+                    Some(page @ Value::Object(_)) => page.get(from).cloned(),
+                    _ => None,
+                }
+                .or_else(|| l.get(from).cloned());
+                if let Some(value @ Value::String(_)) = value {
+                    members.push((field.to_owned(), value));
+                }
+            }
+            Some(Value::Object(members))
+        })
+        .collect()
+}
+
 /// The `STATE` reply of an antenna (`prefix` `@N ` = a channel's).
 pub fn state(address: &str, token: &str, prefix: &str) -> Result<String, String> {
     let mut connection = Connection::open(address)?;
@@ -299,6 +331,8 @@ impl Timeline {
 
 /// Clip events of one channel, sent in order.
 pub struct ChannelEvents {
+    /// The ErsatzTV channel these events belong to (the as-run log, K14).
+    channel: String,
     config: Arc<Config>,
     /// Graphics rules; VizRS Live replaces them (src/graphics.rs), from the next clip.
     rules: RwLock<Arc<ClipRules>>,
@@ -309,7 +343,7 @@ pub struct ChannelEvents {
 }
 
 impl ChannelEvents {
-    pub fn new(config: Arc<Config>, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) -> Arc<ChannelEvents> {
+    pub fn new(config: Arc<Config>, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>, channel: String) -> Arc<ChannelEvents> {
         let (queue, batches) = mpsc::channel::<Batch>();
         let sender_config = Arc::clone(&config);
         thread::Builder::new()
@@ -335,6 +369,7 @@ impl ChannelEvents {
         }
         let rules = RwLock::new(Arc::new(ClipRules::of(&config, ads, shows)));
         let events = Arc::new(ChannelEvents {
+            channel,
             config,
             rules,
             state: Mutex::new(State::default()),
@@ -372,11 +407,26 @@ impl ChannelEvents {
     /// `custom_commands` overrides on_clip for this specific session (e.g. from
     /// ?take=ID&fields=...), `timing` its times (`at=`, `out=`, `ref=`).
     pub fn session(&self, ctx: &ClipContext, custom_commands: Option<&[String]>, timing: Option<Timing>) {
-        {
+        let item = format!("{}|{}", ctx.source, ctx.start);
+        let started = {
             let mut state = self.state();
             state.active += 1;
             state.gap_generation += 1;
-            state.last_item = Some(format!("{}|{}", ctx.source, ctx.start));
+            let started = state.last_item.as_deref() != Some(item.as_str());
+            state.last_item = Some(item);
+            started
+        };
+        // The as-run log (K14): the item goes on the air with this, its first session.
+        if started {
+            crate::asrun::log(
+                &self.config.etv_config,
+                &self.channel,
+                &crate::asrun::Entry::of(crate::asrun::ITEM_START).title(&ctx.title).detail(if ctx.stop.is_empty() {
+                    String::new()
+                } else {
+                    format!("do {}", ctx.stop)
+                }),
+            );
         }
         self.clip(ctx, custom_commands, timing);
     }
@@ -384,14 +434,14 @@ impl ChannelEvents {
     /// A session ended. When no session follows by the item's stop (ErsatzTV
     /// runs ahead of the clock), the next item has no VizRS element: an ad.
     pub fn ended(self: &Arc<Self>, ctx: &ClipContext) {
-        let generation = {
+        let (generation, ad_after) = {
             let mut state = self.state();
             state.active = state.active.saturating_sub(1);
             state.gap_generation += 1;
-            if !self.config.ad_without_element || state.active > 0 {
+            if state.active > 0 {
                 return;
             }
-            state.gap_generation
+            (state.gap_generation, self.config.ad_without_element)
         };
 
         let key = format!("{}|{}", ctx.source, ctx.start);
@@ -405,7 +455,16 @@ impl ChannelEvents {
                 let state = events.state();
                 state.gap_generation == generation && state.active == 0 && state.last_item.as_deref() == Some(key.as_str())
             };
-            if gap {
+            if !gap {
+                return;
+            }
+            // The as-run log (K14): no session took the item over, so it is over.
+            crate::asrun::log(
+                &events.config.etv_config,
+                &events.channel,
+                &crate::asrun::Entry::of(crate::asrun::ITEM_END).title(&ctx.title),
+            );
+            if ad_after {
                 events.ad(&ctx);
             }
         });
@@ -910,7 +969,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows));
+        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into());
 
         // Clip matching show "Wiadomości"
         let ctx_news = ClipContext {
@@ -960,7 +1019,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows));
+        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into());
 
         // ErsatzTV transcodes the item 30 s before it is on air: its frames
         // show the graphics of now, so TAKE and OUT go by the transcode.
@@ -1012,7 +1071,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        ChannelEvents::new(config, Arc::new(ads), Arc::new(shows))
+        ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into())
     }
 
     #[test]
@@ -1123,6 +1182,19 @@ mod tests {
     }
 
     #[test]
+    fn layers_on_air_for_the_panel() {
+        let reply = r#"OK {"layers":[{"layer":"main","page":{"number":1001,"name":"belka"}},{"layer":"bug","page":"7"}]}"#;
+        let on = layers(reply);
+        assert_eq!(on.len(), 2);
+        assert_eq!(on[0].get("layer").and_then(Value::as_str), Some("main"));
+        assert_eq!(on[0].get("page").and_then(Value::as_str), Some("1001"));
+        assert_eq!(on[0].get("name").and_then(Value::as_str), Some("belka"));
+        assert_eq!(on[1].get("page").and_then(Value::as_str), Some("7"));
+        assert!(on[1].get("name").is_none());
+        assert!(layers("ERR nope").is_empty() && layers("OK {}").is_empty());
+    }
+
+    #[test]
     fn taken_pages_for_out() {
         let commands = ["TAKE 4001 headline=a|b=c".into(), "UPDATE 2001 t=x".into(), "take 3001,4001".into(), "TAKE".into()];
         assert_eq!(taken_pages(&commands), ["4001", "3001"]);
@@ -1140,7 +1212,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows));
+        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into());
 
         let now = time::now_ms();
         let item = |source: &str, length: i64| ClipContext {

@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -236,4 +237,121 @@ test("the panel tells publishers where to send: RTMP server and key, SRT address
   ]);
   assert.equal(of("7")[0].key, "drugi", "a channel with only a listener is listed too");
   assert.ok(body.channels.filter((c) => !["4", "7"].includes(c.number)).every((c) => c.inputs.length === 0), "other channels: no inputs");
+});
+
+// K12–K17 of VizRS Live's PLAN-mcr: the layers on air, TAKE / CONTINUE / OUT by
+// hand, the as-run log and the alarm webhook. `features` of the state says which
+// of them this build has, so an older sidecar never breaks a newer panel.
+async function fakeVizrs(layers = []) {
+  const received = [];
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let index;
+      while ((index = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        received.push(line);
+        socket.write(line.endsWith("STATE") ? `OK ${JSON.stringify({ layers })}\n` : "OK {}\n");
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    received,
+    address: `127.0.0.1:${server.address().port}`,
+    close: () => {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
+}
+
+test("the state carries the layers on air and what this build can do", async (t) => {
+  const vizrs = await fakeVizrs([{ layer: "main", page: { number: 101, name: "belka" } }, { layer: "bug", page: "4001" }]);
+  t.after(vizrs.close);
+  const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
+
+  const state = (await api("GET", "state")).body;
+  assert.deepEqual(state.features, ["layers", "take", "asrun"], "no webhook without one configured");
+  const ch = state.channels.find((c) => c.number === "4");
+  // The background refresh reads STATE every two seconds.
+  const layers = await (async () => {
+    for (let i = 0; i < 40; i++) {
+      const now = (await api("GET", "state")).body.channels.find((c) => c.number === "4")?.layers ?? [];
+      if (now.length) return now;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return [];
+  })();
+  assert.ok(ch, "the channels of ErsatzTV are in the state");
+  assert.equal(layers.length, 2);
+  assert.equal(layers[0].layer, "main");
+  assert.equal(layers[0].page, "101");
+  assert.equal(layers[0].name, "belka");
+  assert.ok(layers[0].since > 0, "since when the page is on that layer");
+  assert.equal(layers[1].page, "4001");
+});
+
+test("TAKE, CONTINUE and OUT by hand reach VizRS and the as-run log", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const { api, folder } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
+
+  assert.equal((await api("POST", "channels/4/take", { page: "101" })).status, 200);
+  assert.equal((await api("POST", "channels/4/continue", { layer: 10 })).status, 200);
+  assert.equal((await api("POST", "channels/4/out", { layer: 10 })).status, 200);
+  assert.ok(vizrs.received.includes("TAKE 101"), vizrs.received.join(" | "));
+  assert.ok(vizrs.received.includes("CONTINUE 10") && vizrs.received.includes("OUT 10"));
+
+  assert.equal((await api("POST", "channels/4/take", {})).status, 400, "a page is needed");
+  assert.equal((await api("POST", "channels/4/out", {})).status, 400, "a layer is needed");
+  assert.equal((await api("POST", "channels/x y/take", { page: "1" })).status, 400);
+
+  const day = new Date().toISOString().slice(0, 10);
+  const log = (await api("GET", `asrun?channel=4&day=${day}`)).body;
+  assert.equal(log.day, day);
+  assert.equal(log.tz, "UTC");
+  const kinds = log.entries.map((e) => e.kind);
+  assert.deepEqual(kinds, ["take", "continue", "out"], JSON.stringify(log.entries));
+  assert.equal(log.entries[0].page, "101");
+  assert.equal(log.entries[0].operator, "MCR 1", "the operator as VizRS Live sent it (it adds its own prefix)");
+  assert.equal(log.entries[1].layer, 10);
+  assert.ok(existsSync(path.join(folder, "vizrs-live", "asrun", `asrun-${day}.jsonl`)));
+
+  // Another channel has its own log; a bad day is refused.
+  assert.deepEqual((await api("GET", `asrun?channel=9&day=${day}`)).body.entries, []);
+  assert.equal((await api("GET", "asrun?channel=4&day=2026-11-9")).status, 400);
+});
+
+test("alarms of the as-run log reach the webhook", async (t) => {
+  const alerts = [];
+  const hook = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      alerts.push(JSON.parse(body));
+      res.writeHead(204).end();
+    });
+  });
+  await new Promise((resolve) => hook.listen(0, "127.0.0.1", resolve));
+  t.after(() => hook.close());
+  const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
+
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "webhook"]);
+  assert.equal((await api("POST", "channels/4/hold")).status, 200);
+  for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(alerts.length, 1, "holding a channel is an alarm");
+  assert.equal(alerts[0].kind, "hold");
+  assert.equal(alerts[0].channel, "4");
+  assert.ok(alerts[0].t > 0);
+  // Letting the studio back on is no alarm.
+  assert.equal((await api("POST", "channels/4/release")).status, 200);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(alerts.length, 1);
 });

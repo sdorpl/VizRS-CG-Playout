@@ -786,6 +786,54 @@ z EPG, `inputs` (niżej), ramówkę po kanałach i zdarzenia.
 - **Zdarzenia**: nadawca połączony, sygnał, koniec sygnału, odrzucony drugi
   sygnał albo zły token, decyzje operatorów; ostatnie 100, w pamięci.
 
+**Co umie ta wersja (`features`).** `/api/live/state` ma na najwyższym poziomie
+listę `features` – VizRS Live pokazuje tylko to, co sidecar zgłosi, więc
+starsza wersja sidecara nie psuje nowszego panelu (brak pola = brak elementu
+w UI). Dziś: `layers` (warstwy na antenie), `take` (ręczne TAKE / CONTINUE /
+OUT), `asrun` (dziennik emisji) i `webhook` – ten ostatni tylko, gdy ustawiony
+jest `alert_webhook`. Kontrakt uzgodniony z VizRS Live (jego DOKUMENTACJA §3,
+punkty K12–K17 planu PLAN-mcr).
+
+**Warstwy na antenie (K12).** Każdy kanał w `/api/live/state` ma `layers`:
+`[{layer, page, name?, scene?, since, manual?}]` – to, co VizRS ma na antenie
+kanału (`STATE`, przy `channel_buses` z przedrostkiem `@<kanał>`). Sidecar
+odpytuje anteny w tle co 2 s (wątek `panel-layers`), więc odpowiedź stanu nigdy
+nie czeka na TCP. `since` to chwila (ms), od której na tej warstwie jest ta sama
+strona; `manual: true` oznacza stronę wprowadzoną ręcznie z panelu (niżej).
+Bez adresu VizRS wątek nie startuje i `layers` jest puste.
+
+**Ręczne TAKE / CONTINUE / OUT (K13).** `POST /api/live/channels/<n>/take`
+z `{"page": "101"}`, `/continue` i `/out` z `{"layer": …}` (albo `{"layer":
+"nazwa"}`) wysyłają jedną komendę na antenę kanału i zwracają `{"ok": true,
+"reply": "OK …"}`; odpowiedź VizRS inna niż `OK` to 502, brak strony albo
+warstwy – 400. Strona wprowadzona ręcznie zostaje na antenie, dopóki ktoś jej
+nie zdejmie: reguły grafiki wprowadzają swoje strony na własnych warstwach, a
+`OUT` tej warstwy oddaje ją regułom. Każda komenda trafia do dziennika emisji
+i do zdarzeń kanału z nazwą stanowiska.
+
+**Dziennik emisji (as-run, K14).** `GET /api/live/asrun?channel=<n>&day=<RRRR-MM-DD>`
+zwraca `{channel, day, tz: "UTC", keep_days, store, entries: [{t, at, kind,
+channel, title?, page?, layer?, operator?, detail?}]}`, najstarsze pierwsze.
+Zapis prowadzi [src/asrun.rs](../src/asrun.rs): jeden plik na dobę
+(`<etv_config>/vizrs-live/asrun/asrun-RRRR-MM-DD.jsonl`), dni starsze niż 30
+znikają same przy pierwszym wpisie nowego dnia. **Dni są w UTC**, jak wszystkie
+czasy sidecara – VizRS Live pisze to obok daty. Rodzaje wpisów: `item_start`
+i `item_end` (pozycja kanału weszła na antenę i zeszła – z danych szablonu
+ErsatzTV), `take`, `continue`, `out` (ręczne komendy), `hold` i `release`
+(ZDEJMIJ / WPUŚĆ studia), `live_on` i `live_off` (nadawca połączony,
+sygnał zakończony), `graphics_off` i `graphics_on` (cała grafika zdjęta
+i przywrócona). Bez `etv_config` nie ma gdzie pisać i dziennika nie ma
+(`store: false`), ale alarmy niżej i tak wychodzą.
+
+**Alarmy poza przeglądarką (K17).** `alert_webhook` (env
+`VIZRS_ALERT_WEBHOOK`): przy wpisie dziennika uznanym za alarm – `live_off`
+(utrata sygnału), `hold` (studio wstrzymane), `graphics_off` (grafika zdjęta) –
+sidecar wysyła w tle `POST` z `{"kind", "channel", "text", "t"}`. Wysyłka nigdy
+nie wstrzymuje sidecara: idzie osobnym wątkiem, a błąd trafia tylko do logu.
+Alarmy w samej przeglądarce (banner, dźwięk) liczy VizRS Live z danych, które
+już ma. `settings.graphics_off_since` w stanie mówi, od kiedy grafika jest
+zdjęta (do alarmu „grafika zdjęta dłużej niż N minut”).
+
 Decyzje kanałów i ustawienia są w `<etv_config>/vizrs-live/control.json`.
 Dane z ErsatzTV (kanały, kolekcje, EPG z `/iptv/xmltv.xml`) sidecar pobiera
 co 30 s i po każdej zmianie audycji.
@@ -1583,6 +1631,9 @@ samym JSON-em; błędny JSON w env trafia do logu i jest pomijany, błędny wpis
 w pliku zatrzymuje start z nazwą pola): §1, Audycje na żywo w ramówce.
 `panel_token` (env `VIZRS_PANEL_TOKEN`; ustawiona pusta zmienna wyłącza
 token z pliku): token live API dla VizRS Live, puste = API wyłączone (§1, Live API).
+`alert_webhook` (env `VIZRS_ALERT_WEBHOOK`): adres, pod który idą alarmy
+dziennika emisji (utrata sygnału, wstrzymane studio, zdjęta grafika); puste =
+bez alarmów poza przeglądarką (§1, Live API).
 `ingest` (env `VIZRS_INGEST`, ta sama wartość co w usłudze odbiorników; tylko
 pierwsze wypełnienie – po zapisie wejść w VizRS Live obowiązuje `inputs.json`),
 `ingest_public` (env `VIZRS_INGEST_PUBLIC`: host, pod którym nadawcy widzą

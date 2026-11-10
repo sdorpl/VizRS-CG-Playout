@@ -51,6 +51,8 @@ services:
       VIZRS_LIVE_VIZRS_URL: ${VIZRS_LIVE_VIZRS_URL:-:${VIZRS_PORT:-8788}}
       VIZRS_LIVE_VIZRS_OUTPUT_TOKEN: ${VIZRS_OUTPUT_TOKEN:-vizrs-output-change-me}
       VIZRS_LIVE_VIZRS_CHANNELS: ${VIZRS_CHANNEL_BUSES:-0}
+      # Mozaika kanałów w „Na antenie” (K10): ile podglądów naraz (0 = bez mozaiki)
+      VIZRS_LIVE_MULTIVIEW_MAX: ${VIZRS_LIVE_MULTIVIEW_MAX:-4}
       VIZRS_LIVE_CG_URL: http://cg:7700
       VIZRS_LIVE_CG_TOKEN: ${VIZRS_PANEL_TOKEN:?ustaw VIZRS_PANEL_TOKEN (live API sidecara)}
     ports:

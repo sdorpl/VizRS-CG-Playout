@@ -147,6 +147,8 @@ services:
       VIZRS_LIVE_SHOWS: ${VIZRS_LIVE_SHOWS:-}
       # Live API on :7700/api/live for VizRS Live (studio on/off air, live programmes in ErsatzTV); empty = off.
       VIZRS_PANEL_TOKEN: ${VIZRS_PANEL_TOKEN:-}
+      # Where alarms of the as-run log go (signal lost, studio held, graphics off); empty = nowhere.
+      VIZRS_ALERT_WEBHOOK: ${VIZRS_ALERT_WEBHOOK:-}
     volumes:
       - ersatztv-config:/etv-config
       - vizrs-client:/vizrs-client

@@ -153,6 +153,8 @@ pub struct Config {
     pub live_shows: Vec<LiveShow>,
     /// Token of the live API (`/api/live/*`, for VizRS Live); "" = API off.
     pub panel_token: String,
+    /// Where alarms of the as-run log go (K17): `POST {kind, channel, text, t}`; "" = nowhere.
+    pub alert_webhook: String,
     pub browser: String,
     pub no_sandbox: bool,
     /// Extra Chromium flags, e.g. fewer raster threads on small ARM hosts.
@@ -203,6 +205,7 @@ impl Default for Config {
             ingest_srt_port: None,
             live_shows: Vec::new(),
             panel_token: String::new(),
+            alert_webhook: String::new(),
             browser: String::new(),
             no_sandbox: false,
             browser_args: Vec::new(),
@@ -412,6 +415,7 @@ impl Config {
                     "ingest_public" => config.ingest_public = string(value, key)?.trim().to_owned(),
                     "live_shows" => config.live_shows = live_shows(value)?,
                     "panel_token" => config.panel_token = string(value, key)?.trim().to_owned(),
+                    "alert_webhook" => config.alert_webhook = string(value, key)?.trim().to_owned(),
                     "browser" => config.browser = string(value, key)?,
                     "no_sandbox" => config.no_sandbox = boolean(value, key)?,
                     "browser_args" => {
@@ -566,6 +570,9 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_PANEL_TOKEN") {
             config.panel_token = v.trim().to_owned();
+        }
+        if let Some(v) = env("VIZRS_ALERT_WEBHOOK") {
+            config.alert_webhook = v.trim().to_owned();
         }
         if let Some(v) = env("VIZRS_BROWSER").filter(|v| !v.is_empty()) {
             config.browser = v;

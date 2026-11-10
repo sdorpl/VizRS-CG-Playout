@@ -20,6 +20,12 @@
 //   GET    /api/live/inputs               studio inputs (listeners) and the ports they may use
 //   PUT    /api/live/inputs               {"listeners":[{"channel","url"}]}: inputs.json; the
 //                                         listener service takes them over within seconds
+//   POST   /api/live/channels/<n>/take    {"page": "101"} one page on the channel's antenna (K13)
+//   POST   /api/live/channels/<n>/continue {"layer": …} · /out {"layer": …} one layer
+//   GET    /api/live/asrun?channel=&day=  the as-run log of a day (K14, src/asrun.rs)
+//
+// `features` of `/api/live/state` says what this build can do, so an older
+// sidecar never breaks a newer VizRS Live: it shows only what is listed.
 //
 // The token (`panel_token`) comes in `X-Panel-Token` or `Authorization:
 // Bearer`. Requests that change something are refused when a browser says they
@@ -60,6 +66,8 @@ struct Settings {
     channels: BTreeMap<String, ChannelControl>,
     /// All graphics taken off the air (ZDEJMIJ GRAFIKĘ in VizRS Live), on every channel.
     graphics_off: bool,
+    /// When they were taken off (epoch ms), for the alarms of VizRS Live (K17).
+    graphics_off_since: Option<i64>,
 }
 
 impl Settings {
@@ -71,6 +79,7 @@ impl Settings {
             ("library", self.library.map_or(Value::Null, Value::from)),
             ("channels", Value::Object(channels.collect())),
             ("graphics_off", self.graphics_off.into()),
+            ("graphics_off_since", self.graphics_off_since.map_or(Value::Null, |t| (t as f64).into())),
         ]);
         format!("{value}\n")
     }
@@ -81,6 +90,7 @@ impl Settings {
             library: value.get("library").and_then(Value::as_f64).filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u64),
             channels: BTreeMap::new(),
             graphics_off: value.get("graphics_off").and_then(Value::as_bool).unwrap_or(false),
+            graphics_off_since: value.get("graphics_off_since").and_then(Value::as_f64).map(|t| t as i64),
         };
         if let Some(Value::Object(channels)) = value.get("channels") {
             for (number, c) in channels {
@@ -145,6 +155,8 @@ impl Step {
 
 pub struct Panel {
     token: String,
+    /// The sidecar's configuration: VizRS of each channel (layers, TAKE/OUT) and the alert webhook.
+    config: Config,
     /// Live ingest listeners in force: `inputs.json` (VizRS Live) or `VIZRS_INGEST`, and whether from the file.
     listeners: Mutex<(Vec<crate::listener::Listener>, bool)>,
     /// How publishers reach the listeners: host, host ports of the first port of each range.
@@ -156,7 +168,22 @@ pub struct Panel {
     etv: Etv,
     settings: Mutex<Settings>,
     cache: Mutex<Cache>,
+    /// The layers on air of each channel (K12), refreshed in the background.
+    layers: Mutex<Layers>,
 }
+
+/// What VizRS has on the antenna of each channel, and since when.
+#[derive(Default)]
+struct Layers {
+    by_channel: BTreeMap<String, Vec<Value>>,
+    /// `channel|layer` → the page there and when it was first seen (epoch ms).
+    since: BTreeMap<String, (String, i64)>,
+    /// `channel|layer` of pages a person took in from VizRS Live (K13).
+    manual: BTreeMap<String, String>,
+}
+
+/// How often the layers on air are read from VizRS (`STATE` per channel).
+const LAYERS_EVERY: Duration = Duration::from_secs(2);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -257,6 +284,8 @@ impl Panel {
             etv: Etv { url: config.etv_url.clone(), config: config.etv_config.clone() },
             settings: Mutex::new(Settings::default()),
             cache: Mutex::new(Cache::default()),
+            layers: Mutex::new(Layers::default()),
+            config: config.clone(),
         });
         if let Some(path) = panel.control_path() {
             match fs::read_to_string(&path) {
@@ -286,6 +315,15 @@ impl Panel {
         }
         if panel.enabled() {
             crate::info!("live API on /api/live");
+            if !panel.config.vizrs.address.is_empty() {
+                let watcher = Arc::clone(&panel);
+                let _ = thread::Builder::new().name("panel-layers".into()).spawn(move || {
+                    loop {
+                        watcher.refresh_layers();
+                        thread::sleep(LAYERS_EVERY);
+                    }
+                });
+            }
             if panel.etv.configured() {
                 let refresher = Arc::clone(&panel);
                 let _ = thread::Builder::new().name("panel-etv".into()).spawn(move || {
@@ -441,6 +479,147 @@ impl Panel {
         }
     }
 
+    /// The channels the panel knows: ErsatzTV's, those with a source, a decision or a listener.
+    fn known_channels(&self) -> Vec<String> {
+        let mut numbers: Vec<String> = lock(&self.cache).channels.iter().map(|(n, _)| n.clone()).collect();
+        let settings = lock(&self.settings);
+        let extra = settings.channels.keys().cloned().chain(lock(&self.listeners).0.iter().map(|l| l.channel.clone()).collect::<Vec<_>>());
+        for number in extra {
+            if !numbers.contains(&number) {
+                numbers.push(number);
+            }
+        }
+        sort_channels(&mut numbers);
+        numbers
+    }
+
+    /// `STATE` of every channel's antenna → the layers on air (K12), with the
+    /// moment each page went on there and whether a person took it in (K13).
+    fn refresh_layers(&self) {
+        let now = crate::time::now_ms();
+        for channel in self.known_channels() {
+            let config = self.config.for_channel(&channel);
+            let Ok(reply) = crate::vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix) else {
+                continue;
+            };
+            let mut layers = crate::vizrs::layers(&reply);
+            let mut state = lock(&self.layers);
+            let mut keys = Vec::new();
+            for layer in &mut layers {
+                let name = layer.get("layer").map(crate::template::js_string).unwrap_or_default();
+                let page = layer.get("page").map(crate::template::js_string).unwrap_or_default();
+                let key = format!("{channel}|{name}");
+                keys.push(key.clone());
+                let since = match state.since.get(&key) {
+                    Some((seen, at)) if *seen == page => *at,
+                    _ => {
+                        state.since.insert(key.clone(), (page.clone(), now));
+                        now
+                    }
+                };
+                let manual = state.manual.get(&key).is_some_and(|p| *p == page);
+                if let Value::Object(members) = layer {
+                    members.push(("since".into(), (since as f64).into()));
+                    if manual {
+                        members.push(("manual".into(), true.into()));
+                    }
+                }
+            }
+            state.since.retain(|key, _| !key.starts_with(&format!("{channel}|")) || keys.contains(key));
+            state.manual.retain(|key, _| !key.starts_with(&format!("{channel}|")) || keys.contains(key));
+            state.by_channel.insert(channel, layers);
+        }
+    }
+
+    fn layers_of(&self, channel: &str) -> Vec<Value> {
+        lock(&self.layers).by_channel.get(channel).cloned().unwrap_or_default()
+    }
+
+    /// `POST /api/live/channels/<n>/take|continue|out` (K13): one page or layer
+    /// on the channel's antenna, by hand from VizRS Live. A page taken in this
+    /// way stays until it is taken out: the rules put their own pages on other
+    /// layers, and the next `OUT` of this one lets them have it back.
+    fn command(&self, channel: &str, action: &str, body: &Value, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        if !Self::valid_channel(channel) {
+            return fail(stream, 400, "zły numer kanału");
+        }
+        let page = body.get("page").map(crate::template::js_string).unwrap_or_default();
+        let layer = body.get("layer").map(crate::template::js_string).unwrap_or_default();
+        let target = if action == "take" { page.clone() } else { layer.clone() };
+        if target.trim().is_empty() || target.contains(|c: char| c.is_whitespace()) {
+            return fail(stream, 400, if action == "take" { "podaj stronę (page)" } else { "podaj warstwę (layer)" });
+        }
+        let verb = match action {
+            "take" => "TAKE",
+            "continue" => "CONTINUE",
+            _ => "OUT",
+        };
+        let config = self.config.for_channel(channel);
+        let command = format!("{verb} {target}");
+        match crate::vizrs::send(&config.vizrs.address, &config.vizrs.token, &config.command_prefix, std::slice::from_ref(&command), false)
+        {
+            Ok(sent) => {
+                let answer = sent.replies.first().map(|(_, r)| r.clone()).unwrap_or_default();
+                if !answer.starts_with("OK") {
+                    return fail(stream, 502, &format!("VizRS {command}: {answer}"));
+                }
+                let entry = crate::asrun::Entry::of(match action {
+                    "take" => crate::asrun::TAKE,
+                    "continue" => crate::asrun::CONTINUE,
+                    _ => crate::asrun::OUT,
+                })
+                .page(page.clone())
+                .layer(body.get("layer").and_then(Value::as_f64))
+                .operator(who);
+                crate::asrun::log(&self.etv_config, channel, &entry);
+                self.record(ingest, who, channel, &format!("{command} (ręcznie z panelu)"));
+                // The page a person took in is theirs until it goes out.
+                {
+                    // Which layer VizRS put the page on is known at the next refresh;
+                    // until then the page itself marks the layer as a person's.
+                    let mut state = lock(&self.layers);
+                    match action {
+                        "take" => {
+                            state.manual.insert(format!("{channel}|{page}"), page.clone());
+                        }
+                        "out" => {
+                            state.manual.remove(&format!("{channel}|{layer}"));
+                        }
+                        _ => {}
+                    }
+                }
+                reply(stream, 200, &json::object([("ok", true.into()), ("reply", answer.as_str().into())]))
+            }
+            Err(e) => fail(stream, 502, &format!("VizRS: {e}")),
+        }
+    }
+
+    /// `GET /api/live/asrun?channel=<n>&day=<YYYY-MM-DD>` (K14).
+    fn asrun(&self, request: &Request, stream: &mut TcpStream) -> io::Result<()> {
+        let channel = request.param("channel").unwrap_or("").to_owned();
+        let day = request.param("day").unwrap_or("").to_owned();
+        let day = if day.is_empty() { crate::asrun::day_of(crate::time::now_ms()) } else { day };
+        if !Self::valid_channel(&channel) {
+            return fail(stream, 400, "zły numer kanału");
+        }
+        if !crate::asrun::valid_day(&day) {
+            return fail(stream, 400, "zły dzień (RRRR-MM-DD)");
+        }
+        let entries = crate::asrun::read(&self.etv_config, &channel, &day);
+        reply(
+            stream,
+            200,
+            &json::object([
+                ("channel", channel.as_str().into()),
+                ("day", day.as_str().into()),
+                ("tz", "UTC".into()),
+                ("keep_days", (crate::asrun::KEEP_DAYS as f64).into()),
+                ("store", (!self.etv_config.is_empty()).into()),
+                ("entries", Value::Array(entries)),
+            ]),
+        )
+    }
+
     fn shows(&self) -> io::Result<Vec<LiveShow>> {
         if self.etv_config.is_empty() {
             return Ok(self.configured.clone());
@@ -485,6 +664,10 @@ impl Panel {
                 self.hold(channel, *action == "hold", &mut stream, ingest, &who)
             }
             ("PUT", ["channels", channel]) => self.put_channel(channel, &body, &mut stream, ingest, &who),
+            ("POST", ["channels", channel, action @ ("take" | "continue" | "out")]) => {
+                self.command(channel, action, &body, &mut stream, ingest, &who)
+            }
+            ("GET", ["asrun"]) => self.asrun(request, &mut stream),
             ("POST", ["channels", channel, "rebuild"]) => {
                 let result = self.etv.reset_playout(channel);
                 if result.is_ok() {
@@ -516,8 +699,14 @@ impl Panel {
         let next = {
             let mut settings = lock(&self.settings);
             settings.graphics_off = off;
+            settings.graphics_off_since = off.then(crate::time::now_ms);
             settings.clone()
         };
+        crate::asrun::log(
+            &self.etv_config,
+            "",
+            &crate::asrun::Entry::of(if off { crate::asrun::GRAPHICS_OFF } else { crate::asrun::GRAPHICS_ON }).operator(who),
+        );
         self.record(
             ingest,
             who,
@@ -554,12 +743,22 @@ impl Panel {
         ])
     }
 
+    /// What this build can do, for VizRS Live (an older sidecar simply lists less).
+    fn features(&self) -> Vec<Value> {
+        let mut features = vec![Value::from("layers"), Value::from("take"), Value::from("asrun")];
+        if !self.config.alert_webhook.is_empty() {
+            features.push("webhook".into());
+        }
+        features
+    }
+
     fn settings_json(&self) -> Value {
         let settings = lock(&self.settings);
         json::object([
             ("library", settings.library.map_or(Value::Null, Value::from)),
             ("store", (!self.etv_config.is_empty()).into()),
             ("graphics_off", crate::frames::graphics_off().into()),
+            ("graphics_off_since", settings.graphics_off_since.map_or(Value::Null, |t| (t as f64).into())),
         ])
     }
 
@@ -610,6 +809,7 @@ impl Panel {
                     ("now", current.map_or(Value::Null, |p| programme_json(p, in_slot))),
                     ("next_live", next_live.map_or(Value::Null, |p| programme_json(p, true))),
                     ("inputs", Value::Array(self.inputs_of(number))),
+                    ("layers", Value::Array(self.layers_of(number))),
                 ])
             })
             .collect();
@@ -620,6 +820,7 @@ impl Panel {
             .map(|(at, channel, text)| json::object([("at", (at as f64).into()), ("channel", channel.into()), ("text", text.into())]));
         json::object([
             ("version", env!("CARGO_PKG_VERSION").into()),
+            ("features", Value::Array(self.features())),
             ("now", (now as f64).into()),
             ("ingest", ingest.enabled().into()),
             ("anytime", self.anytime.into()),
@@ -715,6 +916,11 @@ impl Panel {
     }
 
     fn hold(&self, channel: &str, hold: bool, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        crate::asrun::log(
+            &self.etv_config,
+            channel,
+            &crate::asrun::Entry::of(if hold { crate::asrun::HOLD } else { crate::asrun::RELEASE }).operator(who),
+        );
         if !Self::valid_channel(channel) {
             return fail(stream, 400, "kanał?");
         }
@@ -983,7 +1189,8 @@ mod tests {
 
     #[test]
     fn settings_round_trip() {
-        let mut settings = Settings { library: Some(7), channels: BTreeMap::new(), graphics_off: true };
+        let mut settings =
+            Settings { library: Some(7), channels: BTreeMap::new(), graphics_off: true, graphics_off_since: Some(1_700_000_000_000) };
         settings.channels.insert("4".into(), ChannelControl { hold: true, anytime: Some(false) });
         assert_eq!(Settings::from_json(&settings.to_json()).unwrap(), settings);
         assert_eq!(Settings::from_json("{}").unwrap(), Settings::default());
