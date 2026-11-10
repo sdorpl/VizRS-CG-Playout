@@ -646,6 +646,21 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    w live API (niżej) ma `"hold":true` i `"live":false` mimo sygnału, a jego
    `GET /ingest` odpowiada jak bez sygnału (bieżący czytelnik kończy się
    w ciągu sekundy).
+   **Ciągłość przebiegów live:** sidecar trzyma ostatnie 20 s sygnału (całe
+   grupy obrazów, wg PTS; najwyżej 32 MiB) i kursor kanału. Czytelnik z `take`
+   (przebieg live nakładki) zaczyna od klatki kluczowej najbliższej kursorowi,
+   który zostawił poprzedni przebieg (jego klatka startowa + `take`), a kursor
+   przesuwa się o `take`. ffmpeg czyta wtedy od razu sekundy stracone na start
+   i kanał trzyma czas rzeczywisty przez kolejne kawałki ErsatzTV (44 s). Bez
+   tego każdy przebieg zaczynał od bieżącej chwili, a start nowego ffmpeg
+   (ok. 1 s) i przerwa ErsatzTV między kawałkami (ok. 0,6 s) przepadały:
+   zmierzone 0,96× czasu rzeczywistego, zapas HLS kanału topniał i odtwarzacze
+   z czasem coraz częściej stawały. Kursor dalej niż 12 s za sygnałem (kanał
+   wstrzymany, przebiegi zbyt wolne), brak kursora (pierwszy przebieg, nowy
+   nadawca) i źródło bez PTS = bieżąca chwila, jak każdy inny czytelnik
+   (`GET /ingest`, slot). Log sidecara: `ingest: channel N: live run of 44.0 s
+   from 1.2 s behind the source`. Live na kanale jest przez to o te sekundy
+   (zwykle 1–2 s) dalej od źródła.
 3. **Przejęcie** (`VIZRS_FFMPEG_INGEST=1` w ErsatzTV, [src/takeover.rs](../src/takeover.rs)):
    nakładka ffmpeg pyta sidecara o stan kanału przy każdym transkodowaniu
    kawałka do HLS (`-f hls` z `-t`, wideo kodowane, nie kopiowane). Kanał to
@@ -659,7 +674,8 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
      2 s `SIGKILL` (zawieszony ffmpeg, np. CUDA z pipe'em grafiki, nie może
      trzymać live poza anteną ani pamięci GPU – wcześniej nakładka czekała bez
      końca, a ErsatzTV Next restartował sesję po „ffmpeg stall”);
-   - przebieg live: wejście `GET /ingest?channel=N`, skalowanie z zachowaniem
+   - przebieg live: wejście `GET /ingest?channel=N&take=<pozostały czas kawałka, s>`
+     (ciągłość niżej), skalowanie z zachowaniem
      proporcji i czarne pasy do rozmiaru kanału, klatkaż kanału, dźwięk 48 kHz
      stereo (bez ścieżki dźwięku: cisza), grafika VizRS nałożona jak w kawałku
      (te same obszary, §1, Obszar grafiki), a koder, jego opcje, `-r` i opcje
