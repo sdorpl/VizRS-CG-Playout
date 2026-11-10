@@ -171,7 +171,13 @@ test("live takes a piece over: RTMP listener, overlay with graphics, the piece g
   const out = path.join(dir, "transcode", "1");
   mkdirSync(out, { recursive: true });
 
-  const cg = await sidecar(t, { ingest_token: TOKEN, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1 });
+  // The sidecar lists the listeners for the listener service (GET /ingest/listeners): the same VIZRS_INGEST.
+  const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  const cg = await sidecar(
+    t,
+    { ingest_token: TOKEN, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1 },
+    { VIZRS_INGEST: `1=${rtmp}` },
+  );
 
   // ErsatzTV stand-in: the canvas request starts the script element of the item.
   const etv = http.createServer((request, response) => {
@@ -192,7 +198,6 @@ test("live takes a piece over: RTMP listener, overlay with graphics, the piece g
   const etvPort = await listen(etv);
   t.after(() => etv.close());
 
-  const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
   const listener = spawn(WRAPPER, ["vizrs-ingest"], {
     env: { PATH: process.env.PATH, VIZRS_CG_URL: cg.url, VIZRS_INGEST_TOKEN: TOKEN, VIZRS_FFMPEG: FFMPEG, VIZRS_INGEST: `1=${rtmp}` },
     stdio: ["ignore", "ignore", "pipe"],
@@ -276,12 +281,17 @@ test("live programme in the schedule: Remote Stream definition, standby without 
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const etvConfig = path.join(dir, "etv-config");
   mkdirSync(etvConfig);
-  const cg = await sidecar(t, {
-    ingest_token: TOKEN,
-    ingest_anytime: false,
-    etv_config: etvConfig,
-    live_shows: [{ channel: "1", title: "Wiadomości na żywo", duration: "00:30:00", plot: "Ze studia" }],
-  });
+  const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  const cg = await sidecar(
+    t,
+    {
+      ingest_token: TOKEN,
+      ingest_anytime: false,
+      etv_config: etvConfig,
+      live_shows: [{ channel: "1", title: "Wiadomości na żywo", duration: "00:30:00", plot: "Ze studia" }],
+    },
+    { VIZRS_INGEST: `1=${rtmp}` },
+  );
 
   // The definition for a Remote Streams library of ErsatzTV.
   const definition = path.join(etvConfig, "vizrs-live", "1-wiadomosci-na-zywo.yml");
@@ -300,7 +310,6 @@ test("live programme in the schedule: Remote Stream definition, standby without 
   assert.match(probe, /codec_name=aac/);
   assert.match(probe, /duration=N\/A/);
 
-  const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
   const listener = spawn(WRAPPER, ["vizrs-ingest"], {
     env: { PATH: process.env.PATH, VIZRS_CG_URL: cg.url, VIZRS_INGEST_TOKEN: TOKEN, VIZRS_FFMPEG: FFMPEG, VIZRS_INGEST: `1=${rtmp}` },
     stdio: ["ignore", "ignore", "ignore"],
