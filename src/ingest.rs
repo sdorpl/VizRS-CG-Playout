@@ -8,6 +8,10 @@
 //                              until the connection closes
 //   GET  /ingest?channel=1     the live source: PAT, PMT and the stream from
 //                              its last keyframe on; ends with the source
+//   GET  /ingest?channel=1&take=44.000
+//                              the same for a live run of the overlay that is
+//                              to produce `take` seconds: from the keyframe
+//                              nearest to where the run before stopped
 //   GET  /ingest?channel=1&slot=1
 //                              the live slot of a scheduled live programme
 //                              (src/live_shows.rs): the source while live, else
@@ -15,6 +19,16 @@
 //                              so that ErsatzTV's ffprobe of the item works
 //   GET  /ingest/state?channel=1
 //                              {"enabled":…,"anytime":…,"hold":…,"live":…,"audio":…,"video":…}
+//
+// Readers of the overlay's live runs (`take=<seconds>`, src/takeover.rs) go on
+// from where the run before stopped: the sidecar keeps the last `HISTORY` of
+// the source and a cursor in its timestamps (the start keyframe of a run plus
+// what it is to produce), and the next run starts at the keyframe nearest to
+// it. ffmpeg then reads the seconds it lost starting at once, so the channel
+// keeps real time across ErsatzTV's 44 s pieces (each new ffmpeg costs about
+// a second, which a run that starts at the live edge never makes up: 0.96x).
+// A cursor `MAX_LAG` behind the source (runs fallen behind, a held channel)
+// goes back to the live edge, as every other reader starts.
 //
 // The channel is live from the first video keyframe of the source until its
 // connection ends or sends nothing for `IDLE`. One source per channel: a
@@ -37,8 +51,15 @@ use crate::json::{self, Value};
 pub const PACKET: usize = 188;
 /// A source that sends nothing this long has ended.
 pub const IDLE: Duration = Duration::from_secs(5);
-/// Most bytes kept of the current group of pictures for readers that join.
+/// Most bytes kept of the source for readers that join or go on.
 const MAX_BUFFER: usize = 32 * 1024 * 1024;
+/// How much of the source is kept (by its timestamps), whole groups of pictures.
+const HISTORY: f64 = 20.0;
+/// A live run's cursor further than this behind the source starts at the live edge.
+const MAX_LAG: f64 = 12.0;
+/// MPEG timestamps: 90 kHz, 33 bits.
+const PTS_HZ: f64 = 90_000.0;
+const PTS_WRAP: u64 = 1 << 33;
 /// A reader that cannot take the stream this long is dropped.
 const READER_TIMEOUT: Duration = Duration::from_secs(5);
 /// A second of black 320x180 H.264 and silent AAC in MPEG-TS: the live slot without a source.
@@ -84,6 +105,22 @@ fn section(packet: &[u8]) -> Option<&[u8]> {
     section.get(..(3 + length).min(section.len()))
 }
 
+/// PTS of a PES that starts in `data` (the payload of a TS packet), if it has one.
+fn pes_pts(data: &[u8]) -> Option<u64> {
+    if data.len() < 14 || data[..3] != [0, 0, 1] || data[7] & 0x80 == 0 {
+        return None;
+    }
+    let b = &data[9..14];
+    Some(((b[0] as u64 >> 1) & 0x07) << 30 | (b[1] as u64) << 22 | (b[2] as u64 >> 1) << 15 | (b[3] as u64) << 7 | b[4] as u64 >> 1)
+}
+
+/// Seconds from timestamp `b` to `a` (negative when `a` is earlier), across the 33-bit wrap.
+fn pts_seconds(a: u64, b: u64) -> f64 {
+    let d = a.wrapping_sub(b) % PTS_WRAP;
+    let signed = if d >= PTS_WRAP / 2 { d as i64 - PTS_WRAP as i64 } else { d as i64 };
+    signed as f64 / PTS_HZ
+}
+
 /// The video PES in `packet` starts with a picture decoders can start from:
 /// H.264 IDR or SPS, HEVC IRAP or VPS/SPS (a source without the random access flag).
 fn starts_picture(data: &[u8], codec: &str) -> bool {
@@ -121,10 +158,11 @@ pub struct Scanner {
     pub pmt: Vec<u8>,
 }
 
-/// A run of whole packets; `key` = it starts at a video keyframe.
+/// A run of whole packets; `key` = it starts at a video keyframe, `pts` its timestamp.
 #[derive(Debug, PartialEq)]
 pub struct Run {
     pub key: bool,
+    pub pts: Option<u64>,
     pub data: Vec<u8>,
 }
 
@@ -143,17 +181,17 @@ impl Scanner {
             let packet: Vec<u8> = self.partial[at..at + PACKET].to_vec();
             at += PACKET;
             let key = self.scan(&packet);
-            match runs.last_mut() {
-                Some(run) if !key => run.data.extend_from_slice(&packet),
-                _ => runs.push(Run { key, data: packet }),
+            match (runs.last_mut(), key) {
+                (Some(run), None) => run.data.extend_from_slice(&packet),
+                _ => runs.push(Run { key: key.is_some(), pts: key.flatten(), data: packet }),
             }
         }
         self.partial.drain(..at);
         runs
     }
 
-    /// Notes PSI of `packet`; true when it starts a video keyframe.
-    fn scan(&mut self, packet: &[u8]) -> bool {
+    /// Notes PSI of `packet`; Some (with its PTS, if any) when it starts a video keyframe.
+    fn scan(&mut self, packet: &[u8]) -> Option<Option<u64>> {
         let pid = (((packet[1] & 0x1f) as u16) << 8) | packet[2] as u16;
         if pid == 0 {
             if let Some(pat) = section(packet) {
@@ -167,7 +205,7 @@ impl Scanner {
                     }
                 }
             }
-            return false;
+            return None;
         }
         if Some(pid) == self.pmt_pid {
             if let Some(pmt) = section(packet).filter(|s| s.first() == Some(&0x02) && s.len() >= 16) {
@@ -190,20 +228,40 @@ impl Scanner {
                 self.video_pid = video_pid;
                 self.pmt = packet.to_vec();
             }
-            return false;
+            return None;
         }
         if Some(pid) != self.video_pid || packet[1] & 0x40 == 0 {
-            return false;
+            return None;
         }
         let random_access = packet[3] & 0x20 != 0 && packet[4] > 0 && packet[5] & 0x40 != 0;
-        random_access || self.streams.video.is_some_and(|codec| starts_picture(payload(packet), codec))
+        let key = random_access || self.streams.video.is_some_and(|codec| starts_picture(payload(packet), codec));
+        key.then(|| pes_pts(payload(packet)))
     }
+}
+
+/// A run kept for the readers.
+struct Entry {
+    number: u64,
+    data: Arc<Vec<u8>>,
+    key: bool,
+    pts: Option<u64>,
+}
+
+/// Where a reader starts or goes on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum From {
+    /// At the last keyframe, with the headers.
+    Edge,
+    /// At run `n` (a keyframe), with the headers; the live edge if it is gone.
+    Start(u64),
+    /// After run `n`; at the live edge, with the headers, when fallen behind the buffer.
+    After(u64),
 }
 
 /// The stream a source keeps for its readers.
 struct Buffer {
-    /// Runs from the last keyframe on, with their numbers.
-    runs: VecDeque<(u64, Arc<Vec<u8>>)>,
+    /// Runs of the last `HISTORY`, from a keyframe on, with their numbers.
+    runs: VecDeque<Entry>,
     bytes: usize,
     next: u64,
     pat: Arc<Vec<u8>>,
@@ -213,6 +271,46 @@ struct Buffer {
     live: bool,
     ended: bool,
     since: Option<Instant>,
+    /// Where the next live run goes on (PTS), set by the run before.
+    cursor: Option<u64>,
+}
+
+impl Buffer {
+    /// Number of the last keyframe run.
+    fn edge(&self) -> Option<u64> {
+        self.runs.iter().rev().find(|e| e.key).map(|e| e.number)
+    }
+
+    /// Whole groups of pictures off the front past `HISTORY` (or `MAX_BUFFER`);
+    /// a source without timestamps keeps only its last one.
+    fn trim(&mut self) {
+        loop {
+            let newest = self.runs.iter().rev().find(|e| e.key);
+            let over_time = match (self.runs.front().and_then(|e| e.pts), newest.map(|e| e.pts)) {
+                (Some(front), Some(Some(newest))) => pts_seconds(newest, front) > HISTORY,
+                (_, Some(_)) => newest.map(|e| e.number) != self.runs.front().map(|e| e.number),
+                _ => false,
+            };
+            if !over_time && self.bytes <= MAX_BUFFER {
+                return;
+            }
+            let has_next_key = self.runs.iter().skip(1).any(|e| e.key);
+            if !has_next_key {
+                // One group of pictures over the bytes: its oldest runs go, as before.
+                while self.bytes > MAX_BUFFER && self.runs.len() > 1 {
+                    let old = self.runs.pop_front().expect("runs");
+                    self.bytes -= old.data.len();
+                }
+                return;
+            }
+            let old = self.runs.pop_front().expect("runs");
+            self.bytes -= old.data.len();
+            while self.runs.front().is_some_and(|e| !e.key) {
+                let old = self.runs.pop_front().expect("runs");
+                self.bytes -= old.data.len();
+            }
+        }
+    }
 }
 
 /// Runs for a reader and the number of the last one.
@@ -237,6 +335,7 @@ impl Feed {
                 live: false,
                 ended: false,
                 since: None,
+                cursor: None,
             }),
             changed: Condvar::new(),
         }
@@ -246,7 +345,7 @@ impl Feed {
         self.buffer.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The runs of a scan go to the readers: a keyframe starts the buffer anew.
+    /// The runs of a scan go to the readers, from the first keyframe on.
     pub fn add(&self, scanner: &Scanner, runs: Vec<Run>) {
         let mut buffer = self.lock();
         buffer.streams = scanner.streams.clone();
@@ -257,24 +356,18 @@ impl Feed {
             buffer.pmt = Arc::new(scanner.pmt.clone());
         }
         for run in runs {
-            if run.key && !buffer.pmt.is_empty() {
-                buffer.runs.clear();
-                buffer.bytes = 0;
-                if !buffer.live {
-                    buffer.live = true;
-                    buffer.since = Some(Instant::now());
-                }
+            let key = run.key && !buffer.pmt.is_empty();
+            if key && !buffer.live {
+                buffer.live = true;
+                buffer.since = Some(Instant::now());
             } else if !buffer.live {
                 continue;
             }
             buffer.bytes += run.data.len();
             let number = buffer.next;
             buffer.next += 1;
-            buffer.runs.push_back((number, Arc::new(run.data)));
-            while buffer.bytes > MAX_BUFFER && buffer.runs.len() > 1 {
-                let (_, old) = buffer.runs.pop_front().expect("runs");
-                buffer.bytes -= old.len();
-            }
+            buffer.runs.push_back(Entry { number, data: Arc::new(run.data), key, pts: run.pts.filter(|_| key) });
+            buffer.trim();
         }
         drop(buffer);
         self.changed.notify_all();
@@ -290,18 +383,45 @@ impl Feed {
         buffer.live && !buffer.ended
     }
 
-    /// The stream for a reader: `first` = PAT, PMT and the buffer; then what
-    /// comes after `after`. None when the source has ended.
-    fn next(&self, after: Option<u64>, wait: Duration) -> Option<Batch> {
+    /// Where a live run that is to produce `take` seconds starts: at the
+    /// keyframe nearest to the cursor the run before left, or at the live edge
+    /// (no cursor, a source without timestamps, the cursor `MAX_LAG` behind).
+    /// The cursor moves on by `take` from the keyframe taken; also returned:
+    /// how far that keyframe is behind the live edge (s).
+    fn follow(&self, take: f64) -> (From, f64) {
+        let mut buffer = self.lock();
+        let keys: Vec<(u64, u64)> = buffer.runs.iter().filter(|e| e.key).filter_map(|e| e.pts.map(|p| (e.number, p))).collect();
+        let Some(&(_, edge)) = keys.last() else {
+            buffer.cursor = None;
+            return (From::Edge, 0.0);
+        };
+        let pick = match buffer.cursor {
+            Some(cursor) if pts_seconds(edge, cursor) <= MAX_LAG => keys
+                .iter()
+                .min_by(|a, b| pts_seconds(a.1, cursor).abs().total_cmp(&pts_seconds(b.1, cursor).abs()))
+                .copied()
+                .unwrap_or((0, edge)),
+            _ => *keys.last().expect("keys"),
+        };
+        let ticks = (take.max(0.0) * PTS_HZ).round() as u64;
+        buffer.cursor = Some((pick.1 + ticks) % PTS_WRAP);
+        (From::Start(pick.0), pts_seconds(edge, pick.1))
+    }
+
+    /// The stream for a reader from `from` (the headers first when it starts),
+    /// then the number of the last run sent. None when the source has ended.
+    fn next(&self, from: From, wait: Duration) -> Option<Batch> {
         let mut buffer = self.lock();
         loop {
             if buffer.ended {
                 return None;
             }
-            let fresh = match (buffer.runs.back(), after) {
-                (Some((newest, _)), Some(after)) => *newest > after,
-                (Some(_), None) => true,
+            let newest = buffer.runs.back().map(|e| e.number);
+            let fresh = match (newest, from) {
                 (None, _) => false,
+                (Some(_), From::Edge) => true,
+                (Some(newest), From::Start(n)) => newest >= n,
+                (Some(newest), From::After(a)) => newest > a,
             };
             if buffer.live && fresh {
                 break;
@@ -309,19 +429,38 @@ impl Feed {
             let (guard, timeout) = self.changed.wait_timeout(buffer, wait).unwrap_or_else(|e| e.into_inner());
             buffer = guard;
             if timeout.timed_out() {
-                return Some((Vec::new(), after));
+                return Some((
+                    Vec::new(),
+                    match from {
+                        From::After(a) => Some(a),
+                        _ => None,
+                    },
+                ));
             }
         }
+        let front = buffer.runs.front().map_or(0, |e| e.number);
+        let start = match from {
+            From::Start(n) if n >= front => Some(n),
+            From::After(a) if a + 1 >= front => None,
+            _ => buffer.edge(),
+        };
         let mut out = Vec::new();
-        if after.is_none() || buffer.runs.front().is_some_and(|(n, _)| Some(*n) > after.map(|a| a + 1)) {
-            // Joining, or fallen behind the buffer: the headers and the last keyframe on.
-            out.push(Arc::clone(&buffer.pat));
-            out.push(Arc::clone(&buffer.pmt));
-            out.extend(buffer.runs.iter().map(|(_, run)| Arc::clone(run)));
-        } else {
-            out.extend(buffer.runs.iter().filter(|(n, _)| Some(*n) > after).map(|(_, run)| Arc::clone(run)));
+        match start {
+            Some(start) => {
+                // Joining, going on from a cursor, or fallen behind the buffer: the headers first.
+                out.push(Arc::clone(&buffer.pat));
+                out.push(Arc::clone(&buffer.pmt));
+                out.extend(buffer.runs.iter().filter(|e| e.number >= start).map(|e| Arc::clone(&e.data)));
+            }
+            None => {
+                let after = match from {
+                    From::After(a) => a,
+                    _ => unreachable!("only After goes on"),
+                };
+                out.extend(buffer.runs.iter().filter(|e| e.number > after).map(|e| Arc::clone(&e.data)));
+            }
         }
-        let last = buffer.runs.back().map(|(n, _)| *n);
+        let last = buffer.runs.back().map(|e| e.number);
         Some((out, last))
     }
 
@@ -576,8 +715,17 @@ impl Ingest {
         stream.set_write_timeout(Some(READER_TIMEOUT))?;
         let head = "HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
         stream.write_all(head.as_bytes())?;
-        let mut after = None;
-        while let Some((runs, last)) = feed.next(after, Duration::from_secs(1)) {
+        // A live run of the overlay (`take`) goes on from where the one before stopped.
+        let take = request.param("take").and_then(|t| t.parse::<f64>().ok()).filter(|t| t.is_finite() && *t > 0.0);
+        let mut from = match take {
+            Some(take) => {
+                let (from, behind) = feed.follow(take);
+                crate::info!("ingest: channel {channel}: live run of {take:.1} s from {behind:.1} s behind the source");
+                from
+            }
+            None => From::Edge,
+        };
+        while let Some((runs, last)) = feed.next(from, Duration::from_secs(1)) {
             if self.control(channel).hold {
                 // Held from the panel: the reader (ErsatzTV in a live slot) ends.
                 return Ok(());
@@ -585,7 +733,9 @@ impl Ingest {
             for run in runs {
                 stream.write_all(&run)?;
             }
-            after = last;
+            if let Some(last) = last {
+                from = From::After(last);
+            }
         }
         Ok(())
     }
@@ -689,11 +839,12 @@ mod tests {
         feed.add(&scanner, runs);
         assert!(feed.is_live());
 
-        let (first, last) = feed.next(None, Duration::from_millis(10)).unwrap();
+        let (first, last) = feed.next(From::Edge, Duration::from_millis(10)).unwrap();
         let joined: Vec<u8> = first.iter().flat_map(|r| r.iter().copied()).collect();
         assert_eq!(joined, [psi(), packet(0x100, true, true, &[2]), packet(0x101, true, false, &[3])].concat());
 
         // Nothing new: an empty answer after the wait, then the next run.
+        let last = From::After(last.unwrap());
         assert_eq!(feed.next(last, Duration::from_millis(10)).unwrap().0.len(), 0);
         let runs = scanner.push(&packet(0x100, true, true, &[4]));
         feed.add(&scanner, runs);
@@ -703,6 +854,103 @@ mod tests {
         feed.end();
         assert!(feed.next(last, Duration::from_millis(10)).is_none());
         assert!(!feed.is_live());
+    }
+
+    /// A video PES header with `pts` (90 kHz).
+    fn pes(pts: u64) -> Vec<u8> {
+        let b = [
+            0x21 | ((pts >> 29) & 0x0e) as u8,
+            (pts >> 22) as u8,
+            0x01 | ((pts >> 14) & 0xfe) as u8,
+            (pts >> 7) as u8,
+            0x01 | ((pts << 1) & 0xfe) as u8,
+        ];
+        [&[0, 0, 1, 0xe0, 0, 0, 0x80, 0x80, 5][..], &b].concat()
+    }
+
+    /// A feed with groups of pictures of one second: keyframes at PTS `from`..`to` s.
+    fn feed_of_seconds(from: u64, to: u64) -> (Feed, Scanner) {
+        let feed = Feed::new();
+        let mut scanner = Scanner::default();
+        let runs = scanner.push(&psi());
+        feed.add(&scanner, runs);
+        for second in from..to {
+            add_second(&feed, &mut scanner, second);
+        }
+        (feed, scanner)
+    }
+
+    fn add_second(feed: &Feed, scanner: &mut Scanner, second: u64) {
+        let key = packet(0x100, true, true, &pes((second * 90_000) % PTS_WRAP));
+        let runs = scanner.push(&[key, packet(0x101, true, false, &[second as u8])].concat());
+        feed.add(scanner, runs);
+    }
+
+    /// The PTS (s) of the first keyframe a reader from `from` gets.
+    fn first_second(feed: &Feed, from: From) -> u64 {
+        let (runs, _) = feed.next(from, Duration::from_millis(10)).unwrap();
+        let data: Vec<u8> = runs.iter().flat_map(|r| r.iter().copied()).collect();
+        assert_eq!(&data[..2 * PACKET], &psi()[..], "the headers first");
+        pes_pts(payload(&data[2 * PACKET..3 * PACKET])).unwrap() / 90_000
+    }
+
+    #[test]
+    fn timestamps_of_keyframes() {
+        assert_eq!(pes_pts(&pes(123_456_789)), Some(123_456_789));
+        assert_eq!(pes_pts(&pes(PTS_WRAP - 1)), Some(PTS_WRAP - 1));
+        assert_eq!(pes_pts(&[0, 0, 1, 0xe0, 0, 0, 0x80, 0, 0, 0, 0, 0, 0, 0]), None, "no PTS flag");
+        assert_eq!(pts_seconds(180_000, 90_000), 1.0);
+        assert_eq!(pts_seconds(90_000, 180_000), -1.0);
+        // Across the 33-bit wrap.
+        assert_eq!(pts_seconds(45_000, PTS_WRAP - 45_000), 1.0);
+        let mut scanner = Scanner::default();
+        scanner.push(&psi());
+        let runs = scanner.push(&packet(0x100, true, true, &pes(900_000)));
+        assert_eq!((runs[0].key, runs[0].pts), (true, Some(900_000)));
+    }
+
+    #[test]
+    fn history_keeps_whole_groups_of_pictures() {
+        let (feed, _) = feed_of_seconds(0, 40);
+        let buffer = feed.lock();
+        let front = buffer.runs.front().unwrap();
+        assert!(front.key, "the buffer starts at a keyframe");
+        let span = pts_seconds(buffer.runs.back().unwrap().pts.unwrap_or(39 * 90_000), front.pts.unwrap());
+        assert!((HISTORY - 1.0..=HISTORY).contains(&span), "{span}");
+        drop(buffer);
+        // A source without timestamps keeps its last group of pictures, as before.
+        let feed = Feed::new();
+        let mut scanner = Scanner::default();
+        for value in 0..5 {
+            let runs = scanner.push(&[psi(), packet(0x100, true, true, &[value]), packet(0x101, true, false, &[value])].concat());
+            feed.add(&scanner, runs);
+        }
+        assert_eq!(feed.lock().runs.len(), 1);
+        assert_eq!(feed.follow(44.0).0, From::Edge);
+    }
+
+    #[test]
+    fn live_runs_go_on_from_the_cursor() {
+        let (feed, mut scanner) = feed_of_seconds(100, 110);
+        // The first run starts at the live edge; the cursor is 4 s on from there.
+        let (from, behind) = feed.follow(4.0);
+        assert_eq!((first_second(&feed, from), behind), (109, 0.0));
+        // The run took 5.5 s of the clock for its 4 s: the next one goes on at 113, behind the edge.
+        for second in 110..115 {
+            add_second(&feed, &mut scanner, second);
+        }
+        let (from, behind) = feed.follow(4.0);
+        assert_eq!((first_second(&feed, from), behind), (113, 1.0));
+        // A cursor further than MAX_LAG behind (a held channel): the live edge again.
+        for second in 115..135 {
+            add_second(&feed, &mut scanner, second);
+        }
+        let (from, behind) = feed.follow(4.0);
+        assert_eq!((first_second(&feed, from), behind), (134, 0.0));
+        // Other readers start at the live edge whatever the cursor.
+        assert_eq!(first_second(&feed, From::Edge), 134);
+        // A start gone from the buffer: the live edge.
+        assert_eq!(first_second(&feed, From::Start(0)), 134);
     }
 
     #[test]
