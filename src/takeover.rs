@@ -5,8 +5,7 @@
 //
 //   the piece from where it is (`-ss` + produced, `-t` remaining)
 //   └─ live on the channel → that run stops (SIGINT: ffmpeg closes the segment)
-//      the live source of the sidecar (GET /ingest?take=<rest of the piece>) until
-//      it ends or the piece does; the next live run goes on where it stopped
+//      the live source of the sidecar (GET /ingest) until it ends or the piece does
 //      └─ the piece again, from where the schedule is by now
 //
 // Every run gets `-output_ts_offset` of what the piece produced so far, so the
@@ -622,11 +621,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         if job.duration - elapsed < DONE {
             return 0;
         }
-        // `take`: the sidecar goes on from where the live run before stopped (src/ingest.rs).
-        let source = live().then(|| Source {
-            url: format!("{source_url}&take={:.3}", job.duration - elapsed),
-            audio: poller.audio.load(Ordering::Relaxed),
-        });
+        let source = live().then(|| Source { url: source_url.clone(), audio: poller.audio.load(Ordering::Relaxed) });
         if source.is_some() {
             trace(job, format_args!("channel {}: live from {elapsed:.1} s of the piece", job.channel));
         }
