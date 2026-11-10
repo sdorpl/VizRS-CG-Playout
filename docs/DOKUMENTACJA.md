@@ -594,8 +594,15 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    bez transkodowania (`-c copy`; pierwszy obraz i pierwszy dźwięk) i wysyła
    go do sidecara (`POST /ingest?channel=N`, `Authorization: Bearer
    <VIZRS_INGEST_TOKEN>`). Nadawca, który przez `VIZRS_INGEST_IDLE_MS`
-   (domyślnie 2000 ms) nic nie wyśle, jest rozłączany, a ffmpeg czeka na
-   następnego. Sidecar nieosiągalny = dane przepadają, a odbiornik łączy się
+   (domyślnie 10000 ms) nic nie wyśle, jest rozłączany, a ffmpeg czeka na
+   następnego. Próg jest celowo dłuższy niż 5 s ciszy, po których sidecar
+   kończy live (`IDLE`, niżej): krótsza przerwa zdejmuje tylko sygnał z anteny,
+   nadawca zostaje połączony, a gdy dane wrócą, odbiornik w ciągu ok. sekundy
+   łączy się z sidecarem ponownie i live wraca od klatki kluczowej. Rozłączony nadawca musi połączyć się od nowa – przekaźnik
+   czytający HLS (np. datarhei Restreamer: segmenty po 2 s wysyłane paczkami)
+   robi to dopiero po kilkunastu sekundach. Dlatego próg nie powinien być
+   krótszy niż 5000 ms (przy 2000 ms przekaźnik HLS był rozłączany co godzinę
+   z ok. 19 s przerwy). Sidecar nieosiągalny = dane przepadają, a odbiornik łączy się
    ponownie co sekundę (nadawca zostaje). W RTMP ostatni człon ścieżki to
    klucz strumienia: ffmpeg przyjmuje każdą nazwę i tylko ostrzega, więc
    odbiornik sam rozłącza nadawcę z innym kluczem (`wrong stream key` w logu).
@@ -942,7 +949,7 @@ szablony komend; nowe funkcje VizRS CG Playout nie mają już odpowiednika tam.
 | `{next_*}` z playlisty | z wpisów EPG ErsatzTV (`epg_entries: 3`) |
 | przechwytywanie co n-tą klatkę Chromium, wtapianie aktualnej grafiki w każdą klatkę | to samo (§1, płynność animacji), plus zrzut stanu końcowego |
 | brak – grafika zawsze w rozmiarze kanału | `render_size` / `&render=` (rozmiar renderowania grafiki, §1) |
-| live ingest: odbiorniki RTMP/SRT kanału, przejęcie od pierwszej klatki obrazu, `idle_timeout_ms` (2 s) | `VIZRS_INGEST` (`kanał=URL`) usługi `ingest`, `VIZRS_INGEST_IDLE_MS`; przejęcie w nakładce ffmpeg (`VIZRS_FFMPEG_INGEST`, §1, Live ingest) |
+| live ingest: odbiorniki RTMP/SRT kanału, przejęcie od pierwszej klatki obrazu, `idle_timeout_ms` (2 s) | `VIZRS_INGEST` (`kanał=URL`) usługi `ingest`, `VIZRS_INGEST_IDLE_MS` (10 s; live kończy się po 5 s ciszy w sidecarze); przejęcie w nakładce ffmpeg (`VIZRS_FFMPEG_INGEST`, §1, Live ingest) |
 | program wstrzymany na czas live | program idzie dalej według zegara (harmonogram ErsatzTV), część zastąpiona przez live przepada |
 | priorytety odbiorników kanału | brak: pierwszy sygnał kanału trzyma antenę do końca |
 | live tylko poza playlistą (przejęcie w dowolnej chwili) | także audycje na żywo w ramówce i EPG (`live_shows`, Remote Stream ErsatzTV), `ingest_anytime: false` = live tylko w nich |

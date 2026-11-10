@@ -232,8 +232,9 @@ services:
       # Only the first filling: once inputs are set in VizRS Live, the sidecar's
       # list (/config/vizrs-live/inputs.json) is in force, taken over without a restart.
       VIZRS_INGEST: ${VIZRS_INGEST:-1=rtmp://0.0.0.0:1936/live/change-me}
-      # A publisher silent this long has ended (ms).
-      VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-2000}
+      # A publisher silent this long has ended (ms). Keep it above the sidecar's 5 s:
+      # a shorter silence then only ends the live on air, the publisher stays.
+      VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-10000}
     volumes:
       - vizrs-client:/vizrs:ro
     ports:
