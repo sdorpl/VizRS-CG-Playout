@@ -65,6 +65,7 @@ use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -683,6 +684,18 @@ fn relay(socket: TcpStream, mut pipe: impl Write, frame: usize, reconnect: Optio
     }
 }
 
+/// The descriptor pair ffmpeg reads the raw graphics frames from (`pipe:<fd>`
+/// takes any descriptor): a Unix socket, not a pipe. Pipes count towards the
+/// pipe memory of their user, shared by every container running as root and by
+/// docker-proxy (1 MiB pipes per proxied connection): past
+/// `fs.pipe-user-pages-soft` (64 MiB) the kernel gives every new pipe of a
+/// container 8 KiB, a 3.6 MB frame of 1600x900 then takes ~450 hand-overs and
+/// the channel falls behind real time (0.96x measured with 45 viewers).
+/// A socket's buffer is `net.core.wmem_default` (~208 KiB), whatever the pipes.
+pub fn frame_channel() -> io::Result<(UnixStream, UnixStream)> {
+    UnixStream::pair()
+}
+
 /// The input of the raw graphics frames at `pipe:<fd>`, with its options.
 fn raw_input(frames: &Frames, fd: i32) -> Vec<OsString> {
     let size = format!("{}x{}", frames.width, frames.height);
@@ -991,7 +1004,7 @@ fn with_graphics(
         relay(socket, sink, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<TcpStream>));
     });
     let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
-        let (reader, writer) = io::pipe()?;
+        let (reader, writer) = frame_channel()?;
         let fd = reader.as_raw_fd();
         let command = match source {
             Some(source) => live_command(settings, args, job, elapsed, Some(source), Some((&frames, fd))),
@@ -1047,10 +1060,10 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     if let Some((job, on, audio)) = live {
         return with_graphics(settings, &args, &canvas, &job, (on, audio), (frames, socket, place), drain);
     }
-    let (reader, writer) = match io::pipe() {
-        Ok(pipe) => pipe,
+    let (reader, writer) = match frame_channel() {
+        Ok(pair) => pair,
         Err(e) => {
-            log(format_args!("pipe: {e}; ErsatzTV graphics instead"));
+            log(format_args!("frame socket: {e}; ErsatzTV graphics instead"));
             drain.close();
             plain(settings, args)
         }

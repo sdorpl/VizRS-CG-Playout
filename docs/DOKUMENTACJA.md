@@ -380,8 +380,20 @@ ErsatzTV ── ffmpeg ──► vizrs-ffmpeg ── -i pipe:N (yuva420p) ◄─
    przyjdą pierwsze. Gdyby `/ffmpeg/frames` jednak nie dało klatek, sidecar
    loguje `ffmpeg overlay: no frames for session …`, a nakładka uruchamia
    oryginalną komendę.
-4. ffmpeg czyta wejście grafiki z gniazda `GET /ffmpeg/frames` przekazanego
-   jako `pipe:N`. Są to surowe klatki `yuva420p` w rozmiarze kanału,
+4. ffmpeg czyta wejście grafiki przekazane jako `pipe:N`: nakładka przepisuje
+   do niego strumień `GET /ffmpeg/frames` przez parę gniazd uniksowych
+   (`socketpair`), nie przez potok. Potoki liczą się do pamięci potoków
+   użytkownika – wspólnej dla wszystkich kontenerów działających jako root
+   i dla `docker-proxy` (potoki po 1 MiB na każde przekazywane połączenie
+   widza). Po przekroczeniu `fs.pipe-user-pages-soft` (64 MiB) jądro daje
+   nowemu potokowi w kontenerze 8 KiB, klatka 1600×900 (3,6 MB) przechodzi
+   wtedy w ok. 450 porcjach, a kanał nie nadąża za czasem rzeczywistym
+   (zmierzone 0,96× przy ok. 45 widzach: lagi i klatkowanie narastające
+   z czasem oglądania). Bufor gniazda to `net.core.wmem_default` (ok. 208 KiB)
+   bez względu na potoki. Same potoki ErsatzTV (koder płótna) zostają, więc
+   na serwerze z widzami przez opublikowane porty warto i tak wyłączyć
+   `userland-proxy` Dockera albo podnieść `fs.pipe-user-pages-soft` (§4).
+   Są to surowe klatki `yuva420p` w rozmiarze kanału,
    w tempie kanału z `lead_seconds` zapasu (§1). Gdy kanał ma obszar grafiki
    (§1), klatki mają jego rozmiar, a nakładka ustawia jego położenie
    w filtrze nakładania grafiki (`x=`, `y=` w `overlay`, `overlay_cuda`,
@@ -1247,7 +1259,7 @@ program stoi, a nagłówki dalej się zmieniają.
 Czas na ekranie = moment komendy + animacja wejścia sceny (Artist: `delay`,
 `dur` presetu IN). Animacja wyjścia powinna być krótsza niż `end_out_seconds`.
 
-## 4. Uruchamianie w Dockerze## 4. Uruchamianie w Dockerze
+## 4. Uruchamianie w Dockerze
 
 ```sh
 docker compose up -d
@@ -1348,6 +1360,30 @@ tylko pierwszy raz wypełnia ich listę
 opcjonalnie `VIZRS_INGEST_ANYTIME=0` i `VIZRS_FFMPEG_STANDBY=/media/plansza.png`
 (plik w mediach ErsatzTV). Bibliotekę **Remote Streams** z folderem
 `/config/vizrs-live` zakłada się raz w ErsatzTV.
+
+### Serwer z widzami: `userland-proxy` i pamięć potoków
+
+Docker domyślnie przekazuje każde połączenie na opublikowany port przez
+`docker-proxy`, a ten trzyma dwa potoki po 1 MiB na połączenie – jako root, tak
+jak procesy w kontenerach (ffmpeg, ErsatzTV). Wszystkie te potoki dzielą jeden
+limit `fs.pipe-user-pages-soft` (domyślnie 16384 strony = 64 MiB); po jego
+przekroczeniu nowe potoki w kontenerach mają tylko 8 KiB, a kanał z grafiką
+1600×900 przestaje nadążać za czasem rzeczywistym (§1, nakładka ffmpeg, pkt 4).
+Nakładka podaje grafikę przez gniazdo, ale potoki ErsatzTV zostają, więc na
+serwerze z widzami (s1: ok. 45 połączeń = 90 MiB potoków `docker-proxy`)
+wyłącza się `userland-proxy` – porty obsługuje wtedy sam iptables (NAT), bez
+procesów i potoków:
+
+```bash
+# /etc/docker/daemon.json (scalić z istniejącymi kluczami)
+{ "userland-proxy": false }
+sudo systemctl restart docker        # restart wszystkich kontenerów: krótka przerwa w emisji
+```
+
+Bez restartu Dockera wystarczy podnieść limit (od razu, dla nowych potoków):
+`echo 'fs.pipe-user-pages-soft = 262144' | sudo tee /etc/sysctl.d/90-vizrs-pipes.conf && sudo sysctl --system`.
+Stan: suma rozmiarów potoków (`F_GETPIPE_SZ`) procesów `docker-proxy` i liczba
+potoków 8 KiB procesów `ffmpeg`.
 
 ### Synchronizacja z ErsatzTV
 
