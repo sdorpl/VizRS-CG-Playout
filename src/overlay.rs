@@ -57,10 +57,12 @@
 //
 // With VIZRS_FFMPEG_CUDA=overlay only ErsatzTV's CUDA decoding goes (`-hwaccel
 // cuda` and its options): the decoded frames are uploaded (`format=…,hwupload`)
-// where ErsatzTV's filters expect them on the card, and scaling, the overlay of
-// the graphics (`overlay_cuda`) and the encoder stay there. Measured on a Quadro
-// P400 (720p25 media to 1080p50 with a graphics strip): 0.16 of a core instead
-// of 1.45 with `encode`, about the same GPU memory (195 MiB instead of 206).
+// where ErsatzTV's filters expect them on the card, scaling and the overlay of
+// the graphics (`overlay_cuda`) stay there, and the frames for the encoder come
+// back to the CPU (`hwdownload`): waiting for the muxer (3 s of `loudnorm`
+// lookahead) on the card they ran it out of memory. Measured on a Quadro P400
+// (720p25 media to 1080p50 with a graphics strip): 0.33 of a core instead of
+// 1.40 with `encode`, about the same GPU memory (213 MiB instead of 206).
 //
 // With VIZRS_FFMPEG_INGEST=1 a transcode to HLS of a channel whose live
 // source is on (sidecar `/ingest/state`) plays that source in its place
@@ -611,8 +613,9 @@ const UPLOAD_FORMATS: &str = "format=nv12|yuv420p|yuva420p|p010le|yuv444p|p016le
 
 /// A command encoding with NVENC from CUDA decoding, decoding on the CPU
 /// (`VIZRS_FFMPEG_CUDA=overlay`): the decoded frames go to the card where
-/// ErsatzTV's filters expect them, and its CUDA filters, the overlay of the
-/// graphics and the encoder stay there. Any other command unchanged.
+/// ErsatzTV's filters expect them, its CUDA filters and the overlay of the
+/// graphics stay there, and the frames for the encoder come back to the CPU
+/// (`place_frames`). Any other command unchanged.
 pub fn cuda_decode_on_cpu(args: Vec<OsString>) -> Vec<OsString> {
     let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
     let Some(text) = text else { return args };
@@ -621,6 +624,12 @@ pub fn cuda_decode_on_cpu(args: Vec<OsString>) -> Vec<OsString> {
     if !nvenc || !decode {
         return args;
     }
+    let mapped: Vec<&str> = text
+        .windows(2)
+        .filter(|w| w[0] == "-map" && w[1].starts_with('['))
+        .map(|w| w[1].trim_start_matches('[').trim_end_matches(']'))
+        .collect();
+    let mut card = Vec::new();
     let mut out = Vec::with_capacity(args.len() + 2);
     let mut i = 0;
     while i < text.len() {
@@ -630,7 +639,8 @@ pub fn cuda_decode_on_cpu(args: Vec<OsString>) -> Vec<OsString> {
             continue;
         }
         if ["-filter_complex", "-vf", "-filter:v"].contains(&arg) && i + 1 < text.len() {
-            let graph: Vec<String> = text[i + 1].split(';').map(upload_decoded).collect();
+            let simple = arg != "-filter_complex";
+            let graph: Vec<String> = text[i + 1].split(';').map(|chain| place_frames(chain, &mut card, &mapped, simple)).collect();
             out.extend([OsString::from(arg), OsString::from(graph.join(";"))]);
             i += 2;
             continue;
@@ -641,39 +651,55 @@ pub fn cuda_decode_on_cpu(args: Vec<OsString>) -> Vec<OsString> {
     out
 }
 
-/// One chain reading an input stream (`[0:0]…`, or a `-vf` without labels):
-/// an upload before the first filter that needs the frames on the card, a
-/// download of frames already on the CPU dropped. Other chains unchanged.
-fn upload_decoded(chain: &str) -> String {
+/// One chain of a graph without CUDA decoding. The frames of an input stream
+/// (`[0:0]…`, or a `-vf` without labels) are on the CPU now: an upload goes
+/// before the first filter that needs them on the card, a download of them is
+/// dropped. Frames on the card at the end of a chain for the encoder (`-map`,
+/// or a `-vf`) come back to the CPU (`hwdownload`): the encoder waits for the
+/// muxer – e.g. for 3 s of `loudnorm` lookahead in the audio – and the frames
+/// waiting for it on the card filled its memory (`CUDA_ERROR_OUT_OF_MEMORY`
+/// on a Quadro P400 within seconds); in RAM they cost nothing. `card`: the
+/// labels whose frames are on the card, filled chain by chain.
+fn place_frames(chain: &str, card: &mut Vec<String>, mapped: &[&str], simple: bool) -> String {
     let (inputs, rest) = chain.split_at(leading_labels(chain));
-    let labels: Vec<&str> = inputs.split(']').filter(|l| !l.is_empty()).map(|l| l.trim_start_matches('[')).collect();
-    let stream = |label: &&str| label.split(':').next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    if labels.len() > 1 || !labels.iter().all(stream) {
-        return chain.to_owned();
-    }
     let tail = trailing_labels(rest);
     let (body, outputs) = rest.split_at(rest.len() - tail);
+    let labels =
+        |text: &str| -> Vec<String> { text.split(']').filter(|l| !l.is_empty()).map(|l| l.trim_start_matches('[').to_owned()).collect() };
+    let (ins, outs) = (labels(inputs), labels(outputs));
+    let stream = |label: &String| label.split(':').next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let decoded = ins.len() <= 1 && ins.iter().all(stream);
+    let mut on_card = !decoded && ins.iter().any(|l| card.contains(l));
     let mut filters: Vec<String> = Vec::new();
-    let mut on_card = false;
     for filter in body.split(',').filter(|f| !f.is_empty()) {
         let name = filter.split_once('=').map_or(filter, |(name, _)| name);
         let formatted = filters.last().is_some_and(|f| f.starts_with("format="));
         match name {
             "hwupload" | "hwupload_cuda" => {
-                if !on_card && !formatted {
+                if decoded && !on_card && !formatted {
                     filters.push(UPLOAD_FORMATS.into());
                 }
                 on_card = true;
             }
-            "hwdownload" if !on_card => continue,
+            "hwdownload" if decoded && !on_card => continue,
             "hwdownload" => on_card = false,
-            cuda if cuda.ends_with("_cuda") && !on_card => {
-                filters.extend([UPLOAD_FORMATS.into(), "hwupload".into()]);
+            cuda if cuda.ends_with("_cuda") => {
+                if decoded && !on_card {
+                    filters.extend([UPLOAD_FORMATS.into(), "hwupload".into()]);
+                }
                 on_card = true;
             }
             _ => {}
         }
         filters.push(filter.to_owned());
+    }
+    let encoder = if simple { outs.len() <= 1 } else { outs.len() == 1 && mapped.contains(&outs[0].as_str()) };
+    if on_card && encoder {
+        filters.extend(["hwdownload".into(), UPLOAD_FORMATS.into()]);
+        on_card = false;
+    }
+    if on_card {
+        card.extend(outs);
     }
     format!("{inputs}{}{outputs}", filters.join(","))
 }
@@ -1343,14 +1369,20 @@ mod tests {
             "-i",
             "pipe:6",
             "-filter_complex",
+            "[0:1]loudnorm=I=-23,apad[a]",
+            "-filter_complex",
             graph,
             "-map",
             "[v_o0]",
+            "-map",
+            "[a]",
             "-vcodec",
             "h264_nvenc",
             "o.m3u8",
         ]);
-        let upload = graph.replace("[0:0]hwupload,", &format!("[0:0]{UPLOAD_FORMATS},hwupload,"));
+        let placed = graph
+            .replace("[0:0]hwupload,", &format!("[0:0]{UPLOAD_FORMATS},hwupload,"))
+            .replace("overlay_cuda=x=0:y=640[v_o0]", &format!("overlay_cuda=x=0:y=640,hwdownload,{UPLOAD_FORMATS}[v_o0]"));
         assert_eq!(
             cuda_decode_on_cpu(real),
             args(&[
@@ -1365,15 +1397,19 @@ mod tests {
                 "-i",
                 "pipe:6",
                 "-filter_complex",
-                &upload,
+                "[0:1]loudnorm=I=-23,apad[a]",
+                "-filter_complex",
+                &placed,
                 "-map",
                 "[v_o0]",
+                "-map",
+                "[a]",
                 "-vcodec",
                 "h264_nvenc",
                 "o.m3u8",
             ])
         );
-        // CUDA filters straight on the decoded frames: an upload before the first
+        // CUDA filters straight on the decoded frames: an upload before the first, a download at the end
         let direct = args(&[
             "-hwaccel",
             "cuda",
@@ -1389,16 +1425,31 @@ mod tests {
         ]);
         assert_eq!(
             cuda_decode_on_cpu(direct),
-            args(&["-i", "a", "-vf", &format!("{UPLOAD_FORMATS},hwupload,yadif_cuda,scale_cuda=1920:1080"), "-c:v", "hevc_nvenc", "o"])
+            args(&[
+                "-i",
+                "a",
+                "-vf",
+                &format!("{UPLOAD_FORMATS},hwupload,yadif_cuda,scale_cuda=1920:1080,hwdownload,{UPLOAD_FORMATS}"),
+                "-c:v",
+                "hevc_nvenc",
+                "o"
+            ])
         );
-        // a download of decoded frames (already on the CPU) dropped, the later upload kept
+        let mut card = Vec::new();
+        // a download of decoded frames (already on the CPU) dropped, the later upload kept; not for the encoder: stays on the card
         assert_eq!(
-            upload_decoded("[0:0]hwdownload,format=nv12,fps=25,hwupload_cuda[v]"),
+            place_frames("[0:0]hwdownload,format=nv12,fps=25,hwupload_cuda[v]", &mut card, &[], false),
             format!("[0:0]format=nv12,fps=25,{UPLOAD_FORMATS},hwupload_cuda[v]")
         );
-        // the graphics (format before the upload) and chains of other chains unchanged
-        assert_eq!(upload_decoded("[1:0]format=yuva420p,hwupload_cuda[g]"), "[1:0]format=yuva420p,hwupload_cuda[g]");
-        assert_eq!(upload_decoded("[v][g]overlay_cuda=x=0:y=0[o]"), "[v][g]overlay_cuda=x=0:y=0[o]");
+        assert_eq!(card, ["v"]);
+        // the graphics (format before the upload) unchanged; a chain of labels on the card keeps them there
+        assert_eq!(place_frames("[1:0]format=yuva420p,hwupload_cuda[g]", &mut card, &[], false), "[1:0]format=yuva420p,hwupload_cuda[g]");
+        assert_eq!(place_frames("[v]fps=50[w]", &mut card, &[], false), "[v]fps=50[w]");
+        assert_eq!(
+            place_frames("[w][g]overlay_cuda=x=0:y=0[o]", &mut card, &["o"], false),
+            format!("[w][g]overlay_cuda=x=0:y=0,hwdownload,{UPLOAD_FORMATS}[o]")
+        );
+        assert!(!card.contains(&"o".to_owned()));
         // not NVENC, or no CUDA decoding (ErsatzTV already uploads): unchanged
         let x264 = args(&["-hwaccel", "cuda", "-i", "a", "-c:v", "libx264", "o"]);
         assert_eq!(cuda_decode_on_cpu(x264.clone()), x264);

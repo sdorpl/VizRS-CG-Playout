@@ -196,8 +196,8 @@ services:
       VIZRS_FFMPEG_STANDBY: ${VIZRS_FFMPEG_STANDBY:-}
       # encode = with NVENC only the encoder runs on the card; decoding and filters on
       # the CPU (about half the GPU memory per piece, for a card shared with a desktop).
-      # overlay = only decoding on the CPU; scaling, the overlay of the graphics and the
-      # encoder on the card (far less CPU than encode, about the same GPU memory).
+      # overlay = decoding on the CPU, scaling and the overlay of the graphics on the card,
+      # frames back to the CPU for the encoder (far less CPU than encode, same GPU memory).
       # Empty = ErsatzTV's command (CUDA decoding and filters with NVENC).
       VIZRS_FFMPEG_CUDA: ${VIZRS_FFMPEG_CUDA:-}
     volumes:
