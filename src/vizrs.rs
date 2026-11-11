@@ -278,7 +278,74 @@ pub fn send(address: &str, token: &str, prefix: &str, commands: &[String], clear
         let reply = connection.command(&format!("{prefix}{command}"))?;
         sent.replies.push((command.clone(), reply));
     }
+    for (command, reply) in &sent.replies {
+        if reply.starts_with("OK") {
+            note_sent(address, prefix, command);
+        }
+    }
     Ok(sent)
+}
+
+/// Commands this sidecar sent with an `OK` reply: `(antenna, epoch ms, command)`.
+/// The as-run log (K14) tells by them a change on air the sidecar made from one
+/// made elsewhere (Trio, a macro or carousel in VizRS, Companion).
+static SENT: Mutex<Vec<(String, i64, String)>> = Mutex::new(Vec::new());
+/// How long a sent command is remembered (several reads of the layers on air).
+const SENT_KEEP_MS: i64 = 30_000;
+
+fn antenna_key(address: &str, prefix: &str) -> String {
+    format!("{address}|{}", prefix.trim())
+}
+
+fn note_sent(address: &str, prefix: &str, command: &str) {
+    let now = time::now_ms();
+    let mut sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+    sent.retain(|(_, at, _)| now - at <= SENT_KEEP_MS);
+    if sent.len() >= 1000 {
+        sent.remove(0);
+    }
+    sent.push((antenna_key(address, prefix), now, command.to_owned()));
+}
+
+/// The commands sent with an `OK` to the antenna (`address` + `prefix`) since `since_ms`.
+pub fn sent_since(address: &str, prefix: &str, since_ms: i64) -> Vec<String> {
+    let key = antenna_key(address, prefix);
+    let sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+    sent.iter().filter(|(antenna, at, _)| *antenna == key && *at >= since_ms).map(|(_, _, command)| command.clone()).collect()
+}
+
+/// Changes on an antenna between two reads of its layers (`(layer, page)`) that
+/// none of the `sent` commands explains: `(kind, layer, page)` with kind `take`
+/// (a new page on a layer) or `out` (a layer gone). A page that only moved to
+/// another layer is not a change.
+pub fn foreign_changes(before: &[(String, String)], after: &[(String, String)], sent: &[String]) -> Vec<(&'static str, String, String)> {
+    let words = |command: &str| -> (String, Vec<String>) {
+        let mut parts = command.split_whitespace();
+        let verb = parts.next().unwrap_or("").to_ascii_uppercase();
+        let targets = parts.next().unwrap_or("").split(',').filter(|t| !t.is_empty()).map(str::to_owned).collect();
+        (verb, targets)
+    };
+    let took = |page: &str| sent.iter().map(|c| words(c)).any(|(verb, targets)| verb == "TAKE" && targets.iter().any(|t| t == page));
+    let took_out = |layer: &str| {
+        sent.iter().map(|c| words(c)).any(|(verb, targets)| {
+            verb.starts_with("CLEAR") || (verb == "OUT" && (targets.is_empty() || targets.iter().any(|t| t == layer)))
+        })
+    };
+    let mut changes = Vec::new();
+    for (layer, page) in after {
+        let was = before.iter().find(|(l, _)| l == layer).map(|(_, p)| p);
+        if was == Some(page) || page.is_empty() || before.iter().any(|(_, p)| p == page) || took(page) {
+            continue;
+        }
+        changes.push(("take", layer.clone(), page.clone()));
+    }
+    for (layer, page) in before {
+        if after.iter().any(|(l, _)| l == layer) || after.iter().any(|(_, p)| p == page) || took_out(layer) {
+            continue;
+        }
+        changes.push(("out", layer.clone(), page.clone()));
+    }
+    changes
 }
 
 /// A batch for the channel's sender, in the order the events happened.
@@ -1192,6 +1259,34 @@ mod tests {
         assert_eq!(on[1].get("page").and_then(Value::as_str), Some("7"));
         assert!(on[1].get("name").is_none());
         assert!(layers("ERR nope").is_empty() && layers("OK {}").is_empty());
+    }
+
+    #[test]
+    fn changes_on_air_the_sidecar_did_not_send() {
+        let on = |pairs: &[(&str, &str)]| pairs.iter().map(|(l, p)| ((*l).to_owned(), (*p).to_owned())).collect::<Vec<_>>();
+        let before = on(&[("main", "1001"), ("bug", "7")]);
+        // Trio: a new page on a layer, another layer taken out.
+        let after = on(&[("main", "1002")]);
+        assert_eq!(
+            foreign_changes(&before, &after, &[]),
+            [("take", "main".to_owned(), "1002".to_owned()), ("out", "bug".to_owned(), "7".to_owned())]
+        );
+        // The same, sent by the sidecar (rules or VizRS Live): nothing to log.
+        assert!(foreign_changes(&before, &after, &["TAKE 1002 a=b".into(), "OUT bug".into()]).is_empty());
+        assert!(foreign_changes(&before, &on(&[]), &["OUT main,bug".into()]).is_empty());
+        assert!(foreign_changes(&before, &on(&[]), &["CLEAR".into()]).is_empty());
+        // No change, or a page that only moved to another layer.
+        assert!(foreign_changes(&before, &before, &[]).is_empty());
+        assert!(foreign_changes(&before, &on(&[("main", "1001"), ("top", "7")]), &[]).is_empty());
+    }
+
+    #[test]
+    fn sent_commands_are_remembered_per_antenna() {
+        let since = time::now_ms();
+        note_sent("cg-test:6100", "@9 ", "TAKE 5001");
+        assert_eq!(sent_since("cg-test:6100", "@9", since), ["TAKE 5001"]);
+        assert!(sent_since("cg-test:6100", "@8 ", since).is_empty());
+        assert!(sent_since("cg-test:6100", "@9 ", since + 60_000).is_empty());
     }
 
     #[test]

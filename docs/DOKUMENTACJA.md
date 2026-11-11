@@ -889,6 +889,20 @@ sygnał zakończony), `graphics_off` i `graphics_on` (cała grafika zdjęta
 i przywrócona). Bez `etv_config` nie ma gdzie pisać i dziennika nie ma
 (`store: false`), ale alarmy niżej i tak wychodzą.
 
+**Zmiany na antenie spoza panelu.** Antenę kanału zmienia nie tylko sidecar
+(reguły, komendy z VizRS Live), ale też Trio, `/mobile`, makra i karuzela
+VizRS albo Companion. Wątek `panel-layers` porównuje dwa kolejne odczyty warstw
+(co 2 s) z komendami, które sidecar sam wysłał z odpowiedzią `OK` (pamięta je
+30 s, [src/vizrs.rs](../src/vizrs.rs) `sent_since`). Nowa strona na warstwie,
+której sidecar nie wprowadził, to wpis `take`, a warstwa zdjęta bez jego `OUT`
+albo `CLEAR` – wpis `out`. Oba mają operatora `VizRS (poza panelem)`
+i szczegóły z nazwą warstwy. Strona, która tylko przeszła na inną warstwę, nie
+jest zmianą. Po nieudanym odczycie i po starcie sidecara porównanie zaczyna się
+od nowa, więc wpisów nie ma za czas bez połączenia z VizRS. Zmiana na
+antenie wprowadzona komendą sidecara w tej samej chwili co z Trio może trafić
+do dziennika jako komenda sidecara. Strona wprowadzona z VizRS Live dostaje
+`manual: true` po pierwszym odczycie, który pokazuje jej warstwę.
+
 **Alarmy poza przeglądarką (K17).** `alert_webhook` (env
 `VIZRS_ALERT_WEBHOOK`): przy wpisie dziennika uznanym za alarm – `live_off`
 (utrata sygnału), `hold` (studio wstrzymane), `graphics_off` (grafika zdjęta) –
@@ -1480,7 +1494,10 @@ Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
 `caddy:alpine`; od 2026-11-09), a ErsatzTV z mostem (`LIVE_LEGACY_IMAGE`)
 zostaje przypięty do wydania VizRS Live (1.2.7) – podnosi go nowe wydanie
 panelu, które zmienia most. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
-zmiana jednego wymaga zmiany drugiego. Cofnięcie: usunięcie nakładki ze stosu
+zmiana jednego wymaga zmiany drugiego. Zgodność kopii, środowiska usługi `live`
+(z nakładką `compose.cg-playout.yml` VizRS Live) i `docker-compose.vaapi.yml`
+sprawdza `scripts/check-cg-overlay.sh` w VizRS Live – uruchamia go każde
+`tests/deploy.sh` panelu i przerywa wdrożenie przy rozjeździe. Cofnięcie: usunięcie nakładki ze stosu
 i redeploy (ErsatzTV wraca na oficjalny obraz z tą samą bazą).
 
 ### Dane startowe (`seed/`)

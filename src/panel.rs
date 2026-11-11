@@ -178,9 +178,18 @@ struct Layers {
     by_channel: BTreeMap<String, Vec<Value>>,
     /// `channel|layer` → the page there and when it was first seen (epoch ms).
     since: BTreeMap<String, (String, i64)>,
-    /// `channel|layer` of pages a person took in from VizRS Live (K13).
+    /// `channel|layer` of pages a person took in from VizRS Live (K13); until the
+    /// next read shows the layer, the key is `channel|page`.
     manual: BTreeMap<String, String>,
+    /// The latest successful read of each channel: `(layer, page)` and when (epoch ms).
+    /// The as-run log compares two reads; after a failed one it starts over.
+    seen: BTreeMap<String, (Vec<(String, String)>, i64)>,
 }
+
+/// Who changed the antenna, in the as-run log, when neither the sidecar nor VizRS Live did.
+const FOREIGN_OPERATOR: &str = "VizRS (poza panelem)";
+/// A command counts for the read after it even when it was sent this long before the read before.
+const SENT_SLACK_MS: i64 = 5_000;
 
 /// How often the layers on air are read from VizRS (`STATE` per channel).
 const LAYERS_EVERY: Duration = Duration::from_secs(2);
@@ -500,16 +509,23 @@ impl Panel {
         for channel in self.known_channels() {
             let config = self.config.for_channel(&channel);
             let Ok(reply) = crate::vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix) else {
+                lock(&self.layers).seen.remove(&channel);
                 continue;
             };
             let mut layers = crate::vizrs::layers(&reply);
             let mut state = lock(&self.layers);
             let mut keys = Vec::new();
+            let mut read = Vec::new();
             for layer in &mut layers {
                 let name = layer.get("layer").map(crate::template::js_string).unwrap_or_default();
                 let page = layer.get("page").map(crate::template::js_string).unwrap_or_default();
+                read.push((name.clone(), page.clone()));
                 let key = format!("{channel}|{name}");
                 keys.push(key.clone());
+                // A page taken in from the panel: its layer is known now.
+                if let Some(taken) = state.manual.remove(&format!("{channel}|{page}")) {
+                    state.manual.insert(key.clone(), taken);
+                }
                 let since = match state.since.get(&key) {
                     Some((seen, at)) if *seen == page => *at,
                     _ => {
@@ -527,6 +543,25 @@ impl Panel {
             }
             state.since.retain(|key, _| !key.starts_with(&format!("{channel}|")) || keys.contains(key));
             state.manual.retain(|key, _| !key.starts_with(&format!("{channel}|")) || keys.contains(key));
+            // As-run (K14): what changed on air since the previous read and was not
+            // sent by the sidecar (rules, VizRS Live) came from Trio, a macro and so on.
+            if let Some((before, at)) = state.seen.insert(channel.clone(), (read.clone(), now)) {
+                let sent = crate::vizrs::sent_since(&config.vizrs.address, &config.command_prefix, at - SENT_SLACK_MS);
+                for (kind, layer, page) in crate::vizrs::foreign_changes(&before, &read, &sent) {
+                    let name = layers
+                        .iter()
+                        .find(|l| l.get("page").map(crate::template::js_string).as_deref() == Some(page.as_str()))
+                        .and_then(|l| l.get("name").and_then(Value::as_str))
+                        .unwrap_or_default();
+                    let entry = crate::asrun::Entry::of(if kind == "take" { crate::asrun::TAKE } else { crate::asrun::OUT })
+                        .title(name)
+                        .page(page.clone())
+                        .layer(layer.parse::<f64>().ok())
+                        .operator(FOREIGN_OPERATOR)
+                        .detail(format!("wykryte na antenie (warstwa {layer}): Trio, makro, karuzela albo inne sterowanie VizRS"));
+                    crate::asrun::log(&self.etv_config, &channel, &entry);
+                }
+            }
             state.by_channel.insert(channel, layers);
         }
     }
