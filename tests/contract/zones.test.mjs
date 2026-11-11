@@ -151,7 +151,8 @@ test("area auto: graphics beyond the zones widen them in the middle of the piece
   const log = Buffer.concat(pieceLog).toString();
   assert.equal(code, 0, log);
   assert.match(log, /piece restarted for new graphics zones after \d+\.\d s/, log);
-  assert.match(cg.logs(), /graphics zones( widened to|: the whole channel)/);
+  // Seen in the picture streamed, not at the next learning step: the run stops before a frame cut off.
+  assert.match(cg.logs(), /graphics zones( widened to|: the whole channel) .*\(graphics outside the zones, frames held\)/, cg.logs());
 
   // One playlist of the whole piece, timestamps going on across the runs.
   const playlist = readFileSync(path.join(out, "live.m3u8"), "utf8");

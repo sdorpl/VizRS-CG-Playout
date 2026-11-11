@@ -61,6 +61,9 @@ const NEAR: u32 = 32;
 const TIE: u64 = 500;
 /// After a page goes off the air its out animation may last this long (ms): no learning.
 const OUT_GRACE: u64 = 3_000;
+/// Pages that went off the air this long ago (ms) are still in the zones of a
+/// run starting now: their out animation may still be drawn (`Footprints::leaving`).
+const LEAVING: u64 = 5_000;
 /// Pictures further apart than this (ms) are not one watch: what came up in between came up unseen.
 const LOOK_GAP: u64 = 5_000;
 /// `Seen::since` of a cell that came up unseen (long ago, for the rules).
@@ -135,6 +138,22 @@ impl Cells {
         cells
     }
 
+    /// Adds the cells drawn in `other` (a picture of the same size; another size replaces these).
+    pub fn add(&mut self, other: &Cells) {
+        if self.size != other.size || self.on.len() != other.on.len() {
+            *self = other.clone();
+            return;
+        }
+        for (on, &drawn) in self.on.iter_mut().zip(&other.on) {
+            *on |= drawn;
+        }
+    }
+
+    /// Whether every cell drawn lies inside one of `zones` (none = nothing drawn).
+    pub fn within(&self, zones: &[Area]) -> bool {
+        self.on.iter().enumerate().all(|(i, &on)| !on || zones.iter().any(|z| contains(*z, self.area(i))))
+    }
+
     fn area(&self, index: usize) -> Area {
         let (col, row) = ((index % self.cols) as u32, (index / self.cols) as u32);
         let (x, y) = (col * GRID, row * GRID);
@@ -171,6 +190,8 @@ struct Seen {
     /// The pages on air at the last picture, and when one of them last went off.
     pages: Vec<String>,
     left: Option<u64>,
+    /// Pages gone off the air within `LEAVING`, and when.
+    gone: Vec<(String, u64)>,
     /// When the last picture was looked at.
     looked: u64,
     size: (u32, u32),
@@ -319,12 +340,26 @@ impl Footprints {
     /// `since`): the `cells` drawn while `pages` are on air. Returns whether a
     /// footprint grew.
     pub fn learn(&mut self, channel: &str, pages: &[OnAir], cells: &Cells, now: u64) -> bool {
+        self.learn_between(channel, pages, cells, cells, now)
+    }
+
+    /// `learn` from the last picture (`last`) and the cells of every picture
+    /// since the step before (`cells`, `last` among them). Those count for a
+    /// page alone on air and for a page's own take (a slide-in shorter than a
+    /// step); the other rules take only `last`: a moment of another page's
+    /// animation next to a footprint is not that page's.
+    pub fn learn_between(&mut self, channel: &str, pages: &[OnAir], cells: &Cells, last: &Cells, now: u64) -> bool {
+        let picture = if last.on.len() == cells.on.len() { last } else { cells };
         let seen = self.seen.entry(channel.to_owned()).or_default();
         seen.update(cells, now);
         // A page gone off the air may still be drawn (its out animation): wait.
-        if seen.pages.iter().any(|old| !pages.iter().any(|p| p.page == *old)) {
-            seen.left = Some(now);
+        for old in &seen.pages {
+            if !pages.iter().any(|p| p.page == *old) {
+                seen.left = Some(now);
+                seen.gone.push((old.clone(), now));
+            }
         }
+        seen.gone.retain(|(_, at)| now.saturating_sub(*at) <= LEAVING);
         seen.pages = pages.iter().map(|p| p.page.clone()).collect();
         if pages.is_empty() || seen.left.is_some_and(|left| now.saturating_sub(left) < OUT_GRACE) {
             return false;
@@ -372,6 +407,7 @@ impl Footprints {
                             Vec::new()
                         };
                         match (near.as_slice(), taken) {
+                            _ if !picture.on[i] => None,
                             ([p], _) => Some((*p, "next to its footprint")),
                             ([], Some(p)) => Some((p, "came up after its take")),
                             ([], None) if now.saturating_sub(came) > RECENT && unknown.len() == 1 => {
@@ -419,6 +455,20 @@ impl Footprints {
         grown
     }
 
+    /// Pages of `channel` that may still be drawn at `now` although off the
+    /// air: on air at the last picture, or gone off within `LEAVING`.
+    pub fn leaving(&self, channel: &str, now: u64) -> Vec<String> {
+        let Some(seen) = self.seen.get(channel) else { return Vec::new() };
+        let gone = seen.gone.iter().filter(|(_, at)| now.saturating_sub(*at) <= LEAVING).map(|(page, _)| page);
+        let mut out: Vec<String> = Vec::new();
+        for page in seen.pages.iter().chain(gone) {
+            if !out.contains(page) {
+                out.push(page.clone());
+            }
+        }
+        out
+    }
+
     fn add(&mut self, page: &str, area: Area, size: (u32, u32)) -> bool {
         let list = self.pages.entry(key(page, size)).or_default();
         if list.iter().any(|a| contains(*a, area)) {
@@ -462,8 +512,9 @@ impl Footprints {
 pub const WHOLE_SHARE: f64 = 0.6;
 
 /// The zones of an ffmpeg run (PLAN-strefy S2, S3a): the footprints of the
-/// pages on air (`on_air`, keys `id:number`) and of the pages the rules may
-/// take (`numbers`, as in `TAKE 4001`), merged. An overlay that cannot widen
+/// pages on air (`on_air`, keys `id:number`), of those just gone off the air
+/// (`leaving`, their out animation; unknown ones add nothing) and of the pages
+/// the rules may take (`numbers`, as in `TAKE 4001`), merged. An overlay that cannot widen
 /// its zones in the middle of the piece (not `follows`, S3b) gets the
 /// footprints of all the pages known on a channel of `size` too, so a known
 /// page the operator takes is not cut off; one that can widens when that
@@ -471,11 +522,22 @@ pub const WHOLE_SHARE: f64 = 0.6;
 /// run the whole channel. `None` = the whole channel: a page on air or of the
 /// rules without a footprint yet, no footprint at all, or zones over
 /// `WHOLE_SHARE` of the channel.
-pub fn zones(footprints: &Footprints, on_air: &[OnAir], numbers: &[String], size: (u32, u32), follows: bool) -> Option<Vec<Area>> {
+pub fn zones(
+    footprints: &Footprints,
+    on_air: &[OnAir],
+    leaving: &[String],
+    numbers: &[String],
+    size: (u32, u32),
+    follows: bool,
+) -> Option<Vec<Area>> {
     let suffix = format!("@{}x{}", size.0, size.1);
     let mut areas: Vec<Area> = Vec::new();
     for page in on_air {
         areas.extend_from_slice(footprints.get(&page.page, size)?);
+    }
+    // Pages just gone off the air (their out animation still drawn): with a footprint only.
+    for page in leaving {
+        areas.extend_from_slice(footprints.get(page, size).unwrap_or(&[]));
     }
     for number in numbers {
         let rule = format!(":{number}{suffix}");
@@ -667,6 +729,24 @@ mod tests {
     }
 
     #[test]
+    fn cells_of_several_pictures_add_up_and_lie_within_zones_cell_by_cell() {
+        // a slide-in seen in two pictures: both phases count
+        let mut cells = Cells::of_boxes(&[(0, 960, 64, 16)], HD);
+        cells.add(&Cells::of_boxes(&[(400, 960, 64, 16)], HD));
+        assert_eq!(cells.boxes(), [(0, 960, 64, 16), (400, 960, 64, 16)]);
+        let zones = [Area { x: 0, y: 944, w: 96, h: 48 }, Area { x: 384, y: 944, w: 96, h: 48 }];
+        assert!(cells.within(&zones));
+        assert!(!cells.within(&zones[..1]));
+        // a row of cells across two zones side by side is still within them
+        let row = Cells::of_boxes(&[(0, 0, 64, 16)], HD);
+        assert!(row.within(&[Area { x: 0, y: 0, w: 32, h: 16 }, Area { x: 32, y: 0, w: 32, h: 16 }]));
+        // nothing drawn: within anything; another size replaces the cells
+        assert!(Cells::empty(HD).within(&[]));
+        cells.add(&Cells::of_boxes(&[(0, 0, 16, 16)], (1280, 720)));
+        assert_eq!(cells.boxes(), [(0, 0, 16, 16)]);
+    }
+
+    #[test]
     fn one_page_learns_snapped_rectangles_and_only_grows() {
         let mut f = Footprints::default();
         assert!(learn(&mut f, &[page("p9:4001", 1)], &[(100, 800, 600, 120)], 10));
@@ -791,25 +871,66 @@ mod tests {
         alone(&mut f, "p9:4001", &[(100, 850, 800, 120)]);
         alone(&mut f, "qr:1401", &[(40, 300, 200, 200)]);
         // logo on air, the title will be taken by on_clip (TAKE 4001)
-        let z = zones(&f, &[page("logo:3001", 1)], &["4001".into()], HD, true).unwrap();
+        let z = zones(&f, &[page("logo:3001", 1)], &[], &["4001".into()], HD, true).unwrap();
         assert_eq!(z.len(), 2);
         // without following the zones: all the known pages (the operator may take them)
-        assert_eq!(zones(&f, &[page("logo:3001", 1)], &["4001".into()], HD, false).unwrap().len(), 3);
-        assert_eq!(zones(&f, &[], &[], HD, false).unwrap().len(), 3);
+        assert_eq!(zones(&f, &[page("logo:3001", 1)], &[], &["4001".into()], HD, false).unwrap().len(), 3);
+        assert_eq!(zones(&f, &[], &[], &[], HD, false).unwrap().len(), 3);
         // following, nothing on air and no rules: the whole channel
-        assert_eq!(zones(&f, &[], &[], HD, true), None);
+        assert_eq!(zones(&f, &[], &[], &[], HD, true), None);
         assert!(covered(&z, &[(1700, 40, 160, 160), (100, 850, 800, 120)]));
         assert!(!covered(&z, &[(900, 400, 50, 50)]));
         // a page with no footprint: the whole channel
-        assert_eq!(zones(&f, &[page("x:9", 1)], &[], HD, true), None);
-        assert_eq!(zones(&f, &[], &["5005".into()], HD, true), None);
+        assert_eq!(zones(&f, &[page("x:9", 1)], &[], &[], HD, true), None);
+        assert_eq!(zones(&f, &[], &[], &["5005".into()], HD, true), None);
         // nothing known for another size: the whole channel
-        assert_eq!(zones(&f, &[], &[], (1280, 720), false), None);
+        assert_eq!(zones(&f, &[], &[], &[], (1280, 720), false), None);
         // a full-screen page seen once (a wipe): the whole channel only while it is on air when following
         alone(&mut f, "full:7", &[(0, 0, 1920, 1080)]);
-        assert_eq!(zones(&f, &[page("full:7", 1)], &[], HD, true), None);
-        assert_eq!(zones(&f, &[page("logo:3001", 1)], &[], HD, false), None);
-        assert_eq!(zones(&f, &[page("logo:3001", 1)], &[], HD, true).unwrap().len(), 1);
+        assert_eq!(zones(&f, &[page("full:7", 1)], &[], &[], HD, true), None);
+        assert_eq!(zones(&f, &[page("logo:3001", 1)], &[], &[], HD, false), None);
+        assert_eq!(zones(&f, &[page("logo:3001", 1)], &[], &[], HD, true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cells_between_two_steps_teach_a_take_but_not_a_neighbour() {
+        let mut f = Footprints::default();
+        alone(&mut f, "ti:3003", &[(0, 976, 1920, 104)]);
+        alone(&mut f, "p9:4001", &[(100, 850, 800, 100)]);
+        let on = [page("ti:3003", 1), page("p9:4001", 1), page("qr:1401", 10_000)];
+        learn(&mut f, &on[..2], &[(0, 976, 1920, 104), (100, 850, 800, 100)], 9_000);
+        // between two steps the QR code slid in from the left (fast), now it stands at x 300
+        let (stands, slid) = ((300, 500, 200, 200), (0, 500, 200, 200));
+        let last = Cells::of_boxes(&[stands], HD);
+        let mut between = last.clone();
+        between.add(&Cells::of_boxes(&[slid], HD));
+        assert!(f.learn_between("1", &on, &between, &last, 10_200));
+        assert!(covered(f.get("qr:1401", HD).unwrap(), &[stands, slid]), "the slide-in is the QR code's");
+        // a moment of something next to the title, not in the last picture: nobody's
+        let mut flash = Cells::of_boxes(&[(100, 820, 64, 16)], HD);
+        let still = Cells::of_boxes(&[(0, 976, 1920, 104)], HD);
+        flash.add(&still);
+        assert!(!f.learn_between("1", &on, &flash, &still, 40_000));
+        assert_eq!(f.get("p9:4001", HD).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pages_just_gone_off_the_air_stay_in_the_zones_for_their_out_animation() {
+        let mut f = Footprints::default();
+        alone(&mut f, "p9:4001", &[(100, 850, 800, 120)]);
+        alone(&mut f, "logo:3001", &[(1700, 40, 160, 160)]);
+        // channel 1: the title on air, then the logo instead (a new programme)
+        learn(&mut f, &[page("p9:4001", 1)], &[(100, 850, 800, 120)], 1_000);
+        assert_eq!(f.leaving("1", 1_200), ["p9:4001"]);
+        learn(&mut f, &[page("logo:3001", 1_100)], &[(100, 850, 800, 120)], 1_500);
+        assert_eq!(f.leaving("1", 1_600), ["logo:3001", "p9:4001"]);
+        // a run starting now: the logo and the title still going out
+        let z = zones(&f, &[page("logo:3001", 1_100)], &f.leaving("1", 1_600), &[], HD, true).unwrap();
+        assert!(covered(&z, &[(100, 850, 800, 120), (1700, 40, 160, 160)]));
+        // later, only the logo; a page gone without a footprint adds nothing
+        learn(&mut f, &[page("logo:3001", 1_100)], &[], 7_000);
+        assert_eq!(f.leaving("1", 7_000), ["logo:3001"]);
+        assert_eq!(zones(&f, &[], &["x:9".into()], &[], HD, true), None);
     }
 
     #[test]

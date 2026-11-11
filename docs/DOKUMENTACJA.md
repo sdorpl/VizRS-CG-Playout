@@ -89,7 +89,10 @@ z grafiki na antenie zamiast ze stałego ustawienia. Renderer rysuje cały
 kanał, a sidecar uczy się **śladów stron** i z nich składa strefy każdego
 przebiegu nakładki ffmpeg. Co 0,5 s dla każdego kanału z przechwytywaniem
 bierze ostatni obraz i strony na jego antenie (`STATE`, z prefiksem `@N` przy
-`channel_buses`). Obraz czyta jako **komórki siatki 16 px** (komórka jest
+`channel_buses`), razem z komórkami **wszystkich** obrazów, które sesje
+kanału wysłały od poprzedniego kroku (szybka animacja wejścia, krótsza niż
+0,5 s, też trafia do śladu strony, więc przy kolejnym wejściu strona mieści
+się w strefach od początku). Obraz czyta jako **komórki siatki 16 px** (komórka jest
 narysowana, gdy którykolwiek jej piksel ma alfę), a nie jako widoczne
 prostokąty: grafiki ułożone jedna nad drugą (QR obok tytułu nad tickerem)
 dają jeden prostokąt, ale osobne komórki. Jest jedna strona – wszystkie
@@ -132,7 +135,9 @@ i numer strony VizRS oraz rozmiar kanału (inne show = inne `id` = puste
 z widocznych prostokątów, często zawyżone) oznacza brak śladów i naukę od nowa.
 
 Przy przejęciu sesji przez nakładkę (`GET /ffmpeg?…&area=1`, start przebiegu)
-strefy przebiegu to sklejone ślady stron na antenie kanału (`STATE`) i stron,
+strefy przebiegu to sklejone ślady stron na antenie kanału (`STATE`), stron,
+które zeszły z niej w ostatnich 5 s (ich animacja wyjścia jeszcze się rysuje,
+np. na starcie nowej audycji; strona bez śladu niczego tu nie dodaje), i stron,
 które mogą wziąć reguły (`TAKE` z `on_clip`, `on_end` i reguł audycji, po
 zastosowaniu reguł z live API). Nakładka, której kawałek idzie przez
 przebiegi zdolne poszerzyć strefy w środku kawałka (niżej), mówi to
@@ -144,8 +149,8 @@ wzięta przez operatora w trakcie przebiegu nie była ucięta. Nakładka dostaje
 strefy tak jak stały `area` (`areas`, atlas), a `resume` niesie wyliczone
 strefy, nie `auto` (nakładka po restarcie sidecara dostaje ten sam atlas, co
 jej graf ffmpeg). Cały kanał, gdy którakolwiek z tych stron nie ma jeszcze
-śladu, gdy nic nie jest znane (z `follow=1`: także gdy nic nie ma na antenie
-ani w regułach) albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
+śladu, gdy nic nie jest znane (z `follow=1`: także gdy nic nie ma na antenie,
+nie schodzi z niej ani nie ma w regułach) albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
 <strefy> (N% of the channel)` albo `graphics zones: the whole channel`.
 
 Strefy są stałe przez przebieg ffmpeg (jego graf się nie zmienia). Gdy
@@ -170,8 +175,22 @@ z EXTINF – ta sama playlista HLS, ciągłe znaczniki czasu). Nowy przebieg
 dostaje nowy strumień klatek tej samej sesji
 (`/ffmpeg/frames?session=N&rev=R&zones=…&at=S&area=1`: klatki w podanych
 strefach, klatka 0 w sekundzie S kawałka), a poprzedni strumień znika – sesja
-elementu kończy się dopiero z ostatnim. Przerwa (wykrycie, pytanie, nowy
-ffmpeg) to zwykle ok. 1 s; przez ten czas grafika spoza stref jest ucięta.
+elementu kończy się dopiero z ostatnim.
+
+**Grafika nie jest ucinana na wejściu.** Strumień klatek nakładki sprawdza
+każdy nowy obraz, zanim zamieni go na klatkę: gdy którakolwiek narysowana
+komórka (16 px) leży poza strefami przebiegu, ta klatka nie wychodzi.
+Strumień **wstrzymuje się**, a sidecar od razu poszerza strefy (powód
+`graphics outside the zones, frames held`; gdy strefy poszerzyły się już
+wcześniej i obejmują obraz – tylko czeka). ffmpeg czeka na grafikę, ale
+strumień wyprzedza zegar o `lead_seconds`, więc widzowie tego nie widzą.
+Nakładka pyta o strefy co 100 ms. Przed SIGINT zamyka staremu przebiegowi rurę
+grafiki (ffmpeg czeka na nią i inaczej nie skończyłby się od razu). Nowy
+przebieg zaczyna od chwili kawałka, w której stary stanął, i pokazuje
+wejście grafiki od pierwszej klatki. Wstrzymanie trwa najwyżej 3 s; potem
+strumień idzie dalej (grafika poza strefami ucięta, jak przed tą zmianą).
+Wstrzymuje się tylko strumień nakładki, która śledzi strefy (`follow=1`,
+pytania o `/ffmpeg/zones`), i tylko raz na strumień.
 
 Przebiegi wymagają `VIZRS_FFMPEG_INGEST=1` (domyślnie w compose) i wyjścia HLS
 z `-t`, jak przy live ingest (§1, Live ingest); kawałek idzie wtedy przez
@@ -518,7 +537,17 @@ ErsatzTV ── ffmpeg ──► vizrs-ffmpeg ── -i pipe:N (yuva420p) ◄─
    na serwerze z widzami przez opublikowane porty warto i tak wyłączyć
    `userland-proxy` Dockera albo podnieść `fs.pipe-user-pages-soft` (§4).
    Są to surowe klatki `yuva420p` w rozmiarze kanału,
-   w tempie kanału z `lead_seconds` zapasu (§1). Gdy kanał ma obszar grafiki
+   w tempie kanału z `lead_seconds` zapasu (§1). Między sidecarem a nakładką
+   idą jako **delta**: nakładka prosi o nią (`delta=1` w `/ffmpeg/frames`
+   i `/ffmpeg/resume`), sidecar potwierdza nagłówkiem `X-VizRS-Frames: delta`
+   i wysyła dla każdej klatki tylko pasy wierszy (osobno w płaszczyznach Y, U,
+   V, A), które zmieniły się od poprzedniej. Stojąca grafika to 8 bajtów na
+   klatkę, przewijany ticker – wiersze jego paska. Nakładka trzyma klatkę,
+   nakłada na nią zmiany i ffmpeg dostaje całą klatkę jak dawniej (wejście
+   `rawvideo` potrzebuje każdej). Pierwsza klatka strumienia, także po
+   powrocie sidecara, idzie w całości. Sidecar bez delty (bez nagłówka) albo
+   starsza nakładka (bez `delta=1`) – całe klatki. Przy 1080p50 i całym kadrze
+   ruch spada z ok. 260 MB/s do ok. 25 MB/s (§8, Uwagi i wyniki). Gdy kanał ma obszar grafiki
    (§1), klatki mają jego rozmiar, a nakładka ustawia jego położenie
    w filtrze nakładania grafiki (`x=`, `y=` w `overlay`, `overlay_cuda`,
    `overlay_vaapi`…; inne opcje zostają). Kilka obszarów przychodzi ułożonych
@@ -2165,6 +2194,7 @@ Zmienne środowiskowe (wszystkie opcjonalne):
 | `BENCH_RENDER` | – | `render_size` sidecara, np. `720p` |
 | `BENCH_AREA` | – | `area` sidecara, np. `1920x140+0+930` (pasek z tickerem sceny) albo z logo `1920x140+0+930,160x160+1690+30`; znacznik kroku trafia w lewy górny róg pierwszego obszaru |
 | `BENCH_TAPE` | – | `1` = `tape` sidecara (§1; z `BENCH_URL` i crawlem VizRS na antenie) |
+| `BENCH_DELTA` | – | `1` = tryb `ffmpeg` czyta klatki jako deltę (`delta=1`, jak `vizrs-ffmpeg`, §1 Nakładka ffmpeg), składane z powrotem w całe klatki do oceny ruchu |
 | `BENCH_WARMUP` | `10` | rozgrzewka przed pomiarem [s] |
 | `BENCH_DURATION` | `30` | pomiar [s] |
 
@@ -2239,6 +2269,17 @@ docker compose -f bench/docker-compose.yml -p virtrs-bench down --rmi local
 
   `BENCH_SCENE_FPS` ustawia tempo sceny na klatkaż, do którego zejdzie
   bezpiecznik; bez tego pomiar liczy kroki dla pełnego klatkażu.
+
+- **Delta klatek nakładki** (2026-11-11, `BENCH_MODES=ffmpeg`, 1080p50, cały
+  kanał, host z działającym lokalnym stosem – Chromium dawał tylko 11–23
+  obrazów/s): strumień 259,5 MB/s całymi klatkami, 21–28 MB/s deltą (−90%).
+  CPU sidecara podobne w obu trybach (36–49%, zależnie od liczby obrazów do
+  zamiany); zysk jest po stronie odbiorcy i jądra (pętla TCP), którego ten
+  pomiar nie obejmuje. Na lokalnym stosie (renderer natywny na warstwę,
+  `area: auto`) po wdrożeniu delty, wstrzymania i poprawionych śladów:
+  kontener `cg` 15% zamiast 30–39%, `vizrs-ffmpeg` 5% zamiast 22% – przy
+  strefach 44% kadru zamiast 57% i całego kadru, więc nie cały spadek to
+  delta.
 
 - **Obszar grafiki** (`BENCH_AREA=1920x140+0+930`, ten sam host, kanał
   1080p, render 1080p; równo / stoi / przeskok, CPU sidecara / przeglądarki,

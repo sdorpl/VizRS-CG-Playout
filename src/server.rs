@@ -70,6 +70,8 @@ const MAX_WAIT_MS: f64 = 10000.0;
 /// A second widening of a run's zones this soon after the first: the whole
 /// channel until the end of the piece (PLAN-strefy S3b; no blinking runs).
 const WIDEN_WINDOW: Duration = Duration::from_secs(10);
+/// A frame stream asked with `delta=1` carries delta records (src/delta.rs), and says so.
+pub const DELTA_HEADER: &str = "X-VizRS-Frames: delta\r\n";
 
 /// `Number(text)` of JavaScript for the rates and waits in a query.
 fn js_number(text: &str) -> f64 {
@@ -133,6 +135,10 @@ struct Script {
     follows: AtomicBool,
     widenings: AtomicUsize,
     widened_at: Mutex<Option<Instant>>,
+    /// With `area: auto`, the cells drawn in the pictures streamed since the
+    /// footprints last learnt (all of them, not one every `LEARN_EVERY`: a
+    /// slide-in shorter than that is in its page's footprint too).
+    drawn: Mutex<Option<footprint::Cells>>,
     /// Frame streams of the session so far: only the last one ends the script.
     streams: AtomicU64,
     capture: Option<Arc<Capture>>,
@@ -371,7 +377,8 @@ impl Server {
         }
         let numbers: Vec<String> = vizrs::taken_pages(&lines).into_iter().filter(|p| !p.contains('{')).collect();
         let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
-        footprint::zones(&footprints, &on_air, &numbers, size, follows)
+        let leaving = footprints.leaving(channel, crate::time::now_ms() as u64);
+        footprint::zones(&footprints, &on_air, &leaving, &numbers, size, follows)
     }
 
     /// One learning step: per channel with a capture, its last picture and the pages on its antenna.
@@ -406,8 +413,15 @@ impl Server {
                 Ok(reply) => footprint::on_air(&reply).unwrap_or_default(),
                 Err(_) => continue,
             };
-            let cells = footprint::Cells::of_picture(&picture.rects, capture.out_size());
-            if self.footprints.lock().unwrap_or_else(|e| e.into_inner()).learn(&channel, &pages, &cells, now) {
+            let last = footprint::Cells::of_picture(&picture.rects, capture.out_size());
+            // With the cells of every picture the channel's sessions streamed since the last step.
+            let mut cells = last.clone();
+            for script in lock(&self.sessions).scripts.values().filter(|s| s.channel == channel) {
+                if let Some(drawn) = script.drawn.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    cells.add(&drawn);
+                }
+            }
+            if self.footprints.lock().unwrap_or_else(|e| e.into_inner()).learn_between(&channel, &pages, &cells, &last, now) {
                 crate::debug!("footprints: channel {channel} learnt from {} page(s)", pages.len());
             }
             on_air.insert(channel.clone(), pages);
@@ -469,6 +483,40 @@ impl Server {
         *script.zones.lock().unwrap_or_else(|e| e.into_inner()) = zones;
         script.widenings.fetch_add(1, Ordering::Relaxed);
         script.zones_rev.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// With `area: auto`, the cells of a picture streamed by `script`, added to
+    /// those its footprints learn from next; `None` without `area: auto`.
+    fn draws(&self, script: &Script, picture: &crate::frames::Picture, size: (u32, u32)) -> Option<footprint::Cells> {
+        if !Area::is_auto(&self.config.area) {
+            return None;
+        }
+        let cells = footprint::Cells::of_picture(&picture.rects, size);
+        let mut drawn = script.drawn.lock().unwrap_or_else(|e| e.into_inner());
+        match drawn.as_mut() {
+            Some(drawn) => drawn.add(&cells),
+            None => *drawn = Some(cells.clone()),
+        }
+        Some(cells)
+    }
+
+    /// A run with the zones of revision `rev` holds a picture whose `cells`
+    /// leave them: zones newer than that holding it are enough (the overlay is
+    /// on its way to them), else they widen now, not at the next learning step.
+    fn widen_for(&self, script: &Script, rev: u64, cells: &footprint::Cells) {
+        let newer = script.zones_rev.load(Ordering::Relaxed) > rev
+            && script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_none_or(|z| z.is_empty() || cells.within(z));
+        if newer {
+            crate::debug!("channel {}: frames held for the graphics zones widened already", script.channel);
+            return;
+        }
+        let config = self.config.for_channel(&script.channel);
+        let pages = vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix)
+            .ok()
+            .and_then(|reply| footprint::on_air(&reply))
+            .unwrap_or_default();
+        script.outside.fetch_add(1, Ordering::Relaxed);
+        self.widen(script, &pages, &cells.boxes(), "graphics outside the zones, frames held");
     }
 
     fn events_for(&self, channel: &str) -> Arc<ChannelEvents> {
@@ -826,6 +874,8 @@ impl Server {
         // ErsatzTV's rate as the overlay reads it, not the session's own.
         capture.set_rate(script.reader, fps);
         let placed = request.param("area") == Some("1");
+        // The zones this stream's run was built for, and their revision.
+        let mut rev = script.zones_rev.load(Ordering::Relaxed);
         let (layout, air) = if further {
             // The zones the overlay's new run was built for, and that run's place in the piece.
             let (width, height) = (script.ctx.width, script.ctx.height);
@@ -840,6 +890,7 @@ impl Server {
             };
             let at = js_number(request.param("at").unwrap_or(""));
             let at = if at.is_finite() { at.max(0.0) } else { 0.0 };
+            rev = request.param("rev").and_then(|r| r.parse().ok()).unwrap_or(rev);
             let zones = match layout_zones(&layout, width, height) {
                 zones if zones.is_empty() => "the whole channel".to_owned(),
                 zones => geometries(&zones),
@@ -853,9 +904,29 @@ impl Server {
         let reader = capture.acquire(fps);
         let control = Control::new(false);
         watch_close(&stream, &control);
-        if let Ok(mut out) = http::Stream::start(stream, request) {
-            let format = Format::Yuva { layout, hd: script.ctx.height >= 720 };
-            stream::stream_frames(&*capture, &mut out, &Options { fps, lead_seconds: self.config.lead_seconds, format, air }, &control);
+        let delta = request.param("delta") == Some("1");
+        if let Ok(mut out) = http::Stream::start_with(stream, request, if delta { DELTA_HEADER } else { "" }) {
+            let size = (script.ctx.width, script.ctx.height);
+            let zones = layout_zones(&layout, size.0, size.1);
+            let mut held = false;
+            let format = Format::Yuva { layout, hd: script.ctx.height >= 720, delta };
+            let options = Options { fps, lead_seconds: self.config.lead_seconds, format, air };
+            stream::stream_watched(&*capture, &mut out, &options, &control, &mut |picture| {
+                let Some(cells) = self.draws(&script, picture, size) else { return false };
+                // A picture leaving the zones of this run (PLAN-strefy S3b): the run
+                // stops before it, so no frame is cut off, and the next one shows it.
+                if held
+                    || zones.is_empty()
+                    || cells.within(&zones)
+                    || !script.follows.load(Ordering::Relaxed)
+                    || script.streams.load(Ordering::Relaxed) != number
+                {
+                    return false;
+                }
+                held = true;
+                self.widen_for(&script, rev, &cells);
+                true
+            });
         }
         capture.release(reader);
         // The transcode is over: the script ends with it, as without the overlay
@@ -885,12 +956,13 @@ impl Server {
         let reader = capture.acquire(fps);
         let control = Control::new(false);
         watch_close(&stream, &control);
-        if let Ok(mut out) = http::Stream::start(stream, request) {
+        let delta = request.param("delta") == Some("1");
+        if let Ok(mut out) = http::Stream::start_with(stream, request, if delta { DELTA_HEADER } else { "" }) {
             let layout = match capture.areas() {
                 areas if request.param("area") == Some("1") && !areas.is_empty() => Layout::atlas(areas),
                 _ => Layout::whole(width, height),
             };
-            let format = Format::Yuva { layout, hd: height >= 720 };
+            let format = Format::Yuva { layout, hd: height >= 720, delta };
             stream::stream_frames(
                 &*capture,
                 &mut out,
@@ -976,6 +1048,7 @@ impl Server {
                     follows: AtomicBool::new(false),
                     widenings: AtomicUsize::new(0),
                     widened_at: Mutex::new(None),
+                    drawn: Mutex::new(None),
                     streams: AtomicU64::new(0),
                     capture: capture.clone(),
                     reader,
@@ -1002,7 +1075,11 @@ impl Server {
                 None => &self.empty,
             };
             let options = Options { fps, lead_seconds: self.config.lead_seconds, format: Format::Packets, air: ctx.air_ms() };
-            stream::stream_frames(source, &mut out, &options, &control);
+            let size = (ctx.width, ctx.height);
+            stream::stream_watched(source, &mut out, &options, &control, &mut |picture| {
+                self.draws(&script, picture, size);
+                false
+            });
             let _ = out.finish();
 
             self.count.fetch_sub(1, Ordering::Relaxed);

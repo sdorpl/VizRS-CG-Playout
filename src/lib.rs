@@ -9,6 +9,7 @@ pub mod asrun;
 pub mod base64;
 pub mod capture;
 pub mod config;
+pub mod delta;
 pub mod devtools;
 pub mod etv_api;
 pub mod etv_client;

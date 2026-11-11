@@ -114,8 +114,9 @@ pub enum Format {
     Packets,
     /// Raw yuva420p of `layout` (the channel, its graphics area, or its areas
     /// stacked): every output frame carries all of it. `hd` = BT.709 (the
-    /// channel has 720 lines or more).
-    Yuva { layout: Layout, hd: bool },
+    /// channel has 720 lines or more). `delta`: each frame as a record of
+    /// the rows changed since the one before (src/delta.rs).
+    Yuva { layout: Layout, hd: bool, delta: bool },
 }
 
 pub struct Options {
@@ -139,6 +140,21 @@ fn instant_of(epoch_ms: f64) -> Option<Instant> {
 /// the air time of frame 0, or the start of the stream. A resumed stream
 /// without air time starts its timeline (and lead) again from the frames sent.
 pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options, control: &Control) -> u64 {
+    stream_watched(source, out, options, control, &mut |_| false)
+}
+
+/// What a watched stream does with a new picture before it goes out.
+/// `true` = hold the stream: this picture and those after it wait (at most
+/// `HOLD_MAX`) for the reader to hang up – a run of the ffmpeg overlay whose
+/// zones the picture leaves (PLAN-strefy S3b) stops before a frame cut off.
+pub type Watch<'a> = dyn FnMut(&Picture) -> bool + 'a;
+
+/// A held stream goes on after this long anyway (the reader did not hang up).
+pub const HOLD_MAX: Duration = Duration::from_secs(3);
+
+/// `stream_frames` with every new picture shown to `watch` before it goes out;
+/// only raw frames can be held.
+pub fn stream_watched(source: &dyn Source, out: &mut dyn Write, options: &Options, control: &Control, watch: &mut Watch) -> u64 {
     let frame_s = 1.0 / options.fps;
     let lead = (options.lead_seconds * options.fps).round().max(0.0) as u64;
     let lead_s = lead as f64 * frame_s;
@@ -154,11 +170,17 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
     let mut held: Option<(u64, Arc<Picture>, Arc<crate::yuva::Yuva>)> = None;
     // Raw frames: each one from the frame before, converting only what changed.
     let mut builder = match &options.format {
-        Format::Yuva { layout, hd } => Some(crate::yuva::Builder::new(layout, *hd)),
+        Format::Yuva { layout, hd, .. } => Some(crate::yuva::Builder::new(layout, *hd)),
         Format::Packets => None,
     };
     // Raw frames: how far after its moment an output frame takes its picture.
     let mut shift = Duration::ZERO;
+    // Delta frames: the frame sent last, and its size.
+    let (delta, size) = match &options.format {
+        Format::Yuva { layout, delta, .. } => (*delta, (layout.width, layout.height)),
+        Format::Packets => (false, (0, 0)),
+    };
+    let mut last: Option<Arc<crate::yuva::Yuva>> = None;
 
     // Moment of output frame `n` (signed: the lead's frames are before `base`).
     let moment = |base: Instant, n: u64| {
@@ -215,16 +237,31 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
                         let picture = frame.picture();
                         let yuva = match &held {
                             Some((_, same, yuva)) if Arc::ptr_eq(same, &picture) => Arc::clone(yuva),
-                            _ => builder.build(&picture.rects),
+                            _ => {
+                                if watch(&picture) && hold(control) {
+                                    return sent - 1;
+                                }
+                                builder.build(&picture.rects)
+                            }
                         };
                         Arc::clone(&held.insert((frame.seq, picture, yuva)).2)
                     }
                 };
-                out.write_all(&yuva)
+                if !delta {
+                    out.write_all(&yuva)
+                } else if last.as_ref().is_some_and(|l| Arc::ptr_eq(l, &yuva)) {
+                    out.write_all(&crate::delta::UNCHANGED)
+                } else {
+                    let written = crate::delta::write_record(out, last.as_deref().map(|l| &l[..]), &yuva, size.0, size.1);
+                    last = Some(yuva);
+                    written
+                }
             } else if sent_seq != Some(frame.seq) {
                 sent_seq = Some(frame.seq);
                 sent += 1;
-                out.write_all(frame.picture().packet())
+                let picture = frame.picture();
+                watch(&picture);
+                out.write_all(picture.packet())
             } else {
                 let mut frames = 1;
                 while sent + frames < due && frame_at(base, sent + frames).seq == frame.seq {
@@ -241,6 +278,15 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
         std::thread::sleep(TICK);
     }
     sent
+}
+
+/// Holds a stream until its reader hangs up (true) or for `HOLD_MAX` (false).
+fn hold(control: &Control) -> bool {
+    let until = Instant::now() + HOLD_MAX;
+    while !control.is_closed() && Instant::now() < until {
+        std::thread::sleep(TICK);
+    }
+    control.is_closed()
 }
 
 #[cfg(test)]
@@ -306,13 +352,65 @@ mod tests {
         let sent = stream_frames(
             &history,
             &mut out,
-            &Options { fps: 25.0, lead_seconds: 0.2, format: Format::Yuva { layout: Layout::whole(4, 2), hd: false }, air: None },
+            &Options {
+                fps: 25.0,
+                lead_seconds: 0.2,
+                format: Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false },
+                air: None,
+            },
             &control,
         );
         timer.join().unwrap();
         assert_eq!(sent, 6);
         assert_eq!(out.len(), 6 * 20);
         assert!(out.chunks(20).all(|frame| frame[12 + 1] == 255));
+    }
+
+    /// A picture the watch holds never goes out: the stream waits for its
+    /// reader to hang up (a run of the overlay stopped for wider zones).
+    #[test]
+    fn a_watched_raw_stream_holds_before_a_picture_and_ends_with_its_reader() {
+        struct Two(Instant);
+        impl Source for Two {
+            fn frame_at(&self, at: Instant) -> Arc<Frame> {
+                // the first picture, then another one (a graphic coming up)
+                let late = at >= self.0 + Duration::from_millis(60);
+                let alpha = if late { 255 } else { 0 };
+                Arc::new(Frame::new(u64::from(late), vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![0, 0, 0, alpha].into() }], self.0))
+            }
+        }
+        let control = Control::new(false);
+        let closer = Arc::clone(&control);
+        let timer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            closer.close();
+        });
+        let mut out = Vec::new();
+        let mut seen = 0;
+        let started = Instant::now();
+        // the graphic is in the pictures of output frame 2 on (frames 40 ms apart, looking 100 ms back)
+        let sent = stream_watched(
+            &Two(started.checked_sub(SAMPLE_DELAY).unwrap() + Duration::from_millis(60)),
+            &mut out,
+            &Options {
+                fps: 25.0,
+                lead_seconds: 0.0,
+                format: Format::Yuva { layout: Layout::whole(2, 2), hd: false, delta: false },
+                air: None,
+            },
+            &control,
+            &mut |picture| {
+                seen += 1;
+                picture.rects[0].pixels[3] == 255
+            },
+        );
+        timer.join().unwrap();
+        // frames of the first picture only, none with the graphic (alpha plane at 6), then held to the end
+        assert_eq!(seen, 2);
+        assert_eq!(sent as usize * 10, out.len());
+        assert!((1..=3).contains(&sent), "sent {sent}");
+        assert!(out.chunks(10).all(|frame| frame[6] == 0), "a frame of the held picture went out");
+        assert!(started.elapsed() >= Duration::from_millis(300));
     }
 
     /// The overlay's ffmpeg behind the timeline gets every frame it missed at
@@ -327,7 +425,7 @@ mod tests {
         });
         let mut out = Vec::new();
         let late = crate::time::now_ms() as f64 - 5000.0;
-        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false };
+        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false };
         let sent = stream_frames(&past_pictures(), &mut out, &Options { fps: 10.0, lead_seconds: 0.8, format, air: Some(late) }, &control);
         timer.join().unwrap();
         // 5 s behind plus the 0.8 s lead, against 19 frames for an ETV reader.
@@ -354,7 +452,7 @@ mod tests {
             closer.close();
         });
         let mut out = Vec::new();
-        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false };
+        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false };
         let sent = stream_frames(&history, &mut out, &Options { fps: 25.0, lead_seconds: 0.2, format, air: None }, &control);
         timer.join().unwrap();
         assert!(sent >= 8, "sent {sent}");
@@ -483,7 +581,7 @@ mod tests {
         let source = Recording(Arc::clone(&history), Mutex::new(Vec::new()));
         let frame = Duration::from_millis(40);
         let mut out = Paced { start: Some(Duration::from_millis(2500)), frame, burst: 3, read: 0, next: Instant::now() };
-        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false };
+        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false };
         stream_frames(&source, &mut out, &Options { fps: 25.0, lead_seconds: lead, format, air: None }, &control);
         deliver.join().unwrap();
 

@@ -778,6 +778,8 @@ pub struct Sink {
 #[derive(Default)]
 struct SinkShared {
     pending: Option<UnixStream>,
+    /// The socket of the run attached last, to cut it off (`SinkControl::cut`).
+    attached: Option<UnixStream>,
     closed: bool,
 }
 
@@ -801,12 +803,39 @@ impl SinkControl {
 
     /// The next frames go to `pipe`.
     pub fn attach(&self, pipe: UnixStream) {
-        self.update(|shared| shared.pending = Some(pipe));
+        self.update(|shared| {
+            shared.attached = pipe.try_clone().ok();
+            shared.pending = Some(pipe);
+        });
+    }
+
+    /// The run attached last reads the end of its graphics (EOF) now: a run
+    /// whose frames the sidecar holds (they would leave its zones) is not
+    /// stuck reading them and stops at once on SIGINT. The next frames wait
+    /// for the next run.
+    pub fn cut(&self) {
+        self.update(|shared| {
+            if let Some(pipe) = shared.attached.take() {
+                let _ = pipe.shutdown(std::net::Shutdown::Both);
+            }
+        });
     }
 
     /// The relay ends with its next write (also one waiting for a run).
     pub fn close(&self) {
-        self.update(|shared| shared.closed = true);
+        self.update(|shared| {
+            shared.closed = true;
+            shared.attached = None;
+        });
+    }
+}
+
+impl Drop for Sink {
+    /// The runs' sockets close with the relay (no copy kept for `cut`).
+    fn drop(&mut self) {
+        let mut shared = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        shared.attached = None;
+        shared.pending = None;
     }
 }
 
@@ -1220,5 +1249,27 @@ mod tests {
         let (mut sink, control) = Sink::new(2);
         control.close();
         assert!(sink.write_all(b"xx").is_err());
+
+        // A run cut off (its frames held for new zones): it reads EOF at once,
+        // the frames after it wait for the next run.
+        let (mut sink, control) = Sink::new(2);
+        let (mut reader, socket) = crate::overlay::frame_channel().unwrap();
+        control.attach(socket);
+        sink.write_all(b"ab").unwrap();
+        control.cut();
+        let mut got = Vec::new();
+        reader.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"ab");
+        let (mut next, socket) = crate::overlay::frame_channel().unwrap();
+        let later = std::thread::spawn(move || {
+            sink.write_all(b"cdef").unwrap();
+            sink
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        control.attach(socket);
+        drop(later.join().unwrap());
+        let mut got = Vec::new();
+        next.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"ef", "the frame written into the cut run is gone, the next one goes on");
     }
 }

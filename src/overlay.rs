@@ -92,7 +92,7 @@ use regex::Regex;
 use crate::area::Area;
 use crate::http::percent_decode;
 use crate::json::{self, Value};
-use crate::net::{Url, connect, error, read_head, status_of};
+use crate::net::{Url, connect, error, read_head, read_head_text, status_of};
 use crate::sys;
 use crate::takeover::{self, Job, Sink, SinkControl};
 
@@ -102,7 +102,7 @@ const SCRIPT_END: Duration = Duration::from_millis(500);
 const RECONNECT: Duration = Duration::from_secs(1);
 /// A probe without a result this long ago (failed, or still running) is run again.
 /// How often the overlay asks for the zones of its session (as `takeover` for the live state).
-const ZONES_POLL: Duration = Duration::from_millis(250);
+const ZONES_POLL: Duration = Duration::from_millis(100);
 const PROBE_RETRY: Duration = Duration::from_secs(60);
 /// Read timeout of a probe of an http input, in microseconds.
 const PROBE_TIMEOUT_US: &str = "20000000";
@@ -891,20 +891,31 @@ fn frame_bytes(width: u32, height: u32) -> usize {
 /// of the stack), ffmpeg gets transparent frames, as fast as it reads them, so
 /// the channel goes on; a thread reconnects and the frames follow. Without a
 /// way back (`resume` empty) ffmpeg sees the end of its input, as before.
-fn relay(socket: TcpStream, mut pipe: impl Write, frame: usize, reconnect: Option<&dyn Fn() -> mpsc::Receiver<TcpStream>>) {
+/// A delta stream is patched into the frame shown, and ffmpeg gets it whole.
+fn relay(socket: FrameSocket, mut pipe: impl Write, frame: usize, reconnect: Option<&dyn Fn() -> mpsc::Receiver<FrameSocket>>) {
     let mut buffer = vec![0u8; 1 << 20];
     let blank = vec![0u8; frame];
+    let mut shown = vec![0u8; frame];
     let mut source = socket;
     let mut partial = 0;
     loop {
-        loop {
-            match source.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if pipe.write_all(&buffer[..n]).is_err() {
-                        return;
+        if source.delta {
+            let mut reader = io::BufReader::with_capacity(1 << 16, &source.stream);
+            while crate::delta::read_record(&mut reader, &mut shown).is_ok() {
+                if pipe.write_all(&shown).is_err() {
+                    return;
+                }
+            }
+        } else {
+            loop {
+                match source.stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if pipe.write_all(&buffer[..n]).is_err() {
+                            return;
+                        }
+                        partial = (partial + n) % frame;
                     }
-                    partial = (partial + n) % frame;
                 }
             }
         }
@@ -1054,26 +1065,37 @@ fn sidecar_get(sidecar: &str, path: &str) -> io::Result<(String, Vec<u8>)> {
 }
 
 /// Socket positioned at the body of the sidecar's frame stream.
-fn open_frames(sidecar: &str, path: &str) -> io::Result<TcpStream> {
+/// A frame stream of the sidecar: delta records (src/delta.rs; a sidecar that
+/// knows them says so in `X-VizRS-Frames`) or whole frames (an older one).
+pub struct FrameSocket {
+    pub stream: TcpStream,
+    pub delta: bool,
+}
+
+fn open_frames(sidecar: &str, path: &str) -> io::Result<FrameSocket> {
     let url = Url::split(sidecar).ok_or_else(|| error(format!("bad sidecar URL {sidecar}")))?;
     let mut stream = connect(&url)?;
-    stream.write_all(format!("GET {path} HTTP/1.0\r\nHost: {}\r\n\r\n", url.netloc).as_bytes())?;
-    let line = read_head(&mut stream, "frame stream")?;
-    if status_of(&line) != "200" {
+    stream.write_all(format!("GET {path}&delta=1 HTTP/1.0\r\nHost: {}\r\n\r\n", url.netloc).as_bytes())?;
+    let head = read_head_text(&mut stream, "frame stream")?;
+    let line = head.lines().next().unwrap_or("");
+    if status_of(line) != "200" {
         return Err(error(format!("frame stream: {line}")));
     }
+    let delta = head.lines().any(|l| {
+        l.split_once(':').is_some_and(|(name, value)| name.trim().eq_ignore_ascii_case("x-vizrs-frames") && value.trim() == "delta")
+    });
     stream.set_read_timeout(None)?;
     stream.set_write_timeout(None)?;
     // ffmpeg blocks on this socket: a sidecar gone without closing it must not stop the channel.
     sys::keepalive(stream.as_raw_fd(), 3, 2, 4)?;
-    Ok(stream)
+    Ok(FrameSocket { stream, delta })
 }
 
 /// The sidecar's session for the canvas channel and its frame stream. With
 /// `place` (the command can overlay the graphics anywhere) the frames are
 /// those of the graphics area, if the channel has one; `follow` = the piece
 /// goes as runs that can widen the zones in its middle (PLAN-strefy S3b).
-fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool, follow: bool) -> io::Result<(Frames, TcpStream)> {
+fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool, follow: bool) -> io::Result<(Frames, FrameSocket)> {
     let area = match (place, follow) {
         (true, true) => "&area=1&follow=1",
         (true, false) => "&area=1",
@@ -1229,7 +1251,7 @@ fn with_graphics(
     canvas: &Canvas,
     job: &Job,
     (on, audio): (bool, bool),
-    (frames, socket, place): (Frames, TcpStream, bool),
+    (frames, socket, place): (Frames, FrameSocket, bool),
     drain: Drain,
     takeover: bool,
 ) -> i32 {
@@ -1278,7 +1300,14 @@ fn with_graphics(
         current.control.attach(writer);
         Ok(child)
     };
-    let restart = || watch.as_ref().is_some_and(ZoneWatch::newer);
+    // The run stops for the new zones: its graphics end first (the sidecar may hold them).
+    let restart = || {
+        let newer = watch.as_ref().is_some_and(ZoneWatch::newer);
+        if newer {
+            feed.lock().unwrap_or_else(|e| e.into_inner()).control.cut();
+        }
+        newer
+    };
     let code = sequence(settings, job, on, audio, takeover, &run, &restart);
     // The relay stops at its next frame, closing the frame stream: the sidecar ends the script.
     feed.lock().unwrap_or_else(|e| e.into_inner()).control.close();
@@ -1289,7 +1318,7 @@ fn with_graphics(
 
 /// `socket` (a frame stream of `frames`) relayed to the runs, reconnected
 /// after a restart of the sidecar.
-fn relayed(settings: &Settings, frames: Frames, socket: TcpStream, place: bool) -> Feed {
+fn relayed(settings: &Settings, frames: Frames, socket: FrameSocket, place: bool) -> Feed {
     let frame = frame_bytes(frames.width, frames.height);
     let (sink, control) = Sink::new(frame);
     let area = if place { "&area=1" } else { "" };
@@ -1311,7 +1340,7 @@ fn relayed(settings: &Settings, frames: Frames, socket: TcpStream, place: bool) 
             receiver
         };
         let again = resume.as_deref().map(|path| move || reconnect(path));
-        relay(socket, sink, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<TcpStream>));
+        relay(socket, sink, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<FrameSocket>));
     });
     Feed { frames, control }
 }
@@ -1408,7 +1437,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
             receiver
         };
         let again = resume.as_deref().map(|path| move || reconnect(path));
-        relay(socket, writer, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<TcpStream>));
+        relay(socket, writer, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<FrameSocket>));
     });
 
     let pid = child.id();
@@ -1657,15 +1686,37 @@ mod tests {
             let (mut back, _) = listener.accept().unwrap();
             back.write_all(&[2; 4]).unwrap();
             drop(back);
-            sender.send(socket).unwrap();
+            sender.send(FrameSocket { stream: socket, delta: false }).unwrap();
             receiver
         };
         let seen = Arc::new(Mutex::new(Vec::new()));
-        relay(first, Tap(Arc::clone(&seen)), 4, Some(&reconnect));
+        relay(FrameSocket { stream: first, delta: false }, Tap(Arc::clone(&seen)), 4, Some(&reconnect));
         let seen = seen.lock().unwrap();
         assert_eq!(&seen[..8], &[1, 1, 1, 1, 1, 1, 0, 0], "the broken frame is filled");
         let at = seen.iter().position(|b| *b == 2).unwrap();
         assert_eq!(at % 4, 0, "the frames stay aligned");
+    }
+
+    /// Delta records become whole frames for ffmpeg; a record broken off is
+    /// not shown, and the stream after a reconnection starts with a whole frame.
+    #[test]
+    fn relay_rebuilds_whole_frames_from_delta_records() {
+        use std::net::TcpListener;
+        // a 2x2 frame: Y 4, U 1, V 1, A 4 bytes
+        let (one, two) = ([1u8; 10], [1u8, 1, 1, 1, 1, 1, 1, 1, 7, 7]);
+        let mut records = Vec::new();
+        crate::delta::write_record(&mut records, None, &one, 2, 2).unwrap();
+        crate::delta::write_record(&mut records, Some(&one), &two, 2, 2).unwrap();
+        records.extend_from_slice(&crate::delta::UNCHANGED);
+        records.extend_from_slice(&crate::delta::MAGIC[..]); // broken off
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let first = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.write_all(&records).unwrap();
+        drop(server);
+        let mut seen = Vec::new();
+        relay(FrameSocket { stream: first, delta: true }, &mut seen, 10, None);
+        assert_eq!(seen, [&one[..], &two, &two].concat());
     }
 
     #[test]

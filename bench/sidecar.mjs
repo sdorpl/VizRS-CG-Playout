@@ -43,6 +43,9 @@ const TAPE = env.BENCH_TAPE === "1";
 // corner of the first, ffmpeg asks for their frames.
 const AREA = env.BENCH_AREA || "";
 const [AX, AY] = (/^\d+x\d+\+(\d+)\+(\d+)/.exec(AREA) ?? [0, 0, 0]).slice(1).map(Number);
+// ffmpeg mode: frames as delta records (`delta=1`, as vizrs-ffmpeg asks; DOKUMENTACJA §1), put
+// back together into whole frames for the check, as vizrs-ffmpeg does for ffmpeg.
+const DELTA = env.BENCH_DELTA === "1";
 const CLK_TCK = 100;
 const HEADER = 11;
 
@@ -172,6 +175,32 @@ function yuvaSteps(points, push, [px, py, pw, ph]) {
   };
 }
 
+/** Delta records (src/delta.rs) of frames of `size` bytes -> `whole(frame)` for every record. */
+function deltaFrames(size, whole) {
+  const frame = Buffer.alloc(size);
+  let pending = Buffer.alloc(0);
+  return (chunk) => {
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+    for (;;) {
+      if (pending.length < 8) return;
+      const count = pending.readUInt32LE(4);
+      const table = 8 + count * 8;
+      if (pending.length < table) return;
+      let length = table;
+      for (let i = 0; i < count; i++) length += pending.readUInt32LE(8 + i * 8 + 4);
+      if (pending.length < length) return;
+      let at = table;
+      for (let i = 0; i < count; i++) {
+        const [offset, bytes] = [pending.readUInt32LE(8 + i * 8), pending.readUInt32LE(12 + i * 8)];
+        pending.copy(frame, offset, at, at + bytes);
+        at += bytes;
+      }
+      whole(frame);
+      pending = pending.subarray(length);
+    }
+  };
+}
+
 /**
  * Share of output frames that move as they should, stand where they should not
  * or skip: the scene steps once per `hold` output frames (1, or 2 with a 50 fps
@@ -252,12 +281,13 @@ async function run(mode) {
   // The overlay takes the session over; the script session stays open (and silent), as in ErsatzTV.
   if (mode === "ffmpeg") {
     const claim = await (await fetch(`${cg.url}/ffmpeg?channel=1&wait=5000&area=1`)).json();
-    const frames = await fetch(`${cg.url}/ffmpeg/frames?session=${claim.session}&fps=${FFMPEG_FPS}&area=1`);
+    const frames = await fetch(`${cg.url}/ffmpeg/frames?session=${claim.session}&fps=${FFMPEG_FPS}&area=1${DELTA ? "&delta=1" : ""}`);
     readers.push(frames.body.getReader());
   }
   // Steps of the stream ErsatzTV or ffmpeg reads (the last one), kept during the measurement.
   const push = (step) => probe.steps?.push(step);
-  const parse = mode === "ffmpeg" ? yuvaSteps(points, push, [ax, ay, aw, ah]) : packetSteps(points, push);
+  const yuva = mode === "ffmpeg" && yuvaSteps(points, push, [ax, ay, aw, ah]);
+  const parse = !yuva ? packetSteps(points, push) : DELTA ? deltaFrames(aw * ah * 2 + Math.ceil(aw / 2) * Math.ceil(ah / 2) * 2, yuva) : yuva;
   const drain = Promise.all(readers.map(async (reader, index) => {
     for (;;) {
       const { done, value } = await reader.read();
@@ -287,7 +317,7 @@ async function run(mode) {
   const capture = health0.captures[0] ?? {};
   return {
     build: path.basename(env.VIRTRS_CG_BIN || "vizrs-cg"),
-    mode,
+    mode: mode === "ffmpeg" && DELTA ? "ffmpeg delta" : mode,
     size: `${WIDTH}x${HEIGHT}`,
     render: capture.render,
     area: capture.area ?? "",
