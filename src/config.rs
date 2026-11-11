@@ -135,6 +135,9 @@ pub struct Config {
     pub renderer: String,
     /// The native renderer program; "" = `vizrs-render` next to the sidecar or on `PATH`.
     pub renderer_bin: String,
+    /// One native renderer process per VizRS layer of the show (the layers draw in
+    /// parallel, a standing layer costs nothing); false = one process for all.
+    pub native_layers: bool,
     /// Shared secret of the live ingest listeners (`vizrs-ffmpeg vizrs-ingest`,
     /// `POST /ingest`); "" = live ingest off.
     pub ingest_token: String,
@@ -199,6 +202,7 @@ impl Default for Config {
             tape: false,
             renderer: "auto".into(),
             renderer_bin: String::new(),
+            native_layers: true,
             ingest_token: String::new(),
             ingest_anytime: true,
             ingest_listeners: String::new(),
@@ -412,6 +416,7 @@ impl Config {
                     "tape" => config.tape = boolean(value, key)?,
                     "renderer" => config.renderer = string(value, key)?,
                     "renderer_bin" => config.renderer_bin = string(value, key)?,
+                    "native_layers" => config.native_layers = boolean(value, key)?,
                     "ingest_token" => config.ingest_token = string(value, key)?,
                     "ingest_anytime" => config.ingest_anytime = boolean(value, key)?,
                     "ingest" => config.ingest_listeners = string(value, key)?,
@@ -543,6 +548,9 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_RENDERER").filter(|v| !v.is_empty()) {
             config.renderer = v;
+        }
+        if let Some(v) = env("VIZRS_NATIVE_LAYERS").filter(|v| !v.is_empty()) {
+            config.native_layers = v != "0";
         }
         if let Some(v) = env("VIZRS_RENDERER_BIN").filter(|v| !v.is_empty()) {
             config.renderer_bin = v;
@@ -845,6 +853,15 @@ mod tests {
         assert!(warnings.is_empty());
         let (config, _) = Config::from_values(Some(&file), &env(&[("VIZRS_RENDERER", "native"), ("VIZRS_RENDERER_BIN", "/x")])).unwrap();
         assert_eq!((config.renderer.as_str(), config.renderer_bin.as_str()), ("native", "/x"));
+    }
+
+    #[test]
+    fn native_layers() {
+        assert!(Config::default().native_layers);
+        let file = json::parse(r#"{"native_layers":false}"#).unwrap();
+        assert!(!Config::from_values(Some(&file), &env(&[])).unwrap().0.native_layers);
+        assert!(Config::from_values(Some(&file), &env(&[("VIZRS_NATIVE_LAYERS", "1")])).unwrap().0.native_layers);
+        assert!(!Config::from_values(None, &env(&[("VIZRS_NATIVE_LAYERS", "0")])).unwrap().0.native_layers);
     }
 
     #[test]

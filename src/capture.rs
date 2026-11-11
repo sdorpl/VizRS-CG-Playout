@@ -29,7 +29,7 @@ use crate::area::{Area, cut_to, geometries, union};
 use crate::devtools::{DevTools, Incoming};
 use crate::frames::{Decode, Frame, History, Shot, Source};
 use crate::json::{self, Value};
-use crate::native::{self, Kind, Native, Renderer};
+use crate::native::{self, Drawn, LayerList, Layered, Renderer};
 use crate::packets::{Rect, crop};
 use crate::png::decode_png;
 use crate::rects::visible_rects;
@@ -237,6 +237,8 @@ pub struct CaptureOptions {
     pub renderer: Renderer,
     /// The native renderer program (`renderer_bin`).
     pub renderer_bin: String,
+    /// The layers of the show, one native renderer each (`native_layers`); `None` = one for all.
+    pub layers: Option<LayerList>,
 }
 
 /// What the browser loop is told from other threads.
@@ -302,6 +304,8 @@ pub struct Capture {
     tape_films: AtomicU64,
     /// The native renderer drew the last frame (`renderer` native or auto).
     native_drawing: AtomicBool,
+    /// The layers drawn by a native renderer each (empty = one for all).
+    native_layers: Mutex<Vec<String>>,
 }
 
 static PROFILES: AtomicU64 = AtomicU64::new(0);
@@ -342,6 +346,7 @@ impl Capture {
             tape_crawl: AtomicU64::new(0),
             tape_films: AtomicU64::new(0),
             native_drawing: AtomicBool::new(false),
+            native_layers: Mutex::new(Vec::new()),
         });
         let browser = Arc::clone(&capture);
         let _ = thread::Builder::new().name("capture".into()).spawn(move || browser.supervise());
@@ -405,6 +410,11 @@ impl Capture {
         let native = self.options.renderer == Renderer::Native || self.native_drawing.load(Ordering::Relaxed);
         let now = if native { "native" } else { "chromium" };
         (self.options.renderer.name(), now)
+    }
+
+    /// The layers drawn by a native renderer each (empty = one for all, or Chromium).
+    pub fn native_layers(&self) -> Vec<String> {
+        self.native_layers.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Frames per second Chromium draws now.
@@ -648,46 +658,27 @@ impl Capture {
         if o.areas.is_empty() { Area { x: 0, y: 0, w: o.out_width, h: o.out_height } } else { union(&o.areas) }
     }
 
-    fn start_native(&self) -> Result<Native, String> {
+    fn start_native(&self) -> Result<Layered, String> {
         let o = &self.options;
-        Native::start(&o.renderer_bin, &o.url, (o.out_width, o.out_height), &o.areas)
+        Layered::start(&o.renderer_bin, &o.url, (o.out_width, o.out_height), &o.areas, self.native_part(), o.layers.clone())
     }
 
     /// One native frame into the history; false when the renderer left it to Chromium.
-    fn native_slot(&self, native: &mut Native, start: f64, at: Instant, complete_only: bool, force: bool) -> Result<bool, String> {
-        let reply = native.frame(start, native::wall_ms(start, self.options.clock_offset), complete_only, force)?;
-        let part = self.native_part();
-        if matches!(reply.kind, Kind::Picture(_) | Kind::Region(..) | Kind::Patch(_)) && (reply.width, reply.height) != (part.w, part.h) {
-            return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
+    fn native_slot(&self, native: &mut Layered, start: f64, at: Instant, complete_only: bool, force: bool) -> Result<bool, String> {
+        let drawn = native.frame(start, native::wall_ms(start, self.options.clock_offset), complete_only, force)?;
+        let layers = native.layer_names();
+        let mut known = self.native_layers.lock().unwrap_or_else(|e| e.into_inner());
+        if *known != layers {
+            if !layers.is_empty() {
+                crate::info!("burn-in {}: a native renderer per layer: {}", self.key(), layers.join(", "));
+            }
+            *known = layers;
         }
-        // The picture (Picture, Region) stays as the base of the next patch: with a patch only the
-        // changed rectangles cross the pipe (a crawl under a large board: 0.6 MB a frame, not 4 MB).
-        match reply.kind {
-            Kind::Skipped => return Ok(false),
-            Kind::Unchanged => {}
-            Kind::Empty => {
-                native.forget();
-                self.history.set(Vec::new(), at);
-            }
-            Kind::Picture(rgba) => {
-                self.history.set(native::picture_rects(&rgba, part, &self.options.areas), at);
-                native.keep(Area { x: 0, y: 0, w: part.w, h: part.h }, rgba);
-            }
-            Kind::Regions(regions) => {
-                native.forget();
-                let rects = regions.iter().flat_map(|(region, rgba)| native::picture_rects(rgba, *region, &self.options.areas));
-                self.history.set(rects.collect(), at);
-            }
-            Kind::Region(r, rgba) => {
-                let region = Area { x: part.x + r.x, y: part.y + r.y, w: r.w, h: r.h };
-                self.history.set(native::picture_rects(&rgba, region, &self.options.areas), at);
-                native.keep(r, rgba);
-            }
-            Kind::Patch(patches) => {
-                let (r, rgba) = native.patch(&patches)?;
-                let region = Area { x: part.x + r.x, y: part.y + r.y, w: r.w, h: r.h };
-                self.history.set(native::picture_rects(rgba, region, &self.options.areas), at);
-            }
+        drop(known);
+        match drawn {
+            Drawn::Skipped => return Ok(false),
+            Drawn::Unchanged => {}
+            Drawn::Changed(rects) => self.history.set(rects, at),
         }
         Ok(true)
     }
@@ -979,7 +970,7 @@ impl Capture {
         let mut guard = RateGuard::new(Instant::now());
         // `renderer: auto`: the native renderer draws while all on air is native; Chromium waits without drawing.
         let auto = self.options.renderer == Renderer::Auto;
-        let mut native: Option<Native> = None;
+        let mut native: Option<Layered> = None;
         let mut native_retry = Instant::now();
         let mut native_warned = false;
         let mut from_native = false;
@@ -1355,7 +1346,7 @@ fn decoder(regions: Vec<(Area, Area)>, cut: Vec<Area>) -> Arc<Decode> {
         let mut rects = if (width, height) != (part.w, part.h) {
             scale_rects(&picture.rgba, width, height, &boxes, part.w, part.h)
         } else {
-            boxes.into_iter().map(|(x, y, w, h)| Rect { x, y, w, h, pixels: crop(&picture.rgba, width, (x, y, w, h)) }).collect()
+            boxes.into_iter().map(|(x, y, w, h)| Rect { x, y, w, h, pixels: crop(&picture.rgba, width, (x, y, w, h)).into() }).collect()
         };
         for rect in &mut rects {
             (rect.x, rect.y) = (rect.x + part.x, rect.y + part.y);

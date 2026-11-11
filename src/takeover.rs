@@ -9,6 +9,10 @@
 //      it ends or the piece does; the next live run goes on where it stopped
 //      └─ the piece again, from where the schedule is by now
 //
+// The same runs serve the graphics zones of `area: auto` (PLAN-strefy S3b):
+// zones widened in the middle of the piece stop the run of the piece, and the
+// next one, from where it was, overlays the frames in the new zones.
+//
 // Every run gets `-output_ts_offset` of what the piece produced so far, so the
 // timestamps go on as from one ffmpeg; the length produced is read from the
 // playlist (EXTINF of the new segments), as ErsatzTV counts it. Live replaces
@@ -490,8 +494,13 @@ struct Poller {
 }
 
 impl Poller {
-    fn start(sidecar: &str, channel: &str, live: bool, audio: bool) -> Poller {
+    /// Not `active` (live may not take this piece over): never live, nothing asked.
+    fn start(sidecar: &str, channel: &str, live: bool, audio: bool, active: bool) -> Poller {
         let poller = Poller { live: Arc::new(AtomicBool::new(live)), audio: Arc::new(AtomicBool::new(audio)), stop: Arc::default() };
+        if !active {
+            poller.live.store(false, Ordering::Relaxed);
+            return poller;
+        }
         let (live, audio, stop) = (Arc::clone(&poller.live), Arc::clone(&poller.audio), Arc::clone(&poller.stop));
         let (sidecar, channel) = (sidecar.to_owned(), channel.to_owned());
         std::thread::spawn(move || {
@@ -522,6 +531,10 @@ pub struct Runner<'a> {
     pub current: &'a AtomicU32,
     /// ErsatzTV stopped the piece (a forwarded signal).
     pub stopping: &'a AtomicBool,
+    /// Live may take the piece over; false = runs only for the graphics zones.
+    pub takeover: bool,
+    /// The run of the piece must start again (its graphics zones widened, S3b).
+    pub restart: &'a dyn Fn() -> bool,
 }
 
 fn log(message: impl std::fmt::Display) {
@@ -602,7 +615,7 @@ fn code(status: io::Result<ExitStatus>) -> i32 {
 /// Plays the piece `job` as runs of its own command and of the live source; the exit code.
 pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> i32 {
     let before: HashSet<String> = read_segments(&job.playlist).into_iter().map(|(name, _)| name).collect();
-    let poller = Poller::start(runner.sidecar, &job.channel, live_now, audio_now);
+    let poller = Poller::start(runner.sidecar, &job.channel, live_now, audio_now, runner.takeover);
     let source_url = format!("{}/ingest?channel={}", runner.sidecar, quote_plus(&job.channel));
     let mut elapsed = 0.0;
     trace(
@@ -648,6 +661,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         };
         runner.current.store(child.id(), Ordering::Relaxed);
         let mut interrupted = false;
+        let mut restarted = false;
         let mut stop = Stop::default();
         let started = Instant::now();
         let status = loop {
@@ -660,6 +674,12 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
                 // ffmpeg ends on SIGINT as on `q`: the segment it writes is closed and listed.
                 crate::sys::send_signal(child.id(), crate::sys::SIGINT);
                 interrupted = true;
+                stop.since = Some(Instant::now());
+            }
+            if source.is_none() && !interrupted && !runner.stopping.load(Ordering::Relaxed) && (runner.restart)() {
+                crate::sys::send_signal(child.id(), crate::sys::SIGINT);
+                interrupted = true;
+                restarted = true;
                 stop.since = Some(Instant::now());
             }
             if source.is_some() && !interrupted && overran(started.elapsed(), job.duration - elapsed) {
@@ -689,6 +709,16 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
             let exit = code(status);
             trace(job, format_args!("channel {}: piece ended (exit {exit})", job.channel));
             return exit;
+        } else if restarted {
+            trace(
+                job,
+                format_args!(
+                    "channel {}: piece restarted for new graphics zones after {:.1} s (exit {})",
+                    job.channel,
+                    now - elapsed,
+                    code(status)
+                ),
+            );
         } else {
             trace(
                 job,

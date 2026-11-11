@@ -152,6 +152,11 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
     // The yuva420p frame goes with it: a standing graphic (pictures sharing
     // their pixels) is converted once, not 50 times a second.
     let mut held: Option<(u64, Arc<Picture>, Arc<crate::yuva::Yuva>)> = None;
+    // Raw frames: each one from the frame before, converting only what changed.
+    let mut builder = match &options.format {
+        Format::Yuva { layout, hd } => Some(crate::yuva::Builder::new(layout, *hd)),
+        Format::Packets => None,
+    };
     // Raw frames: how far after its moment an output frame takes its picture.
     let mut shift = Duration::ZERO;
 
@@ -202,7 +207,7 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
             } else {
                 frame_at(base, sent)
             };
-            let written = if let Format::Yuva { layout, hd } = &options.format {
+            let written = if let Some(builder) = builder.as_mut() {
                 sent += 1;
                 let yuva = match &held {
                     Some((seq, _, yuva)) if *seq == frame.seq => Arc::clone(yuva),
@@ -210,7 +215,7 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
                         let picture = frame.picture();
                         let yuva = match &held {
                             Some((_, same, yuva)) if Arc::ptr_eq(same, &picture) => Arc::clone(yuva),
-                            _ => picture.yuva(layout, *hd),
+                            _ => builder.build(&picture.rects),
                         };
                         Arc::clone(&held.insert((frame.seq, picture, yuva)).2)
                     }
@@ -289,7 +294,8 @@ mod tests {
                 Arc::clone(&self.0)
             }
         }
-        let history = Fixed(Arc::new(Frame::new(1, vec![Rect { x: 1, y: 0, w: 1, h: 1, pixels: vec![0, 0, 255, 255] }], Instant::now())));
+        let history =
+            Fixed(Arc::new(Frame::new(1, vec![Rect { x: 1, y: 0, w: 1, h: 1, pixels: vec![0, 0, 255, 255].into() }], Instant::now())));
         let control = Control::new(false);
         let closer = Arc::clone(&control);
         let timer = std::thread::spawn(move || {
@@ -337,7 +343,7 @@ mod tests {
         let counter = Arc::clone(&decodes);
         let decode: Arc<Decode> = Arc::new(move |_, _: &Shot| {
             counter.fetch_add(1, Ordering::Relaxed);
-            Ok(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4] }])
+            Ok(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4].into() }])
         });
         let history = History::new(Duration::from_secs(5));
         history.set_png(vec![1], Instant::now() - Duration::from_secs(2), &decode);
@@ -379,7 +385,7 @@ mod tests {
                 }
                 while pending.first().is_some_and(|p| p.2 <= now) {
                     let (at, value, _) = pending.remove(0);
-                    feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4] }], at);
+                    feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4].into() }], at);
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -467,7 +473,7 @@ mod tests {
             while started.elapsed() < Duration::from_millis(5500) {
                 let at = started + Duration::from_millis(drawn * 40);
                 std::thread::sleep(at.saturating_duration_since(Instant::now()));
-                feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4] }], at);
+                feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4].into() }], at);
                 drawn += 1;
                 if started.elapsed() >= Duration::from_millis(5000) {
                     closer.close();
@@ -517,7 +523,10 @@ mod tests {
         let history = History::new(Duration::from_secs(5));
         let now = Instant::now();
         for value in (1..=20u8).rev() {
-            history.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4] }], now - Duration::from_millis(u64::from(value) * 100));
+            history.set(
+                vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4].into() }],
+                now - Duration::from_millis(u64::from(value) * 100),
+            );
         }
         history
     }

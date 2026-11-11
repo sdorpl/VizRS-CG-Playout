@@ -17,6 +17,14 @@
 //   GET  /ffmpeg/frames?session=N[&fps=25/1][&area=1]
 //                         raw yuva420p frames of that session for ffmpeg:
 //                         the channel, or with area=1 its graphics areas
+//   GET  /ffmpeg/zones?session=N
+//                         `area: auto`: the zones of the session now (`rev`
+//                         grows when they widen in the middle of the piece,
+//                         PLAN-strefy S3b), for the overlay's next run
+//   GET  /ffmpeg/frames?session=N&rev=R&zones=WxH+X+Y,…&at=S[&fps=…]&area=1
+//                         a further frame stream of the session in those
+//                         zones (empty = the whole channel), its frame 0 at
+//                         S seconds into the piece; it replaces the one before
 //   GET /ingest/listeners  the listeners in force (VIZRS_INGEST or VizRS Live), for vizrs-ingest
 //   POST /ingest?channel=1, GET /ingest?channel=1, GET /ingest/state?channel=1
 //                         live ingest: a live source of the channel in, out
@@ -27,11 +35,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::area::{Area, Layout, geometries};
 use crate::capture::{Capture, CaptureMode, CaptureOptions, IDLE, find_browser};
@@ -59,6 +67,9 @@ const HOLD: Duration = Duration::from_millis(3000);
 // A session taken over waits this long for the overlay's frame stream.
 const FRAMES_WAIT: Duration = Duration::from_millis(10000);
 const MAX_WAIT_MS: f64 = 10000.0;
+/// A second widening of a run's zones this soon after the first: the whole
+/// channel until the end of the piece (PLAN-strefy S3b; no blinking runs).
+const WIDEN_WINDOW: Duration = Duration::from_secs(10);
 
 /// `Number(text)` of JavaScript for the rates and waits in a query.
 fn js_number(text: &str) -> f64 {
@@ -116,6 +127,14 @@ struct Script {
     zones: Mutex<Option<Vec<Area>>>,
     /// Pictures with graphics outside those zones (cut off until the next run, S3a).
     outside: AtomicUsize,
+    /// Revision of `zones`: grows with each widening in the middle of the piece (S3b).
+    zones_rev: AtomicU64,
+    /// The overlay asks for the zones (`/ffmpeg/zones`): it starts a new run when they widen.
+    follows: AtomicBool,
+    widenings: AtomicUsize,
+    widened_at: Mutex<Option<Instant>>,
+    /// Frame streams of the session so far: only the last one ends the script.
+    streams: AtomicU64,
     capture: Option<Arc<Capture>>,
     /// The session as a reader of `capture`.
     reader: u64,
@@ -172,7 +191,22 @@ pub struct Server {
     panel: Arc<Panel>,
     /// Footprints of VizRS pages (`area: auto`, PLAN-strefy).
     pub footprints: Mutex<Footprints>,
+    /// The layers of the show per /output URL, one native renderer each (`native_layers`).
+    layers: Mutex<HashMap<String, ShowLayers>>,
 }
+
+/// The layers of a show for the native renderers of its /output URL.
+struct ShowLayers {
+    /// A channel showing it (its VizRS address, token and bus).
+    channel: String,
+    list: native::LayerList,
+    /// When the show was read; `None` = not yet (read at once, in the background).
+    fetched: Option<Instant>,
+}
+
+/// How often the layers on air are checked against the list, and how often the show is read anyway.
+const LAYERS_EVERY: Duration = Duration::from_secs(2);
+const SHOW_EVERY: Duration = Duration::from_secs(30);
 
 /// How often the footprints learn from the pictures and `STATE` of each channel.
 const LEARN_EVERY: Duration = Duration::from_millis(500);
@@ -197,6 +231,7 @@ impl Server {
         let footprints = Mutex::new(Footprints::load(Footprints::default_path(&config.etv_config)));
         Arc::new(Server {
             footprints,
+            layers: Mutex::new(HashMap::new()),
             ingest,
             panel,
             config: Arc::new(config),
@@ -208,6 +243,95 @@ impl Server {
             count: AtomicUsize::new(0),
             empty: Empty::new(),
         })
+    }
+
+    /// With `native_layers`, keeps the layers of the shows of the native
+    /// renderers up to date, in the background: a layer on air that is not on
+    /// the list (a scene moved to a new layer) reads the show at once.
+    pub fn start_layers(self: &Arc<Self>) {
+        if !self.config.native_layers {
+            return;
+        }
+        let server = Arc::clone(self);
+        let _ = thread::Builder::new().name("layers".into()).spawn(move || {
+            let mut checked = Instant::now();
+            loop {
+                thread::sleep(Duration::from_millis(100));
+                let all = checked.elapsed() >= LAYERS_EVERY;
+                if all {
+                    checked = Instant::now();
+                }
+                server.refresh_layers(all);
+            }
+        });
+    }
+
+    /// The layers of the show of `url` for the native renderers of a capture
+    /// (`native_layers`; read in the background, empty until then = one
+    /// renderer for all); `None` = one renderer for all.
+    fn layers_for(&self, channel: &str, url: &str) -> Option<native::LayerList> {
+        if !self.config.native_layers || matches!(Renderer::parse(&self.config.renderer), Ok(Renderer::Chromium) | Err(_)) {
+            return None;
+        }
+        let mut layers = self.layers.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = layers.entry(url.to_owned()).or_insert_with(|| ShowLayers {
+            channel: channel.to_owned(),
+            list: Arc::new(Mutex::new(Vec::new())),
+            fetched: None,
+        });
+        Some(Arc::clone(&entry.list))
+    }
+
+    /// The layers of the show of `url` and those `on_air`, bottom first.
+    fn read_layers(&self, channel: &str, url: &str, on_air: &[String]) -> Option<Vec<String>> {
+        let config = self.config.for_channel(channel);
+        let api = sync::http_url_of(url)?;
+        let show = match sync::fetch_show(&api, &config.vizrs.token) {
+            Ok(show) => show,
+            Err(error) => {
+                crate::debug!("native renderer: layers of the show: {error}");
+                return None;
+            }
+        };
+        let names = native::show_layers(&show).map_err(|error| crate::debug!("native renderer: {error}")).ok()?;
+        Some(native::stack(names.into_iter().chain(on_air.iter().cloned())))
+    }
+
+    /// One step of `start_layers`: shows not read yet, and with `all` the
+    /// layers on air of every show against its list.
+    fn refresh_layers(&self, all: bool) {
+        let entries: Vec<(String, String, native::LayerList, Option<Instant>)> = self
+            .layers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, e)| all || e.fetched.is_none())
+            .map(|(url, e)| (url.clone(), e.channel.clone(), Arc::clone(&e.list), e.fetched))
+            .collect();
+        for (url, channel, list, fetched) in entries {
+            let now = list.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let due = fetched.is_none_or(|f| f.elapsed() >= SHOW_EVERY);
+            // Layers on air not on the list: only for a show read already (no API, no list, no `STATE`).
+            let on_air = if !due && !now.is_empty() {
+                let config = self.config.for_channel(&channel);
+                vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix)
+                    .map(|reply| native::state_layers(&reply))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if !due && on_air.iter().all(|l| now.contains(l)) {
+                continue;
+            }
+            if let Some(entry) = self.layers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&url) {
+                entry.fetched = Some(Instant::now());
+            }
+            let Some(names) = self.read_layers(&channel, &url, &on_air) else { continue };
+            if names != now {
+                crate::info!("native renderer: one per layer of the show: {}", names.join(", "));
+                *list.lock().unwrap_or_else(|e| e.into_inner()) = names;
+            }
+        }
     }
 
     /// With `area: auto`, learns the footprints of the pages on air from the
@@ -232,8 +356,9 @@ impl Server {
     }
 
     /// The zones of a run of `channel` (PLAN-strefy S2): footprints of the pages
-    /// on its antenna and of the pages its rules take; `None` = the whole channel.
-    fn zones_for(&self, channel: &str, size: (u32, u32)) -> Option<Vec<Area>> {
+    /// on its antenna and of the pages its rules take, and of all the pages known
+    /// for an overlay that cannot widen them (not `follows`); `None` = the whole channel.
+    fn zones_for(&self, channel: &str, size: (u32, u32), follows: bool) -> Option<Vec<Area>> {
         let config = self.graphics.applied(&self.config.for_channel(channel));
         let on_air = footprint::on_air(&vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix).ok()?)?;
         let mut lines: Vec<String> = Vec::new();
@@ -246,23 +371,14 @@ impl Server {
         }
         let numbers: Vec<String> = vizrs::taken_pages(&lines).into_iter().filter(|p| !p.contains('{')).collect();
         let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
-        footprint::zones(&footprints, &on_air, &numbers, size)
+        footprint::zones(&footprints, &on_air, &numbers, size, follows)
     }
 
     /// One learning step: per channel with a capture, its last picture and the pages on its antenna.
     fn learn_footprints(&self) {
-        // Graphics outside the zones of a running overlay: cut off until its next run.
-        let running: Vec<Arc<Script>> =
-            lock(&self.sessions).scripts.values().filter(|s| s.claimed.load(Ordering::Relaxed)).cloned().collect();
-        for script in running {
-            let Some(capture) = &script.capture else { continue };
-            let zones = script.zones.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let Some(zones) = zones.filter(|z| !z.is_empty()) else { continue };
-            let rects: Vec<(u32, u32, u32, u32)> = capture.current().picture().rects.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
-            if !footprint::covered(&zones, &rects) && script.outside.fetch_add(1, Ordering::Relaxed) == 0 {
-                crate::warn!("channel {}: graphics outside the zones of this run, cut off until the next run", script.channel);
-            }
-        }
+        let mut on_air: HashMap<String, Vec<footprint::OnAir>> = HashMap::new();
+        // The cells each channel draws, as boxes (finer than the visible rectangles).
+        let mut drawn: HashMap<String, Vec<(u32, u32, u32, u32)>> = HashMap::new();
         let channels: Vec<(String, Arc<Capture>)> = {
             let sessions = lock(&self.sessions);
             let mut seen = Vec::<(String, Arc<Capture>)>::new();
@@ -280,17 +396,79 @@ impl Server {
             if !capture.areas().is_empty() {
                 continue;
             }
+            // The picture before `STATE`: a page taken in between is on the list
+            // but not in the picture, never the other way round (its pixels would
+            // go to the pages on air before it).
+            let now = crate::time::now_ms() as u64;
+            let picture = capture.current().picture();
             let config = self.config.for_channel(&channel);
             let pages = match vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix) {
                 Ok(reply) => footprint::on_air(&reply).unwrap_or_default(),
                 Err(_) => continue,
             };
-            let rects: Vec<(u32, u32, u32, u32)> = capture.current().picture().rects.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
-            let size = capture.out_size();
-            if self.footprints.lock().unwrap_or_else(|e| e.into_inner()).learn(&pages, &rects, size) {
+            let cells = footprint::Cells::of_picture(&picture.rects, capture.out_size());
+            if self.footprints.lock().unwrap_or_else(|e| e.into_inner()).learn(&channel, &pages, &cells, now) {
                 crate::debug!("footprints: channel {channel} learnt from {} page(s)", pages.len());
             }
+            on_air.insert(channel.clone(), pages);
+            drawn.insert(channel, cells.boxes());
         }
+        self.widen_runs(&on_air, &drawn);
+    }
+
+    /// Runs of the overlay whose graphics leave their zones (PLAN-strefy S3a,
+    /// S3b): with an overlay that follows the zones, they widen and its next
+    /// run (started at once) gets them; else they are cut off until the next run.
+    fn widen_runs(&self, on_air: &HashMap<String, Vec<footprint::OnAir>>, drawn: &HashMap<String, Vec<(u32, u32, u32, u32)>>) {
+        let running: Vec<Arc<Script>> =
+            lock(&self.sessions).scripts.values().filter(|s| s.claimed.load(Ordering::Relaxed)).cloned().collect();
+        for script in running {
+            if script.capture.is_none() {
+                continue;
+            }
+            let zones = script.zones.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let Some(zones) = zones.filter(|z| !z.is_empty()) else { continue };
+            let Some(rects) = drawn.get(&script.channel) else { continue };
+            let size = (script.ctx.width, script.ctx.height);
+            let pages = on_air.get(&script.channel).map_or(&[][..], Vec::as_slice);
+            let reason = {
+                let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
+                footprint::widen_reason(&footprints, &zones, pages, rects, size)
+            };
+            let Some(reason) = reason else { continue };
+            if !footprint::covered(&zones, rects) {
+                script.outside.fetch_add(1, Ordering::Relaxed);
+            }
+            if script.follows.load(Ordering::Relaxed) {
+                self.widen(&script, pages, rects, &reason);
+            } else if !footprint::covered(&zones, rects) && script.outside.load(Ordering::Relaxed) == 1 {
+                crate::warn!("channel {}: graphics outside the zones of this run, cut off until the next run", script.channel);
+            }
+        }
+    }
+
+    /// New zones of a run: those of a run starting now, if they hold what is on
+    /// air and drawn; else, or a second time within `WIDEN_WINDOW`, the whole channel.
+    fn widen(&self, script: &Script, pages: &[footprint::OnAir], rects: &[(u32, u32, u32, u32)], reason: &str) {
+        let size = (script.ctx.width, script.ctx.height);
+        let mut widened_at = script.widened_at.lock().unwrap_or_else(|e| e.into_inner());
+        let again = widened_at.is_some_and(|at| at.elapsed() < WIDEN_WINDOW);
+        let zones = if again { None } else { self.zones_for(&script.channel, size, true) }.filter(|z| {
+            let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
+            footprint::widen_reason(&footprints, z, pages, rects, size).is_none()
+        });
+        *widened_at = Some(Instant::now());
+        match &zones {
+            Some(z) => crate::info!("channel {}: graphics zones widened to {} ({reason})", script.channel, geometries(z)),
+            None if again => crate::info!(
+                "channel {}: graphics zones: the whole channel till the end of the piece ({reason}, widened again)",
+                script.channel
+            ),
+            None => crate::info!("channel {}: graphics zones: the whole channel ({reason})", script.channel),
+        }
+        *script.zones.lock().unwrap_or_else(|e| e.into_inner()) = zones;
+        script.widenings.fetch_add(1, Ordering::Relaxed);
+        script.zones_rev.fetch_add(1, Ordering::Relaxed);
     }
 
     fn events_for(&self, channel: &str) -> Arc<ChannelEvents> {
@@ -331,7 +509,8 @@ impl Server {
     }
 
     /// One capture per /output page, channel size, render size and graphics area, shared by the channels that have them.
-    fn capture_for(&self, url: &str, width: u32, height: u32, fps: f64, spec: &str, area: &str) -> Graphics {
+    #[allow(clippy::too_many_arguments)]
+    fn capture_for(&self, channel: &str, url: &str, width: u32, height: u32, fps: f64, spec: &str, area: &str) -> Graphics {
         if url.is_empty() || width == 0 || height == 0 {
             return Graphics::Empty;
         }
@@ -376,6 +555,7 @@ impl Server {
             tape: self.config.tape,
             renderer,
             renderer_bin: native::find_renderer(&self.config.renderer_bin),
+            layers: self.layers_for(channel, url),
         });
         sessions.captures.push((key, Arc::clone(&capture)));
         Graphics::Capture(capture)
@@ -397,6 +577,7 @@ impl Server {
                     ("mode", c.mode().name().into()),
                     ("renderer", c.renderer().0.into()),
                     ("drawn_by", c.renderer().1.into()),
+                    ("layers", Value::Array(c.native_layers().into_iter().map(Value::String).collect())),
                     ("status", c.status().into()),
                     ("seq", c.current().seq.into()),
                 ]);
@@ -429,6 +610,7 @@ impl Server {
                         ("zones", geometry),
                         ("share_percent", share.into()),
                         ("outside", (s.outside.load(Ordering::Relaxed) as u64).into()),
+                        ("widenings", (s.widenings.load(Ordering::Relaxed) as u64).into()),
                     ])
                 })
                 .collect();
@@ -458,6 +640,7 @@ impl Server {
             ("GET", "/etv/pages") => self.pages_request(&request, stream),
             ("GET", "/ffmpeg") => self.claim_request(&request, stream),
             ("GET", "/ffmpeg/resume") => self.resume_request(&request, stream),
+            ("GET", "/ffmpeg/zones") => self.zones_request(&request, stream),
             ("GET", "/ffmpeg/frames") => {
                 self.frames_request(&request, stream);
                 Ok(())
@@ -565,7 +748,10 @@ impl Server {
         // Frames of the graphics areas only for an overlay that places them (area=1).
         let placed = request.param("area") == Some("1");
         if placed && Area::is_auto(&self.config.area) && script.capture.as_ref().is_some_and(|c| c.areas().is_empty()) {
-            let zones = self.zones_for(&channel, (script.ctx.width, script.ctx.height));
+            // An overlay that can widen the zones in the middle of the piece (S3b) says so.
+            let follows = request.param("follow") == Some("1");
+            script.follows.store(follows, Ordering::Relaxed);
+            let zones = self.zones_for(&channel, (script.ctx.width, script.ctx.height), follows);
             match &zones {
                 Some(z) => {
                     let pixels: u64 = z.iter().map(|a| u64::from(a.w) * u64::from(a.h)).sum();
@@ -577,51 +763,55 @@ impl Server {
             *script.zones.lock().unwrap_or_else(|e| e.into_inner()) = zones;
         }
         let layout = frame_layout(&script, placed);
-        // A resumed overlay must get the same zones as its running ffmpeg graph, not `auto`.
-        let graphics = match script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            Some(zones) if placed && !zones.is_empty() => geometries(zones),
-            _ => script.area.clone(),
-        };
         let mut reply = json::object([
             ("session", script.id.into()),
             ("width", u64::from(layout.width).into()),
             ("height", u64::from(layout.height).into()),
             ("fps", script.fps.into()),
             ("matrix", ffmpeg_matrix(script.ctx.height).into()),
-            (
-                "resume",
-                format!(
-                    "channel={}&width={}&height={}&render={}&graphics={}",
-                    quote_plus(&channel),
-                    script.ctx.width,
-                    script.ctx.height,
-                    quote_plus(&script.render),
-                    quote_plus(&graphics)
-                )
-                .into(),
-            ),
+            ("resume", resume_query(&script, placed).into()),
         ]);
         if let (true, Value::Object(members)) = (placed, &mut reply) {
             let (first, _) = layout.parts[0];
             members.push(("x".into(), u64::from(first.x).into()));
             members.push(("y".into(), u64::from(first.y).into()));
-            let areas = layout.parts.iter().map(|(a, _)| {
-                json::object([
-                    ("x", u64::from(a.x).into()),
-                    ("y", u64::from(a.y).into()),
-                    ("w", u64::from(a.w).into()),
-                    ("h", u64::from(a.h).into()),
-                ])
-            });
-            members.push(("areas".into(), Value::Array(areas.collect())));
+            members.push(("areas".into(), areas_json(&layout)));
+            // Zones that may widen in the middle of the piece: the overlay follows `/ffmpeg/zones`.
+            if script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|z| !z.is_empty()) {
+                members.push(("zones_rev".into(), script.zones_rev.load(Ordering::Relaxed).into()));
+            }
         }
+        http::respond(&mut stream, 200, Some("application/json"), reply.to_string().as_bytes())
+    }
+
+    /// `/ffmpeg/zones`: the zones of a session taken over now, for the overlay's next run.
+    fn zones_request(&self, request: &Request, mut stream: TcpStream) -> std::io::Result<()> {
+        let id = js_number(request.param("session").unwrap_or(""));
+        let script =
+            lock(&self.sessions).scripts.get(&(id as u64)).filter(|s| id.fract() == 0.0 && s.claimed.load(Ordering::Relaxed)).cloned();
+        let Some(script) = script else {
+            return http::respond(&mut stream, 404, None, b"");
+        };
+        script.follows.store(true, Ordering::Relaxed);
+        let layout = frame_layout(&script, true);
+        let zones = script.zones.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|z| !z.is_empty());
+        let reply = json::object([
+            ("rev", script.zones_rev.load(Ordering::Relaxed).into()),
+            ("zones", zones.as_deref().map_or(Value::Null, |z| geometries(z).into())),
+            ("width", u64::from(layout.width).into()),
+            ("height", u64::from(layout.height).into()),
+            ("areas", areas_json(&layout)),
+            ("resume", resume_query(&script, true).into()),
+        ]);
         http::respond(&mut stream, 200, Some("application/json"), reply.to_string().as_bytes())
     }
 
     fn frames_request(&self, request: &Request, mut stream: TcpStream) {
         let id = js_number(request.param("session").unwrap_or(""));
         let script = lock(&self.sessions).scripts.get(&(id as u64)).filter(|_| id.fract() == 0.0).cloned();
-        let taken = script.filter(|s| s.claimed.load(Ordering::Relaxed) && !s.frames.swap(true, Ordering::Relaxed));
+        // A further stream (`rev`, S3b) replaces the one before; the first is taken once.
+        let further = request.param("rev").is_some();
+        let taken = script.filter(|s| s.claimed.load(Ordering::Relaxed) && (further || !s.frames.swap(true, Ordering::Relaxed)));
         let Some((script, capture)) = taken.and_then(|s| s.capture.clone().map(|c| (s, c))) else {
             crate::warn!("ffmpeg overlay: no frames for session {id}; ErsatzTV draws the graphics");
             let _ = http::respond(&mut stream, 404, None, b"");
@@ -635,22 +825,44 @@ impl Server {
         };
         // ErsatzTV's rate as the overlay reads it, not the session's own.
         capture.set_rate(script.reader, fps);
+        let placed = request.param("area") == Some("1");
+        let (layout, air) = if further {
+            // The zones the overlay's new run was built for, and that run's place in the piece.
+            let (width, height) = (script.ctx.width, script.ctx.height);
+            let layout = match Area::parse_list(request.param("zones").unwrap_or(""), width, height) {
+                Ok(zones) if placed && !zones.is_empty() => Layout::atlas(&zones),
+                Ok(_) => Layout::whole(width, height),
+                Err(error) => {
+                    crate::warn!("ffmpeg overlay: zones of session {id}: {error}");
+                    let _ = http::respond(&mut stream, 400, None, b"");
+                    return;
+                }
+            };
+            let at = js_number(request.param("at").unwrap_or(""));
+            let at = if at.is_finite() { at.max(0.0) } else { 0.0 };
+            let zones = match layout_zones(&layout, width, height) {
+                zones if zones.is_empty() => "the whole channel".to_owned(),
+                zones => geometries(&zones),
+            };
+            crate::info!("channel {}: ffmpeg overlay run from {at:.1} s, graphics zones {zones}", script.channel);
+            (layout, script.ctx.air_ms().map(|air| air + at * 1000.0))
+        } else {
+            (frame_layout(&script, placed), script.ctx.air_ms())
+        };
+        let number = script.streams.fetch_add(1, Ordering::Relaxed) + 1;
         let reader = capture.acquire(fps);
         let control = Control::new(false);
         watch_close(&stream, &control);
         if let Ok(mut out) = http::Stream::start(stream, request) {
-            let layout = frame_layout(&script, request.param("area") == Some("1"));
             let format = Format::Yuva { layout, hd: script.ctx.height >= 720 };
-            stream::stream_frames(
-                &*capture,
-                &mut out,
-                &Options { fps, lead_seconds: self.config.lead_seconds, format, air: script.ctx.air_ms() },
-                &control,
-            );
+            stream::stream_frames(&*capture, &mut out, &Options { fps, lead_seconds: self.config.lead_seconds, format, air }, &control);
         }
         capture.release(reader);
-        // The transcode is over: the script ends with it, as without the overlay.
-        script.stream.close();
+        // The transcode is over: the script ends with it, as without the overlay
+        // (not when a further stream of the session replaced this one).
+        if script.streams.load(Ordering::Relaxed) == number {
+            script.stream.close();
+        }
     }
 
     /// The frames of an overlay whose sidecar restarted: its ffmpeg runs on, the
@@ -666,7 +878,7 @@ impl Server {
         let url = self.config.for_channel(channel).output_url;
         let spec = request.param("render").unwrap_or("");
         let area = request.param("graphics").unwrap_or("");
-        let Graphics::Capture(capture) = self.capture_for(&url, width, height, fps, spec, area) else {
+        let Graphics::Capture(capture) = self.capture_for(channel, &url, width, height, fps, spec, area) else {
             return http::respond(&mut stream, 404, None, b"");
         };
         crate::info!("channel {channel}: ffmpeg overlay reconnected");
@@ -735,7 +947,7 @@ impl Server {
         let spec = request.param("render").unwrap_or(&self.config.render_size).to_owned();
         let area = request.param("area").unwrap_or(&self.config.area).to_owned();
         let capture = match carrier
-            .then(|| self.capture_for(&self.config.for_channel(&channel).output_url, ctx.width, ctx.height, fps, &spec, &area))
+            .then(|| self.capture_for(&channel, &self.config.for_channel(&channel).output_url, ctx.width, ctx.height, fps, &spec, &area))
         {
             Some(Graphics::Capture(capture)) => Some(capture),
             _ => None,
@@ -760,6 +972,11 @@ impl Server {
                     area: area.clone(),
                     zones: Mutex::new(None),
                     outside: AtomicUsize::new(0),
+                    zones_rev: AtomicU64::new(0),
+                    follows: AtomicBool::new(false),
+                    widenings: AtomicUsize::new(0),
+                    widened_at: Mutex::new(None),
+                    streams: AtomicU64::new(0),
                     capture: capture.clone(),
                     reader,
                     stream: Arc::clone(&control),
@@ -815,6 +1032,42 @@ fn frame_layout(script: &Script, area: bool) -> Layout {
         Some(areas) if area && !areas.is_empty() => Layout::atlas(areas),
         _ => Layout::whole(script.ctx.width, script.ctx.height),
     }
+}
+
+/// Query of `/ffmpeg/resume` for the overlay of `script`: a resumed overlay
+/// must get the same zones as its running ffmpeg graph, not `auto`.
+fn resume_query(script: &Script, placed: bool) -> String {
+    let graphics = match script.zones.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        Some(zones) if placed && !zones.is_empty() => geometries(zones),
+        _ => script.area.clone(),
+    };
+    format!(
+        "channel={}&width={}&height={}&render={}&graphics={}",
+        quote_plus(&script.channel),
+        script.ctx.width,
+        script.ctx.height,
+        quote_plus(&script.render),
+        quote_plus(&graphics)
+    )
+}
+
+/// The parts of a frame layout, as the overlay reads them (`areas`).
+fn areas_json(layout: &Layout) -> Value {
+    let areas = layout.parts.iter().map(|(a, _)| {
+        json::object([
+            ("x", u64::from(a.x).into()),
+            ("y", u64::from(a.y).into()),
+            ("w", u64::from(a.w).into()),
+            ("h", u64::from(a.h).into()),
+        ])
+    });
+    Value::Array(areas.collect())
+}
+
+/// The zones a layout carries; empty = the whole channel.
+fn layout_zones(layout: &Layout, width: u32, height: u32) -> Vec<Area> {
+    let zones: Vec<Area> = layout.parts.iter().map(|(a, _)| *a).collect();
+    if zones == [Area { x: 0, y: 0, w: width, h: height }] { Vec::new() } else { zones }
 }
 
 /// Closes `control` once the client hangs up: a stream that writes nothing

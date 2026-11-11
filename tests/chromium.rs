@@ -91,6 +91,7 @@ fn capture_with(
         tape,
         renderer: vizrs_cg::native::Renderer::Chromium,
         renderer_bin: String::new(),
+        layers: None,
     }))
 }
 

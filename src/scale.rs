@@ -238,7 +238,7 @@ pub fn scale_rects(rgba: &[u8], width: u32, height: u32, rects: &[(u32, u32, u32
             let h = ((f64::from(y1) * sy).ceil() as u32).min(out_height) - y;
             let src = crop(rgba, width, (x0, y0, x1 - x0, y1 - y0));
             let pixels = resize(&src, (x1 - x0) as usize, (y1 - y0) as usize, w as usize, h as usize);
-            Rect { x, y, w, h, pixels }
+            Rect { x, y, w, h, pixels: pixels.into() }
         })
         .collect()
 }

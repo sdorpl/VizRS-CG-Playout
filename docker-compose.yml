@@ -126,6 +126,7 @@ services:
       # auto (native while everything on air is native, Chromium otherwise).
       VIZRS_RENDERER: ${VIZRS_RENDERER:-auto}
       VIZRS_RENDERER_BIN: ${VIZRS_RENDERER_BIN:-}
+      VIZRS_NATIVE_LAYERS: ${VIZRS_NATIVE_LAYERS:-}
       # 1 = Chromium draws on the GPU (EGL) instead of the CPU; needs the card in this
       # container (docker-compose.nvidia.yml). Less CPU per frame, some GPU memory.
       VIZRS_BROWSER_GPU: ${VIZRS_BROWSER_GPU:-}

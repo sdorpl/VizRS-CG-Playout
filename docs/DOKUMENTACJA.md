@@ -87,43 +87,103 @@ Obszarów może być kilka, rozdzielonych przecinkami, np. pasek i logo:
 **`area: auto`** (`VIZRS_AREA=auto`, PLAN-strefy) – strefy mają wynikać
 z grafiki na antenie zamiast ze stałego ustawienia. Renderer rysuje cały
 kanał, a sidecar uczy się **śladów stron** i z nich składa strefy każdego
-przebiegu nakładki ffmpeg. Co 0,5 s dla
-każdego kanału z przechwytywaniem bierze widoczne prostokąty ostatniego obrazu
-i strony na jego antenie (`STATE`, z prefiksem `@N` przy `channel_buses`)
-i dopisuje prostokąty do śladu strony. Jest jedna strona – wszystkie jej
-prostokąty. Kilka stron – prostokąt idzie do strony, której ślad pokrywa go
-najbardziej, a nowy do strony wziętej najpóźniej (`since` w `STATE`; dwie
-wzięte w tej samej chwili – nikt się nie uczy). Ślad tylko rośnie, więc
-obejmuje też skrajne fazy animacji. Prostokąty są wyrównane do siatki 16 px
-z marginesem 16 px, sklejane przy odstępie mniejszym niż 64 px, najwyżej
-4 na stronę (więcej – ich obwiednia). Klucz to `id` i numer strony VizRS oraz
-rozmiar kanału (inne show = inne `id` = puste ślady). Ślady zapisują się co
-10 s w `<etv_config>/vizrs-live/footprints.json`; brak albo uszkodzony plik
-oznacza brak śladów.
+przebiegu nakładki ffmpeg. Co 0,5 s dla każdego kanału z przechwytywaniem
+bierze ostatni obraz i strony na jego antenie (`STATE`, z prefiksem `@N` przy
+`channel_buses`). Obraz czyta jako **komórki siatki 16 px** (komórka jest
+narysowana, gdy którykolwiek jej piksel ma alfę), a nie jako widoczne
+prostokąty: grafiki ułożone jedna nad drugą (QR obok tytułu nad tickerem)
+dają jeden prostokąt, ale osobne komórki. Jest jedna strona – wszystkie
+komórki są jej. Kilka stron:
+
+1. komórka, która pojawiła się do 3 s po wejściu strony (`since` w `STATE`)
+   i nie była narysowana przez 2 s przed nim, jest tej strony – także w śladzie
+   innej (pasek wipe'a na pasku tytułu); wejścia w odstępie do 0,5 s to jedna
+   chwila i z nich nikt się nie uczy (np. tytuł z `on_clip` i strona wzięta
+   razem z nim);
+2. komórka w śladzie strony na antenie jest już znana;
+3. gdy wszystkie strony na antenie mają ślady, komórka tuż przy śladzie
+   (do 32 px) dokładnie jednej z nich jest tej strony: jej animacja idzie
+   dalej (rozwijana ramka, cyfry odliczania);
+4. komórka, która pojawiła się do 15 s po ostatnim wejściu, z tą samą ciszą
+   przed nim, jest strony wziętej wtedy; litery przesuwanego tickera, które
+   znikają i wracają, nie są nowej strony;
+5. komórka narysowana dłużej niż 15 s idzie do jedynej strony na antenie bez
+   śladu.
+
+W każdym innym wypadku nikt się nie uczy – błędny ślad nigdy się nie kurczy,
+a brak śladu kosztuje cały kanał. Strona, której wejście sidecar widział
+i która przez 15 s nie narysowała nic swojego (wszystko w śladach innych),
+dostaje pusty ślad: jej piksele są w strefach, dopóki tamte strony są na
+antenie, a bez nich piksele poza strefami poszerzają przebieg. Przez 3 s po
+zejściu strony z anteny (jej animacja wyjścia jeszcze trwa, a `STATE` już jej
+nie ma) nikt się nie uczy; obraz jest brany przed `STATE`, więc strona wzięta
+między nimi jest na liście, ale jeszcze nie na obrazie. Uczenie trwa tylko,
+gdy kanał ma sesję z przechwytywaniem (ErsatzTV transkoduje); komórki
+pierwszego obrazu po przerwie (ponad 5 s bez obrazu) pojawiły się w nieznanej
+chwili, więc nie są „świeże” po żadnym wejściu. Każdy wzrost
+śladu trafia do logu (`footprints: <strona> draws <prostokąt> (<reguła>)`).
+Komórki strony łączą się w prostokąty (grupy sąsiadujących
+komórek), wyrównane do siatki 16 px z marginesem 16 px, sklejane przy
+odstępie mniejszym niż 64 px, najwyżej 4 na stronę (więcej – ich obwiednia).
+Ślad tylko rośnie, więc obejmuje też skrajne fazy animacji. Klucz to `id`
+i numer strony VizRS oraz rozmiar kanału (inne show = inne `id` = puste
+ślady). Ślady zapisują się co 10 s w `<etv_config>/vizrs-live/footprints.json`
+(`version: 2`); brak, uszkodzony plik albo plik starszej wersji (ślady
+z widocznych prostokątów, często zawyżone) oznacza brak śladów i naukę od nowa.
 
 Przy przejęciu sesji przez nakładkę (`GET /ffmpeg?…&area=1`, start przebiegu)
-strefy przebiegu to ślady **wszystkich znanych stron** dla rozmiaru kanału,
-sklejone jak wyżej – także stron, których teraz nie ma na antenie, żeby znana
-strona wzięta przez operatora w trakcie przebiegu nie była ucięta. Warunek:
-mają ślad strony na antenie kanału (`STATE`) i strony, które mogą wziąć reguły
-(`TAKE` z `on_clip`, `on_end` i reguł audycji, po zastosowaniu reguł z live
-API). Nakładka dostaje je tak
-jak stały `area` (`areas`, atlas), a `resume` niesie wyliczone strefy, nie
-`auto` (nakładka po restarcie sidecara dostaje ten sam atlas, co jej graf
-ffmpeg). Cały kanał, gdy którakolwiek strona nie ma jeszcze śladu, gdy nic
-nie jest znane albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
+strefy przebiegu to sklejone ślady stron na antenie kanału (`STATE`) i stron,
+które mogą wziąć reguły (`TAKE` z `on_clip`, `on_end` i reguł audycji, po
+zastosowaniu reguł z live API). Nakładka, której kawałek idzie przez
+przebiegi zdolne poszerzyć strefy w środku kawałka (niżej), mówi to
+parametrem `follow=1` i dostaje tylko te ślady: stronę wziętą później
+(np. pełnoekranowe przejście) obsłuży poszerzenie, więc raz widziany wipe nie
+zabiera stref każdemu przebiegowi. Nakładka bez `follow=1` dostaje do tego
+ślady **wszystkich znanych stron** dla rozmiaru kanału, żeby znana strona
+wzięta przez operatora w trakcie przebiegu nie była ucięta. Nakładka dostaje
+strefy tak jak stały `area` (`areas`, atlas), a `resume` niesie wyliczone
+strefy, nie `auto` (nakładka po restarcie sidecara dostaje ten sam atlas, co
+jej graf ffmpeg). Cały kanał, gdy którakolwiek z tych stron nie ma jeszcze
+śladu, gdy nic nie jest znane (z `follow=1`: także gdy nic nie ma na antenie
+ani w regułach) albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
 <strefy> (N% of the channel)` albo `graphics zones: the whole channel`.
 
-Strefy są stałe przez przebieg (graf ffmpeg się nie zmienia) i zmieniają się
-przy następnym starcie przebiegu (nowy kawałek, po live). Strona nigdy
-dotąd niewidziana, wzięta w trakcie przebiegu, jest do jego końca ucięta do
-stref – sidecar uczy się jej śladu z pełnego obrazu, więc następny przebieg
-już ją obejmuje albo dostaje cały kanał; ostrzeżenie `graphics outside the
-zones of this run` (raz na przebieg). Poszerzenie w środku kawałka to
-PLAN-strefy S3b. `/health` ma przy `area: auto` pole `zones`: `pages` (liczba
-śladów) i `runs` – dla każdego przebiegu nakładki `channel`, `zones` (strefy
-albo `null` = cały kanał), `share_percent`, `outside` (obrazy z grafiką poza
-strefami).
+Strefy są stałe przez przebieg ffmpeg (jego graf się nie zmienia). Gdy
+grafika wychodzi poza nie w środku kawałka, **strefy się poszerzają**
+(PLAN-strefy S3b). Co 0,5 s, po uczeniu śladów, sidecar sprawdza każdy przebieg
+ze strefami. Powód poszerzenia to: strona na antenie bez śladu (TAKE
+operatora z Trio albo z VizRS Live, reguła – zanim narysuje pierwszy piksel),
+strona, której ślad wychodzi poza strefy, albo piksele obrazu poza strefami
+(animacja szersza niż dotychczasowy ślad). Nowe strefy to te, które dostałby
+przebieg startujący teraz, jeśli obejmują to, co jest na antenie i co
+narysowane; inaczej – cały kanał. Drugie poszerzenie w ciągu 10 s daje cały
+kanał do końca kawałka (bez „mrugania” przebiegów). Log: `graphics zones
+widened to <strefy> (<powód>)` albo `graphics zones: the whole channel
+(<powód>)`.
+
+Nakładka, która dostała w `/ffmpeg` pole `zones_rev`, co 250 ms pyta o
+strefy swojej sesji (`GET /ffmpeg/zones?session=N`: `rev`, `zones`, rozmiar i
+`areas` klatek, `resume`). Gdy `rev` rośnie, kończy bieżący przebieg kawałka
+(`SIGINT`, jak przy przejęciu live, z eskalacją `SIGTERM`/`SIGKILL`) i startuje
+następny od miejsca, w którym kawałek jest (`-ss`, `-t`, `-output_ts_offset`
+z EXTINF – ta sama playlista HLS, ciągłe znaczniki czasu). Nowy przebieg
+dostaje nowy strumień klatek tej samej sesji
+(`/ffmpeg/frames?session=N&rev=R&zones=…&at=S&area=1`: klatki w podanych
+strefach, klatka 0 w sekundzie S kawałka), a poprzedni strumień znika – sesja
+elementu kończy się dopiero z ostatnim. Przerwa (wykrycie, pytanie, nowy
+ffmpeg) to zwykle ok. 1 s; przez ten czas grafika spoza stref jest ucięta.
+
+Przebiegi wymagają `VIZRS_FFMPEG_INGEST=1` (domyślnie w compose) i wyjścia HLS
+z `-t`, jak przy live ingest (§1, Live ingest); kawałek idzie wtedy przez
+przebiegi także bez live ingestu w sidecarze, ale live go nie przejmuje.
+Tylko wtedy nakładka wysyła `follow=1`. W innym przypadku (oraz ze starszą nakładką, która nie pyta o strefy)
+zostaje dawne zachowanie: grafika poza strefami jest ucięta do następnego
+przebiegu i sidecar ostrzega `graphics outside the zones of this run`.
+
+`/health` ma przy `area: auto` pole `zones`: `pages` (liczba śladów) i `runs` –
+dla każdego przebiegu nakładki `channel`, `zones` (strefy albo `null` = cały
+kanał), `share_percent`, `outside` (obrazy z grafiką poza strefami),
+`widenings` (poszerzenia w tym kawałku).
 
 - W trybie `capture_mode: frames` każdy obszar to osobna karta Chromium
   z tą samą stroną i stałym `viewport` równym obszarowi; w każdej klatce
@@ -244,6 +304,40 @@ Starszy renderer flagę ignoruje i wysyła całe obrazy. Łata bez obrazu albo
 poza nim to błąd renderera: sidecar go zatrzymuje, a rysuje Chromium (jak przy
 każdym błędzie renderera).
 
+**Proces na warstwę** (`native_layers`, `VIZRS_NATIVE_LAYERS`, domyślnie
+włączone; 2026-11-11). Sidecar uruchamia osobny `vizrs-render` dla każdej
+warstwy show (`?layers=<warstwa>` w adresie `/output`, jak osobne źródła
+w OBS) i składa ich obrazy sam. Każde żądanie klatki idzie do wszystkich
+procesów naraz, więc warstwy rysują się równolegle na różnych rdzeniach,
+a warstwa, która stoi, odpowiada „bez zmian” i nic nie kosztuje. Z jednym
+procesem przewijany ticker zmuszał renderer do narysowania i wysłania całego
+prostokąta z grafiką (tytuł, QR i pasek naraz) w każdej klatce. Pomiar
+2026-11-11 (lokalny stos, kanał 1080p, ticker na `back`, tytuł na `main`, QR,
+odliczanie): sam renderer przy 50 kl./s – jeden proces 40% rdzenia i ok.
+74 MB/s przez pipe, procesy na warstwy razem 11% i ok. 6 MB/s; cały kontener
+`cg` w emisji (25 kl./s, strefy 58%) – jeden proces 119% (renderer 80%,
+sidecar 39%), proces na warstwę 21,5% (renderery 10%, sidecar 11%).
+
+- Listę warstw sidecar czyta z show VizRS (`GET /api/show`: warstwa każdej
+  sceny, z tokenem `VIZRS_TOKEN`) w tle zaraz po starcie przechwytywania,
+  potem co 30 s; co 2 s porównuje ją z warstwami na antenie (`STATE`) i nowa
+  warstwa (scena przeniesiona na inną) czyta show od razu. Do pierwszego
+  odczytu, bez dostępu do API i przy kilku obszarach `area` rysuje jeden
+  proces, jak dotąd.
+- Kolejność jak na stronie `/output`: `back`, potem inne nazwy, `main`,
+  `z<N>_nazwa` (N 0–99), `front`; warstwy o tym samym miejscu w kolejności
+  z show. Prostokąty różnych warstw, które się nie nakładają, idą do obrazu
+  takie, jakie są (piksele wspólne z poprzednim obrazem, więc klatka
+  `yuva420p` je pomija, §1 „Klatka z poprzedniej”). Nakładające się grupy
+  sidecar miesza w ich obwiedni (alfa „over”, bez przemnożenia, jak
+  przeglądarka) i zapamiętuje wynik, dopóki ich piksele się nie zmienią.
+- `auto`: gdy którakolwiek warstwa wymaga Chromium (rekord „nie
+  narysowano”), całą klatkę rysuje Chromium, jak przy jednym procesie.
+- Każdy proces to 12–35 MB pamięci (pusta warstwa najmniej); show z 7
+  warstwami to ok. 130 MB. `VIZRS_NATIVE_LAYERS=0` wraca do jednego procesu.
+- `/health`: `captures[].layers` – warstwy rysowane osobno (pusta lista =
+  jeden proces albo Chromium).
+
 Przy kilku obszarach `VIZRS_AREA` jeden proces `vizrs-render` (od 0.3) dostaje
 je wszystkie (`--area` powtórzone) i rysuje każdy osobno, nie ich obwiednię.
 Pomiar na A1 (s2, 1600×900 25 kl./s, dolny pas i róg, sam renderer): obwiednia
@@ -263,10 +357,12 @@ Sidecar to jeden plik binarny `vizrs-cg` (Rust) obok bezgłowego Chromium:
 | Adres | Co |
 |---|---|
 | `POST /etv?channel=1[&render=720p][&area=1920x140+0+930]` | treść: dane szablonu ErsatzTV; odpowiedź: niekończący się strumień pakietów ETV; `render` – rozmiar renderowania grafiki, `area` – obszar grafiki (§1) |
-| `GET /ffmpeg?channel=1[&wait=2000][&area=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki |
+| `GET /ffmpeg?channel=1[&wait=2000][&area=1][&follow=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki; `follow=1` – kawałek idzie przez przebiegi, które poszerzają strefy w środku kawałka, więc przy `area: auto` strefy to tylko ślady stron na antenie i z reguł (§1, Obszar grafiki) |
 | `GET /ffmpeg/frames?session=N[&fps=25/1][&area=1]` | surowe klatki `yuva420p` przejętej sesji dla ffmpeg, z `area=1` w rozmiarze obszaru grafiki (Nakładka ffmpeg, niżej) |
 | `GET /etv/pages[?channel=1]` | strony VizRS kanału (lista elementów, §3) |
 | `GET /ffmpeg/resume?channel=1&width=…&height=…&fps=…` | klatki dla nakładki po restarcie sidecara, bez sesji elementu; parametry z pola `resume` odpowiedzi `/ffmpeg` |
+| `GET /ffmpeg/zones?session=N` | przy `area: auto`: bieżące strefy przejętej sesji (`rev` rośnie z każdym poszerzeniem w środku kawałka), dla następnego przebiegu nakładki (§1, Obszar grafiki) |
+| `GET /ffmpeg/frames?session=N&rev=R&zones=…&at=S&area=1` | kolejny strumień klatek tej sesji w podanych strefach (puste = cały kanał), klatka 0 w sekundzie S kawałka; zastępuje poprzedni |
 | `GET /health` | liczba sesji, stan przechwytywania (`size` kanału, `render`, `area`, `fps`, `mode`: `screencast` albo `frames`, `status`: `capturing`, `paused`, `restarting`…, `seq`) i kanały z nakładką ffmpeg (`overlay`) |
 
 Chromium wysyła PNG tylko przy zmianie strony. Sidecar dekoduje klatkę
@@ -312,6 +408,23 @@ Płynność animacji (rozwiązania z VizRS ffPlayout System):
   tylko, dopóki sesja ją wysyła, nie przez całą historię. Wcześniej 5,6 s
   historii przy 50 kl./s i ruchomej grafice trzymało ok. 3 GB; teraz sidecar
   z jednym kanałem 1080p50 zajmuje ok. 250 MB.
+- **Klatka `yuva420p` z poprzedniej.** Gdy prostokąty obrazu leżą tam, gdzie
+  w poprzednim, sidecar zmienia płótno w miejscu i tylko w prostokątach
+  z nowymi pikselami (prostokąt stojącej warstwy ma te same piksele i jest
+  pomijany bez porównywania); duża zmiana (ponad 150 tys. pikseli) jest
+  liczona na kilku wątkach (do 4). Pomiar (1080p, tytuł, QR i ramka stoją,
+  ticker 1920×104 się przesuwa): 1,8 ms na klatkę; dawny kod 12–17 ms.
+  Strumień klatek nakładki składa każdy
+  obraz na płótnie RGBA klatki i przelicza na `yuva420p` tylko pary wierszy
+  (jeden wiersz chromy), których piksele zmieniły się od poprzedniego obrazu;
+  resztę bierze z poprzedniej klatki. Przesuwany ticker pod stojącym tytułem
+  kosztuje wiersze tickera, a nie całą klatkę, a obraz równy poprzedniemu
+  (nowy zrzut stojącej grafiki) daje tę samą klatkę. Konwersja liczy na
+  liczbach całkowitych (współczynniki macierzy mają cztery miejsca po
+  przecinku), a chromę bloku 2×2 z sum kanałów; wynik jest ten sam co
+  dawnego sidecara Node.js (wektory `tests/vectors/frames.json`), poza
+  sumami dokładnie całkowitymi (ok. 1 na 10 tys.), gdzie liczby zmiennoprzecinkowe
+  dawały o 1 mniej.
 - **Klatki na żądanie (`capture_mode: frames`, §5).** Screencast bierze
   klatki z zegara Chromium (60 Hz), więc przy 25 kl./s kanału na 5 klatek
   wyjścia przypada 6 klatek źródła i ruch co jakiś czas przeskakuje
@@ -1733,6 +1846,7 @@ vizrs-cg config.json      # albo CONFIG=config.json vizrs-cg
   "tape": false,
   "renderer": "chromium",
   "renderer_bin": "",
+  "native_layers": true,
   "ingest_token": ""
 }
 ```
@@ -1792,7 +1906,9 @@ kanału), `VIZRS_CAPTURE_MODE` (`frames` albo `screencast`, niżej),
 `VIZRS_TAPE=1` (taśmę crawla przesuwa sidecar, §1; `0` wyłącza),
 `VIZRS_RENDERER` (`chromium`, `native` albo `auto` – kto rysuje grafikę, §1;
 błędna wartość = `chromium` z ostrzeżeniem), `VIZRS_RENDERER_BIN` (program
-`vizrs-render`; puste = obok sidecara albo w `PATH`),
+`vizrs-render`; puste = obok sidecara albo w `PATH`), `VIZRS_NATIVE_LAYERS`
+(`0` = jeden proces renderera natywnego na całą antenę; domyślnie proces na
+warstwę show, §1 „Renderer natywny VizRS”),
 `VIZRS_INGEST_TOKEN`, `VIZRS_INGEST_ANYTIME`, `VIZRS_LIVE_SHOWS` (live ingest, §1),
 `VIZRS_PANEL_TOKEN` (live API dla VizRS Live, §1),
 `VIZRS_BROWSER`, `VIZRS_BROWSER_NO_SANDBOX=1` (root / kontenery),

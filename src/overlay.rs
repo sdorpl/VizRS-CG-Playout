@@ -67,6 +67,10 @@
 // With VIZRS_FFMPEG_INGEST=1 a transcode to HLS of a channel whose live
 // source is on (sidecar `/ingest/state`) plays that source in its place
 // (src/takeover.rs), with the graphics overlaid as on the schedule.
+// The same runs widen the graphics zones of `area: auto` in the middle of a
+// piece (PLAN-strefy S3b): the overlay follows `/ffmpeg/zones` of its session
+// and, when they widen, stops the run (SIGINT) and starts the next from where
+// the piece is, with a new frame stream of the session in the new zones.
 //
 // A static binary, so it runs in the ErsatzTV image of any architecture
 // without extra packages. A canvas over https goes to plain ffmpeg.
@@ -79,7 +83,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
@@ -90,13 +94,15 @@ use crate::http::percent_decode;
 use crate::json::{self, Value};
 use crate::net::{Url, connect, error, read_head, status_of};
 use crate::sys;
-use crate::takeover::{self, Job, Sink};
+use crate::takeover::{self, Job, Sink, SinkControl};
 
 const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
 const CLAIM_WAIT_MS: u32 = 2000;
 const SCRIPT_END: Duration = Duration::from_millis(500);
 const RECONNECT: Duration = Duration::from_secs(1);
 /// A probe without a result this long ago (failed, or still running) is run again.
+/// How often the overlay asks for the zones of its session (as `takeover` for the live state).
+const ZONES_POLL: Duration = Duration::from_millis(250);
 const PROBE_RETRY: Duration = Duration::from_secs(60);
 /// Read timeout of a probe of an http input, in microseconds.
 const PROBE_TIMEOUT_US: &str = "20000000";
@@ -771,6 +777,108 @@ pub struct Frames {
     pub areas: Vec<(Area, u32)>,
     /// Query of `/ffmpeg/resume` after a restart of the sidecar; empty = an older sidecar.
     pub resume: String,
+    /// The sidecar's session taken over.
+    pub session: String,
+    /// Revision of zones that may widen in the middle of the piece (`area:
+    /// auto`, PLAN-strefy S3b); None = fixed for the piece (an older sidecar too).
+    pub zones_rev: Option<u64>,
+}
+
+/// The parts of a frame layout in a reply of the sidecar (`areas`, stacked).
+fn stacked(info: &Value) -> io::Result<Vec<(Area, u32)>> {
+    let number =
+        |value: &Value, key: &str| value.get(key).and_then(Value::as_f64).map(|n| n as u32).ok_or_else(|| error(format!("'areas.{key}'")));
+    let mut areas = Vec::new();
+    let mut row = 0;
+    for area in info.get("areas").and_then(Value::as_array).unwrap_or(&[]) {
+        let area = Area { x: number(area, "x")?, y: number(area, "y")?, w: number(area, "w")?, h: number(area, "h")? };
+        areas.push((area, row));
+        row += area.h;
+    }
+    Ok(areas)
+}
+
+/// The zones of a session now (`GET /ffmpeg/zones`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Zones {
+    pub rev: u64,
+    /// `WxH+X+Y,…`; empty = the whole channel.
+    pub geometry: String,
+    pub width: u32,
+    pub height: u32,
+    pub areas: Vec<(Area, u32)>,
+    pub resume: String,
+}
+
+/// A reply of `/ffmpeg/zones`.
+pub fn parse_zones(body: &str) -> io::Result<Zones> {
+    let info = json::parse(body).map_err(|e| error(e.to_string()))?;
+    let size = |key| info.get(key).and_then(Value::as_f64).map(|n| n as u32).ok_or_else(|| error(format!("'{key}'")));
+    let areas = stacked(&info)?;
+    if areas.is_empty() {
+        return Err(error("'areas'".into()));
+    }
+    Ok(Zones {
+        rev: info.get("rev").and_then(Value::as_f64).map(|n| n as u64).ok_or_else(|| error("'rev'".into()))?,
+        geometry: info.get("zones").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        width: size("width")?,
+        height: size("height")?,
+        areas,
+        resume: info.get("resume").and_then(Value::as_str).unwrap_or_default().to_owned(),
+    })
+}
+
+/// The zones of the session, asked every `ZONES_POLL` in the background: the
+/// newest revision waits for the next run.
+struct ZoneWatch {
+    latest: Arc<Mutex<Option<Zones>>>,
+    used: AtomicU64,
+    stop: Arc<AtomicBool>,
+}
+
+impl ZoneWatch {
+    fn start(sidecar: &str, session: &str, rev: u64) -> ZoneWatch {
+        let watch = ZoneWatch { latest: Arc::default(), used: AtomicU64::new(rev), stop: Arc::default() };
+        let (latest, stop) = (Arc::clone(&watch.latest), Arc::clone(&watch.stop));
+        let (sidecar, path) = (sidecar.to_owned(), format!("/ffmpeg/zones?session={}", quote_plus(session)));
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(ZONES_POLL);
+                match sidecar_get(&sidecar, &path) {
+                    Ok((status, body)) if status == "200" => {
+                        if let Ok(zones) = parse_zones(&String::from_utf8_lossy(&body)) {
+                            let mut latest = latest.lock().unwrap_or_else(|e| e.into_inner());
+                            if latest.as_ref().is_none_or(|l| zones.rev > l.rev) {
+                                *latest = Some(zones);
+                            }
+                        }
+                    }
+                    // The session is over (a restarted sidecar too): the zones stay.
+                    Ok(_) => return,
+                    Err(_) => {}
+                }
+            }
+        });
+        watch
+    }
+
+    /// Zones newer than those of the runs so far.
+    fn newer(&self) -> bool {
+        let used = self.used.load(Ordering::Relaxed);
+        self.latest.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|z| z.rev > used)
+    }
+
+    /// The newer zones, now those of the runs.
+    fn take(&self) -> Option<Zones> {
+        let latest = self.latest.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+        (latest.rev > self.used.swap(latest.rev, Ordering::Relaxed)).then_some(latest)
+    }
+}
+
+impl Drop for ZoneWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Bytes of one yuva420p frame.
@@ -963,9 +1071,14 @@ fn open_frames(sidecar: &str, path: &str) -> io::Result<TcpStream> {
 
 /// The sidecar's session for the canvas channel and its frame stream. With
 /// `place` (the command can overlay the graphics anywhere) the frames are
-/// those of the graphics area, if the channel has one.
-fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool) -> io::Result<(Frames, TcpStream)> {
-    let area = if place { "&area=1" } else { "" };
+/// those of the graphics area, if the channel has one; `follow` = the piece
+/// goes as runs that can widen the zones in its middle (PLAN-strefy S3b).
+fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool, follow: bool) -> io::Result<(Frames, TcpStream)> {
+    let area = match (place, follow) {
+        (true, true) => "&area=1&follow=1",
+        (true, false) => "&area=1",
+        _ => "",
+    };
     let path = format!("/ffmpeg?channel={}&wait={CLAIM_WAIT_MS}{area}", quote_plus(channel));
     let (status, body) = sidecar_get(&settings.sidecar, &path)?;
     if status != "200" {
@@ -986,22 +1099,16 @@ fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool)
     let mut areas = Vec::new();
     if place {
         // `areas` (stacked in the frames); an older sidecar sends only `x`, `y`.
-        let number = |value: &Value, key: &str| {
-            value.get(key).and_then(Value::as_f64).map(|n| n as u32).ok_or_else(|| error(format!("'areas.{key}'")))
-        };
-        let mut row = 0;
-        for area in info.get("areas").and_then(Value::as_array).unwrap_or(&[]) {
-            let area = Area { x: number(area, "x")?, y: number(area, "y")?, w: number(area, "w")?, h: number(area, "h")? };
-            areas.push((area, row));
-            row += area.h;
-        }
+        areas = stacked(&info)?;
         if areas.is_empty() {
             areas.push((Area { x: size("x")?, y: size("y")?, w: size("width")?, h: size("height")? }, 0));
         }
     }
     let matrix = info.get("matrix").and_then(Value::as_str).unwrap_or_default().to_owned();
     let resume = info.get("resume").and_then(Value::as_str).unwrap_or_default().to_owned();
-    let frames = Frames { width: size("width")?, height: size("height")?, rate, matrix, areas, resume };
+    let zones_rev = info.get("zones_rev").and_then(Value::as_f64).map(|n| n as u64).filter(|_| place);
+    let frames =
+        Frames { width: size("width")?, height: size("height")?, rate, matrix, areas, resume, session: session.clone(), zones_rev };
     let path = format!("/ffmpeg/frames?session={}&fps={}{area}", quote_plus(&session), quote_plus(&frames.rate));
     Ok((frames, open_frames(&settings.sidecar, &path)?))
 }
@@ -1082,7 +1189,9 @@ fn sequence(
     job: &Job,
     on: bool,
     audio: bool,
+    takeover: bool,
     run: &dyn Fn(f64, Option<&takeover::Source>) -> io::Result<Child>,
+    restart: &dyn Fn() -> bool,
 ) -> i32 {
     let current = Arc::new(AtomicU32::new(0));
     let stopping = Arc::new(AtomicBool::new(false));
@@ -1100,12 +1209,20 @@ fn sequence(
             }
         });
     }
-    let runner = takeover::Runner { sidecar: &settings.sidecar, run, current: &current, stopping: &stopping };
+    let runner = takeover::Runner { sidecar: &settings.sidecar, run, current: &current, stopping: &stopping, takeover, restart };
     takeover::sequence(&runner, job, on, audio)
 }
 
-/// The piece with the graphics of the sidecar and live ingest: every run gets
-/// its own pipe of the same frame stream.
+/// A frame stream of the session and the frames it carries, relayed to the runs.
+struct Feed {
+    frames: Frames,
+    control: SinkControl,
+}
+
+/// The piece with the graphics of the sidecar as runs (live ingest, zones
+/// widened in the middle of the piece): every run gets its own frame socket of
+/// the same frame stream; zones widened give the next run a new frame stream.
+#[allow(clippy::too_many_arguments)]
 fn with_graphics(
     settings: &Settings,
     args: &[OsString],
@@ -1114,7 +1231,65 @@ fn with_graphics(
     (on, audio): (bool, bool),
     (frames, socket, place): (Frames, TcpStream, bool),
     drain: Drain,
+    takeover: bool,
 ) -> i32 {
+    let watch = frames.zones_rev.filter(|_| place).map(|rev| ZoneWatch::start(&settings.sidecar, &frames.session, rev));
+    let feed = Mutex::new(relayed(settings, frames, socket, place));
+    let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
+        let mut current = feed.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(zones) = watch.as_ref().and_then(ZoneWatch::take) {
+            let path = format!(
+                "/ffmpeg/frames?session={}&fps={}&area=1&rev={}&zones={}&at={elapsed:.3}",
+                quote_plus(&current.frames.session),
+                quote_plus(&current.frames.rate),
+                zones.rev,
+                quote_plus(&zones.geometry)
+            );
+            match open_frames(&settings.sidecar, &path) {
+                Ok(socket) => {
+                    let frames = Frames {
+                        width: zones.width,
+                        height: zones.height,
+                        rate: current.frames.rate.clone(),
+                        matrix: current.frames.matrix.clone(),
+                        areas: zones.areas,
+                        resume: if current.frames.resume.is_empty() { String::new() } else { zones.resume },
+                        session: current.frames.session.clone(),
+                        zones_rev: Some(zones.rev),
+                    };
+                    let shown = if zones.geometry.is_empty() { "the whole channel" } else { zones.geometry.as_str() };
+                    log(format_args!("graphics zones {shown} from {elapsed:.1} s of the piece"));
+                    current.control.close();
+                    *current = relayed(settings, frames, socket, place);
+                }
+                Err(e) => log(format_args!("frame stream of the new graphics zones: {e}; the zones before stay")),
+            }
+        }
+        let frames = &current.frames;
+        let (reader, writer) = frame_channel()?;
+        let fd = reader.as_raw_fd();
+        let command = match source {
+            Some(source) => live_command(settings, args, job, elapsed, Some(source), Some((frames, fd))),
+            None if job.slot => live_command(settings, args, job, elapsed, None, Some((frames, fd))),
+            None => adjusted(job.program(&overlay_args(args, canvas, fd, frames), elapsed), settings),
+        };
+        let child = spawn(settings, command, Some(fd))?;
+        drop(reader);
+        current.control.attach(writer);
+        Ok(child)
+    };
+    let restart = || watch.as_ref().is_some_and(ZoneWatch::newer);
+    let code = sequence(settings, job, on, audio, takeover, &run, &restart);
+    // The relay stops at its next frame, closing the frame stream: the sidecar ends the script.
+    feed.lock().unwrap_or_else(|e| e.into_inner()).control.close();
+    std::thread::sleep(SCRIPT_END);
+    drain.close();
+    code
+}
+
+/// `socket` (a frame stream of `frames`) relayed to the runs, reconnected
+/// after a restart of the sidecar.
+fn relayed(settings: &Settings, frames: Frames, socket: TcpStream, place: bool) -> Feed {
     let frame = frame_bytes(frames.width, frames.height);
     let (sink, control) = Sink::new(frame);
     let area = if place { "&area=1" } else { "" };
@@ -1138,25 +1313,7 @@ fn with_graphics(
         let again = resume.as_deref().map(|path| move || reconnect(path));
         relay(socket, sink, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<TcpStream>));
     });
-    let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
-        let (reader, writer) = frame_channel()?;
-        let fd = reader.as_raw_fd();
-        let command = match source {
-            Some(source) => live_command(settings, args, job, elapsed, Some(source), Some((&frames, fd))),
-            None if job.slot => live_command(settings, args, job, elapsed, None, Some((&frames, fd))),
-            None => adjusted(job.program(&overlay_args(args, canvas, fd, &frames), elapsed), settings),
-        };
-        let child = spawn(settings, command, Some(fd))?;
-        drop(reader);
-        control.attach(writer);
-        Ok(child)
-    };
-    let code = sequence(settings, job, on, audio, &run);
-    // The relay stops at its next frame, closing the frame stream: the sidecar ends the script.
-    control.close();
-    std::thread::sleep(SCRIPT_END);
-    drain.close();
-    code
+    Feed { frames, control }
 }
 
 /// The overlay: `vizrs-ffmpeg <ffmpeg arguments>`; returns the exit code.
@@ -1168,11 +1325,12 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
         return match live {
             Some((job, on, audio)) => {
                 let program = |elapsed: f64| adjusted(job.program(&args, elapsed), settings);
-                sequence(settings, &job, on, audio, &|elapsed, source| match source {
+                let run = |elapsed: f64, source: Option<&takeover::Source>| match source {
                     Some(source) => spawn(settings, live_command(settings, &args, &job, elapsed, Some(source), None), None),
                     None if job.slot => spawn(settings, live_command(settings, &args, &job, elapsed, None, None), None),
                     None => spawn(settings, program(elapsed), None),
-                })
+                };
+                sequence(settings, &job, on, audio, true, &run, &|| false)
             }
             None => plain(settings, args),
         };
@@ -1183,7 +1341,9 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     let drain = Drain::start(args[canvas.index + 1].to_string_lossy().into_owned(), headers);
 
     let place = with_position(&args, input_number(&args, canvas.index), 2, 2).is_some();
-    let (frames, socket) = match take_over(settings, &canvas.channel, &rate, place) {
+    // Runs that can widen the zones: live, or the piece as runs (below).
+    let runs = live.is_some() || (settings.ingest && Job::of(&args, Some(&canvas.channel)).is_some_and(|job| !job.slot));
+    let (frames, socket) = match take_over(settings, &canvas.channel, &rate, place, runs) {
         Ok(taken) => taken,
         Err(e) => {
             log(format_args!("{e}; ErsatzTV graphics instead"));
@@ -1193,7 +1353,14 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     };
 
     if let Some((job, on, audio)) = live {
-        return with_graphics(settings, &args, &canvas, &job, (on, audio), (frames, socket, place), drain);
+        return with_graphics(settings, &args, &canvas, &job, (on, audio), (frames, socket, place), drain, true);
+    }
+    // Zones that may widen in the middle of the piece (S3b): the piece as runs
+    // too, with live left alone (VIZRS_FFMPEG_INGEST allows the runs).
+    if settings.ingest && frames.zones_rev.is_some() {
+        if let Some(job) = Job::of(&args, Some(&canvas.channel)).filter(|job| !job.slot) {
+            return with_graphics(settings, &args, &canvas, &job, (false, false), (frames, socket, place), drain, false);
+        }
     }
     let (reader, writer) = match frame_channel() {
         Ok(pair) => pair,
@@ -1502,10 +1669,36 @@ mod tests {
     }
 
     #[test]
+    fn zones_of_a_session_from_the_sidecar() {
+        let zones = parse_zones(
+            r#"{"rev":2,"zones":"448x96+1440+32,1920x216+0+864","width":1920,"height":312,
+                "areas":[{"x":1440,"y":32,"w":448,"h":96},{"x":0,"y":864,"w":1920,"h":216}],"resume":"channel=1"}"#,
+        )
+        .unwrap();
+        assert_eq!(zones.rev, 2);
+        assert_eq!((zones.width, zones.height), (1920, 312));
+        // stacked: the second part starts below the first
+        assert_eq!(zones.areas[1], (Area { x: 0, y: 864, w: 1920, h: 216 }, 96));
+        // the whole channel: no zones, one part at the origin
+        let whole = parse_zones(r#"{"rev":3,"zones":null,"width":1920,"height":1080,"areas":[{"x":0,"y":0,"w":1920,"h":1080}]}"#).unwrap();
+        assert_eq!((whole.geometry.as_str(), whole.areas.len()), ("", 1));
+        assert!(parse_zones(r#"{"rev":1,"width":1,"height":1,"areas":[]}"#).is_err());
+    }
+
+    #[test]
     fn frames_declare_their_colour_matrix() {
         let input = args(&["-i", "media", "-i", "http://localhost/internal/graphics/4/1", "-f", "hls", "o"]);
         let canvas = Canvas { start: 2, index: 2, channel: "4".into() };
-        let mut frames = Frames { width: 8, height: 4, rate: "25".into(), matrix: "bt709".into(), areas: vec![], resume: String::new() };
+        let mut frames = Frames {
+            width: 8,
+            height: 4,
+            rate: "25".into(),
+            matrix: "bt709".into(),
+            areas: vec![],
+            resume: String::new(),
+            session: "1".into(),
+            zones_rev: None,
+        };
         let raw = ["-i", "media", "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25"];
         let tail = ["-i", "pipe:5", "-f", "hls", "o"];
         let declared = [&raw[..], &["-colorspace", "bt709", "-color_range", "tv"], &tail].concat();

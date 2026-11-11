@@ -36,6 +36,7 @@
   "tape": false,
   "renderer": "auto",
   "renderer_bin": "",
+  "native_layers": true,
   "ingest_token": "",
   "panel_token": "",
   "alert_webhook": "",

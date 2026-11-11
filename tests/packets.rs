@@ -21,7 +21,7 @@ fn picture_packets_match_node() {
             .iter()
             .map(|r| {
                 let (x, y, w, h) = (num(r, "x"), num(r, "y"), num(r, "w"), num(r, "h"));
-                Rect { x, y, w, h, pixels: crop(&rgba, width, (x, y, w, h)) }
+                Rect { x, y, w, h, pixels: crop(&rgba, width, (x, y, w, h)).into() }
             })
             .collect();
         assert_bytes(&picture_packet(&boxes), packet.get("packet").unwrap(), &case.get("name").unwrap().to_string());

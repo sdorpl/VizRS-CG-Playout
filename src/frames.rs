@@ -10,9 +10,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use crate::area::Layout;
 use crate::packets::{Rect, picture_packet};
-use crate::yuva::{Yuva, yuva_area};
 
 /// Turns shot number `index` of a picture (its graphics area) into visible
 /// rectangles at the channel size, in channel coordinates.
@@ -38,51 +36,23 @@ impl Shot {
     }
 }
 
-/// Layout of a yuva420p frame and its colour matrix.
-type Part = (Layout, bool);
-
 /// A decoded picture; built once, shared by the sessions of the same size.
-/// Its yuva420p frame is kept only while a session holds it: the history
-/// keeps pictures for seconds after the overlay took them, and a 1080p frame
-/// is 5 MB (seconds of a moving graphic were gigabytes).
+/// Its yuva420p frames are built by each stream (`yuva::Builder`), from the
+/// frame before.
 #[derive(Debug)]
 pub struct Picture {
     pub rects: Vec<Rect>,
     packet: OnceLock<Vec<u8>>,
-    yuva: Mutex<Option<(Part, Weak<Yuva>)>>,
 }
 
 impl Picture {
     pub fn new(rects: Vec<Rect>) -> Picture {
-        Picture { rects, packet: OnceLock::new(), yuva: Mutex::new(None) }
+        Picture { rects, packet: OnceLock::new() }
     }
 
     /// ETV packet: the visible rectangles, or Clear.
     pub fn packet(&self) -> &[u8] {
         self.packet.get_or_init(|| picture_packet(&self.rects))
-    }
-
-    /// The picture as one yuva420p frame of `layout` (the channel, its
-    /// graphics area, or its areas stacked); `hd` = BT.709.
-    pub fn yuva(&self, layout: &Layout, hd: bool) -> Arc<Yuva> {
-        let build = || match layout.single() {
-            Some(a) => yuva_area(&self.rects, (a.x, a.y, a.w, a.h), hd),
-            None => yuva_area(&layout.place(&self.rects), (0, 0, layout.width, layout.height), hd),
-        };
-        let mut cache = self.yuva.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(((cached, cached_hd), weak)) = cache.as_ref() {
-            if cached == layout && *cached_hd == hd {
-                if let Some(data) = weak.upgrade() {
-                    return data;
-                }
-            } else if weak.strong_count() > 0 {
-                // Another layout in use: not cached.
-                return build();
-            }
-        }
-        let data = build();
-        *cache = Some(((layout.clone(), hd), Arc::downgrade(&data)));
-        data
     }
 }
 
@@ -267,7 +237,7 @@ mod tests {
     use super::*;
 
     fn pixel(value: u8) -> Vec<Rect> {
-        vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4] }]
+        vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4].into() }]
     }
 
     #[test]
