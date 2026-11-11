@@ -233,6 +233,17 @@ zatrzymywany. `/health`: `renderer` (ustawienie) i `drawn_by` (`native` albo
 `chromium` – kto narysował ostatnią klatkę). Zmiany listy rzeczy, których
 renderer nie umie, trafiają do logu (`vizrs-render: …`).
 
+**Łaty renderera natywnego** (2026-11-11, VizRS `vizrs-render` z gałęzi
+next-v). Sidecar dopisuje do każdego żądania klatki flagę `p`. Renderer, który
+ją zna, wysyła przy niezmienionym prostokącie z grafiką tylko zmienione piksele
+(rekord 6, VizRS DOKUMENTACJA §10.1). Sidecar trzyma ostatni obraz renderera,
+nakłada na niego łatę i dalej postępuje jak z całym obrazem. Przewijany crawl
+pod planszą to wtedy ok. 0,6 MB na klatkę zamiast ok. 4 MB, a kanał 1080p50
+utrzymuje crawl w 50 kl./s (wcześniej bezpiecznik płynności schodził do 25).
+Starszy renderer flagę ignoruje i wysyła całe obrazy. Łata bez obrazu albo
+poza nim to błąd renderera: sidecar go zatrzymuje, a rysuje Chromium (jak przy
+każdym błędzie renderera).
+
 Przy kilku obszarach `VIZRS_AREA` jeden proces `vizrs-render` (od 0.3) dostaje
 je wszystkie (`--area` powtórzone) i rysuje każdy osobno, nie ich obwiednię.
 Pomiar na A1 (s2, 1600×900 25 kl./s, dolny pas i róg, sam renderer): obwiednia

@@ -647,28 +647,37 @@ impl Capture {
     /// One native frame into the history; false when the renderer left it to Chromium.
     fn native_slot(&self, native: &mut Native, start: f64, at: Instant, complete_only: bool, force: bool) -> Result<bool, String> {
         let reply = native.frame(start, native::wall_ms(start, self.options.clock_offset), complete_only, force)?;
+        let part = self.native_part();
+        if matches!(reply.kind, Kind::Picture(_) | Kind::Region(..) | Kind::Patch(_)) && (reply.width, reply.height) != (part.w, part.h) {
+            return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
+        }
+        // The picture (Picture, Region) stays as the base of the next patch: with a patch only the
+        // changed rectangles cross the pipe (a crawl under a large board: 0.6 MB a frame, not 4 MB).
         match reply.kind {
             Kind::Skipped => return Ok(false),
             Kind::Unchanged => {}
-            Kind::Empty => self.history.set(Vec::new(), at),
+            Kind::Empty => {
+                native.forget();
+                self.history.set(Vec::new(), at);
+            }
             Kind::Picture(rgba) => {
-                let part = self.native_part();
-                if (reply.width, reply.height) != (part.w, part.h) {
-                    return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
-                }
                 self.history.set(native::picture_rects(&rgba, part, &self.options.areas), at);
+                native.keep(Area { x: 0, y: 0, w: part.w, h: part.h }, rgba);
             }
             Kind::Regions(regions) => {
+                native.forget();
                 let rects = regions.iter().flat_map(|(region, rgba)| native::picture_rects(rgba, *region, &self.options.areas));
                 self.history.set(rects.collect(), at);
             }
             Kind::Region(r, rgba) => {
-                let part = self.native_part();
-                if (reply.width, reply.height) != (part.w, part.h) {
-                    return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
-                }
                 let region = Area { x: part.x + r.x, y: part.y + r.y, w: r.w, h: r.h };
                 self.history.set(native::picture_rects(&rgba, region, &self.options.areas), at);
+                native.keep(r, rgba);
+            }
+            Kind::Patch(patches) => {
+                let (r, rgba) = native.patch(&patches)?;
+                let region = Area { x: part.x + r.x, y: part.y + r.y, w: r.w, h: r.h };
+                self.history.set(native::picture_rects(rgba, region, &self.options.areas), at);
             }
         }
         Ok(true)

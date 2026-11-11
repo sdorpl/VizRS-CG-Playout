@@ -9,7 +9,9 @@
 // 3 not drawn (`c`: something on air needs Chromium), 4 picture of a region:
 // x, y, width, height (u32 LE), its RGBA, the rest transparent, 5 pictures of
 // several `--area`: their count (u32 LE), then each as in kind 4, in channel
-// pixels. Flags: bit 0 all on air
+// pixels, 6 a patch of the last picture (kind 1 or 4, or a patch) – asked for
+// with `p`: a count (u32 LE), then each rectangle as in kind 4, whose pixels
+// replace those of the last picture. Flags: bit 0 all on air
 // drawn natively, bit 1 connected to VizRS.
 
 use std::io::{BufReader, Read, Write};
@@ -84,6 +86,8 @@ pub enum Kind {
     Empty,
     /// Something on air needs Chromium; nothing drawn.
     Skipped,
+    /// Rectangles (x, y, w, h of the frame) of the last picture with new pixels; the rest unchanged.
+    Patch(Vec<(Area, Vec<u8>)>),
 }
 
 #[derive(Debug)]
@@ -134,6 +138,15 @@ pub fn read_reply(input: &mut impl Read) -> Result<Option<Reply>, String> {
             }
             Kind::Regions((0..count).map(|_| read_region(input, width, height)).collect::<Result<_, _>>()?)
         }
+        6 => {
+            let mut count = [0u8; 4];
+            input.read_exact(&mut count).map_err(|e| e.to_string())?;
+            let count = u32::from_le_bytes(count);
+            if count > MAX_REGIONS {
+                return Err(format!("native renderer: {count} patches"));
+            }
+            Kind::Patch((0..count).map(|_| read_region(input, width, height)).collect::<Result<_, _>>()?)
+        }
         other => return Err(format!("native renderer: record kind {other}")),
     };
     Ok(Some(Reply { kind, complete: head[5] & 1 != 0, connected: head[5] & 2 != 0, width, height }))
@@ -164,6 +177,8 @@ pub struct Native {
     child: Child,
     stdin: ChildStdin,
     replies: Receiver<Result<Reply, String>>,
+    /// The last picture (its region of the frame and RGBA), which a patch updates.
+    base: Option<(Area, Vec<u8>)>,
 }
 
 impl Native {
@@ -197,13 +212,14 @@ impl Native {
                 }
             }
         });
-        Ok(Native { child, stdin, replies })
+        Ok(Native { child, stdin, replies, base: None })
     }
 
     /// The frame at monotonic time `ms`: `complete_only` = only when all on air is native,
     /// `force` = the picture even when unchanged.
     pub fn frame(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<Reply, String> {
-        let flags = format!("{}{}", if complete_only { "c" } else { "" }, if force { "f" } else { "" });
+        // `p`: patches welcome (a renderer without them ignores it and sends whole pictures)
+        let flags = format!("{}{}p", if complete_only { "c" } else { "" }, if force { "f" } else { "" });
         writeln!(self.stdin, "F {ms:.3} {wall:.3} {flags}")
             .and_then(|_| self.stdin.flush())
             .map_err(|e| format!("native renderer: {e}"))?;
@@ -213,6 +229,37 @@ impl Native {
             Err(RecvTimeoutError::Disconnected) => Err("native renderer exited".into()),
         }
     }
+    /// Keeps the picture (`region` of the frame, RGBA) as the base of the next patch.
+    pub fn keep(&mut self, region: Area, rgba: Vec<u8>) {
+        self.base = Some((region, rgba));
+    }
+
+    /// No base: the renderer sends a whole picture before patching again.
+    pub fn forget(&mut self) {
+        self.base = None;
+    }
+
+    /// The last picture with `patches` applied: its region of the frame and RGBA.
+    pub fn patch(&mut self, patches: &[(Area, Vec<u8>)]) -> Result<(Area, &[u8]), String> {
+        let base = self.base.as_mut().ok_or("native renderer: a patch without a picture")?;
+        apply_patch(base, patches)?;
+        Ok((base.0, &base.1))
+    }
+}
+
+/// Puts the pixels of `patches` (rectangles of the frame) into the picture `base` (its region, RGBA).
+pub fn apply_patch((region, rgba): &mut (Area, Vec<u8>), patches: &[(Area, Vec<u8>)]) -> Result<(), String> {
+    for (p, px) in patches {
+        if p.x < region.x || p.y < region.y || p.x + p.w > region.x + region.w || p.y + p.h > region.y + region.h {
+            return Err(format!("native renderer: patch {}x{}+{}+{} outside the picture", p.w, p.h, p.x, p.y));
+        }
+        let row = p.w as usize * 4;
+        for r in 0..p.h as usize {
+            let to = (((p.y - region.y) as usize + r) * region.w as usize + (p.x - region.x) as usize) * 4;
+            rgba[to..to + row].copy_from_slice(&px[r * row..(r + 1) * row]);
+        }
+    }
+    Ok(())
 }
 
 impl Drop for Native {
@@ -287,6 +334,25 @@ mod tests {
         out.extend(h.to_le_bytes());
         out.extend(px);
         out
+    }
+
+    #[test]
+    fn patches_are_read_and_applied() {
+        // rekord 6: ramka 4x3, jedna łata 2x1 w (1, 1)
+        let mut patch = record(6, 1, 4, 3, &1u32.to_le_bytes());
+        patch.extend([1u32, 1, 2, 1].iter().flat_map(|v| v.to_le_bytes()));
+        patch.extend([7u8; 8]);
+        let reply = read_reply(&mut &patch[..]).unwrap().unwrap();
+        let Kind::Patch(patches) = reply.kind else { panic!("{:?}", reply.kind) };
+        assert_eq!(patches, vec![(Area { x: 1, y: 1, w: 2, h: 1 }, vec![7; 8])]);
+        // obraz 3x2 od (1, 0): łata w drugim wierszu, w dwóch pierwszych pikselach
+        let mut base = (Area { x: 1, y: 0, w: 3, h: 2 }, vec![0u8; 3 * 2 * 4]);
+        apply_patch(&mut base, &patches).unwrap();
+        assert_eq!(&base.1[..12], &[0; 12]);
+        assert_eq!(&base.1[12..20], &[7; 8]);
+        assert_eq!(&base.1[20..24], &[0; 4]);
+        let outside = vec![(Area { x: 0, y: 0, w: 1, h: 1 }, vec![1; 4])];
+        assert!(apply_patch(&mut base, &outside).is_err());
     }
 
     #[test]
