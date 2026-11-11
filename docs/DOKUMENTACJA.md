@@ -485,7 +485,7 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_FFMPEG_READRATE_CATCHUP` | – (compose: `2`) | tempo nadrabiania strumienia MPEG-TS kanału po przestoju (`-readrate_catchup`); puste = bez nadrabiania |
 | `VIZRS_FFMPEG_FPS_BLEND` | – (compose: `1`) | `1` = zmiana klatkażu materiału szybszego od kanału z mieszaniem klatek (`framerate` zamiast `fps`; klatkaż z `ffprobe`); puste = `fps` |
 | `VIZRS_FFMPEG_STANDBY` | – | obraz audycji na żywo bez sygnału studia (§1, Audycje na żywo w ramówce); puste = czerń |
-| `VIZRS_FFMPEG_CUDA` | – | `encode` = przy koderze NVENC (`*_nvenc`) na karcie zostaje tylko koder: nakładka usuwa z komendy ErsatzTV dekodowanie CUDA (`-hwaccel cuda`, `-hwaccel_output_format`, `-init_hw_device cuda`, `-filter_hw_device`) i wysyłkę na kartę (`hwupload`, `hwupload_cuda`), a `scale_cuda`, `overlay_cuda`, `pad_cuda`, `yadif_cuda`, `bwdif_cuda` zamienia na filtry CPU (`scale`+`format`, `overlay=…:format=auto`, `pad`, `yadif`, `bwdif`). Proces bierze ok. połowę pamięci GPU (720p: 118 MiB zamiast 218 MiB, pomiar 2026-11-07 na Quadro P400) kosztem CPU (ok. 0,3 rdzenia na 720p). Dla karty dzielonej z pulpitem: dwie pozycje kanału naraz (kończąca się i następna) nie kończą się `CUDA_ERROR_OUT_OF_MEMORY` / `Cannot allocate memory` (zastępczą planszą). Inny koder, komenda bez CUDA albo nieznany filtr `*_cuda` = komenda bez zmian; puste = komenda ErsatzTV |
+| `VIZRS_FFMPEG_CUDA` | – | `encode` = przy koderze NVENC (`*_nvenc`) na karcie zostaje tylko koder: nakładka usuwa z komendy ErsatzTV dekodowanie CUDA (`-hwaccel cuda`, `-hwaccel_output_format`, `-init_hw_device cuda`, `-filter_hw_device`) i wysyłkę na kartę (`hwupload`, `hwupload_cuda`), a `scale_cuda`, `overlay_cuda`, `pad_cuda`, `yadif_cuda`, `bwdif_cuda` zamienia na filtry CPU (`scale`+`format`, `overlay=…:format=auto`, `pad`, `yadif`, `bwdif`). Proces bierze ok. połowę pamięci GPU (720p: 118 MiB zamiast 218 MiB, pomiar 2026-11-07 na Quadro P400) kosztem CPU (ok. 0,3 rdzenia na 720p). Dla karty dzielonej z pulpitem: dwie pozycje kanału naraz (kończąca się i następna) nie kończą się `CUDA_ERROR_OUT_OF_MEMORY` / `Cannot allocate memory` (zastępczą planszą). Inny koder, komenda bez CUDA albo nieznany filtr `*_cuda` = komenda bez zmian. `overlay` = przy koderze NVENC i dekodowaniu CUDA (`-hwaccel cuda`) nakładka usuwa tylko dekodowanie (`-hwaccel`, `-hwaccel_output_format`, `-hwaccel_device`); zdekodowane klatki trafiają na kartę (`format=nv12\|yuv420p\|…,hwupload`) tam, gdzie filtry ErsatzTV ich tam oczekują (pierwszy `hwupload` albo filtr `*_cuda` łańcucha z wejścia), a skalowanie, nakładanie grafiki (`overlay_cuda`) i koder zostają na karcie. Pomiar 2026-11-11 na Quadro P400 (materiał 720p25 do 1080p50 z paskiem grafiki): 0,16 rdzenia zamiast 1,45 przy `encode`, pamięć GPU podobna (195 MiB zamiast 206); dekodowanie CUDA (pełne CUDA) to ok. 236 MiB. Komenda bez dekodowania CUDA albo z innym koderem = bez zmian; puste = komenda ErsatzTV |
 | `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
 
 #### Nadrabianie strumienia MPEG-TS (`VIZRS_FFMPEG_READRATE_CATCHUP`)
@@ -1635,7 +1635,16 @@ Sprawdzenie: `docker compose exec ersatztv nvidia-smi` i
 Komunikat `could not select device driver "nvidia"` oznacza starą wersję nakładki
 albo brak specyfikacji CDI. Grafika się nie
 zmienia – trafia do ffmpeg ErsatzTV jako surowe klatki (§1), więc sidecar i jego
-Chromium nie potrzebują GPU. ErsatzTV wysyła je na kartę (`format=yuva420p,hwupload_cuda`)
+Chromium nie potrzebują GPU. Nakładka daje kartę także kontenerowi `cg`:
+z `VIZRS_BROWSER_GPU=1` Chromium rysuje na GPU (EGL przez ANGLE: `--use-gl=angle
+--use-angle=gl-egl` zamiast `--disable-gpu`; sterownik EGL NVIDIA wstrzykuje CDI,
+`libEGL.so.1` jest w obrazie; Vulkan w ANGLE nie działa bez okna). Pomiar
+2026-11-11 na Quadro P400 (zrzuty PNG 1920×1080 strony z paskiem, crawlem,
+rozmyciem i zegarem): 66 ms CPU na klatkę zamiast 179 ms, za ok. 67 MiB pamięci
+GPU. Renderer natywny (`renderer: auto|native`) zawsze rysuje na CPU, więc
+przełącznik działa tylko na sceny rysowane przez Chromium (np. ruch BTB).
+Sprawdzenie: w logu Chromium (`DEBUG=1`) brak `GLDisplayEGL::Initialize failed`,
+a `nvidia-smi` pokazuje proces `chromium-headless-shell`. ErsatzTV wysyła je na kartę (`format=yuva420p,hwupload_cuda`)
 i nakłada `overlay_cuda`; `VIZRS_FFMPEG_FPS` działa też na klatkach CUDA. Karty konsumenckie ograniczają liczbę
 równoległych sesji NVENC, czyli kanałów transkodowanych naraz.
 
@@ -1771,6 +1780,7 @@ błędna wartość = `chromium` z ostrzeżeniem), `VIZRS_RENDERER_BIN` (program
 `VIZRS_PANEL_TOKEN` (live API dla VizRS Live, §1),
 `VIZRS_BROWSER`, `VIZRS_BROWSER_NO_SANDBOX=1` (root / kontenery),
 `VIZRS_BROWSER_ARGS` (dodatkowe flagi Chromium, rozdzielone spacją),
+`VIZRS_BROWSER_GPU=1` / `"browser_gpu": true` (Chromium rysuje na GPU, §4 NVIDIA; `0` wyłącza),
 `DEBUG=1`.
 
 Nieznana opcja w pliku trafia do logu jako ostrzeżenie. Zły typ wartości

@@ -223,6 +223,8 @@ pub struct CaptureOptions {
     pub mode: CaptureMode,
     pub browser: Option<String>,
     pub no_sandbox: bool,
+    /// Draw on the GPU (EGL through ANGLE) instead of `--disable-gpu` (`browser_gpu`).
+    pub gpu: bool,
     pub extra_args: Vec<String>,
     pub idle: Duration,
     /// How far back sessions take pictures (their lead).
@@ -303,6 +305,13 @@ pub struct Capture {
 }
 
 static PROFILES: AtomicU64 = AtomicU64::new(0);
+
+/// Chromium's GPU flags: on the card, EGL through ANGLE (the NVIDIA EGL driver
+/// comes from CDI, `libEGL.so.1` from the image; Vulkan through ANGLE needs a
+/// window surface, absent without a window); otherwise no GPU at all.
+pub fn gpu_args(gpu: bool) -> &'static [&'static str] {
+    if gpu { &["--use-gl=angle", "--use-angle=gl-egl", "--ignore-gpu-blocklist", "--enable-gpu-rasterization"] } else { &["--disable-gpu"] }
+}
 
 impl Capture {
     /// Starts the browser; the capture is active at first.
@@ -529,7 +538,6 @@ impl Capture {
         command
             .args([
                 "--headless=new",
-                "--disable-gpu",
                 "--remote-debugging-pipe",
                 "--hide-scrollbars",
                 "--mute-audio",
@@ -552,6 +560,7 @@ impl Capture {
             ])
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg(format!("--window-size={},{}", o.width, o.height));
+        command.args(gpu_args(o.gpu));
         if o.no_sandbox {
             command.arg("--no-sandbox");
         }

@@ -83,6 +83,7 @@ fn capture_with(
         mode,
         browser: Some(browser),
         no_sandbox,
+        gpu: false,
         extra_args: Vec::new(),
         idle,
         history: Duration::from_secs(5),

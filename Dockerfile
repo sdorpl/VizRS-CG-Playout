@@ -1,4 +1,5 @@
-# VizRS CG Playout sidecar: Rust binary + vizrs-render + headless Chromium (no GPU),
+# VizRS CG Playout sidecar: Rust binary + vizrs-render + headless Chromium (CPU; GPU with
+# VIZRS_BROWSER_GPU=1 and docker-compose.nvidia.yml – libegl1 loads the NVIDIA EGL driver),
 # amd64 and arm64 (tuned for Ampere A1 Neoverse-N1 on arm64). vizrs-render comes
 # from the VizRS CG System release VIZRS_REF.
 # The binary is built on the build host's platform and cross-compiled for the
@@ -45,7 +46,7 @@ RUN git clone --depth 1 --branch "$VIZRS_REF" https://github.com/sdorpl/VizRS-CG
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium-headless-shell fonts-dejavu-core fonts-noto-core tzdata \
+    && apt-get install -y --no-install-recommends chromium-headless-shell libegl1 fonts-dejavu-core fonts-noto-core tzdata \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /vizrs-cg /usr/local/bin/vizrs-cg
 COPY --from=build /vizrs-render /usr/local/bin/vizrs-render

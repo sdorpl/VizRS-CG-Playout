@@ -368,6 +368,7 @@ impl Server {
             mode,
             browser: self.browser.clone(),
             no_sandbox: self.config.no_sandbox,
+            gpu: self.config.browser_gpu,
             extra_args: self.config.browser_args.clone(),
             idle: IDLE,
             history: stream::history(self.config.lead_seconds),

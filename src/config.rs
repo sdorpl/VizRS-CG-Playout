@@ -157,6 +157,8 @@ pub struct Config {
     pub alert_webhook: String,
     pub browser: String,
     pub no_sandbox: bool,
+    /// Chromium draws on the GPU (EGL) instead of `--disable-gpu`; needs a card in the container.
+    pub browser_gpu: bool,
     /// Extra Chromium flags, e.g. fewer raster threads on small ARM hosts.
     pub browser_args: Vec<String>,
     /// Wait after an item's stop before its gap counts as an ad (tests only).
@@ -208,6 +210,7 @@ impl Default for Config {
             alert_webhook: String::new(),
             browser: String::new(),
             no_sandbox: false,
+            browser_gpu: false,
             browser_args: Vec::new(),
             gap_grace_ms: None,
         }
@@ -418,6 +421,7 @@ impl Config {
                     "alert_webhook" => config.alert_webhook = string(value, key)?.trim().to_owned(),
                     "browser" => config.browser = string(value, key)?,
                     "no_sandbox" => config.no_sandbox = boolean(value, key)?,
+                    "browser_gpu" => config.browser_gpu = boolean(value, key)?,
                     "browser_args" => {
                         let items = value.as_array().ok_or("browser_args: expected an array of strings")?;
                         config.browser_args = items.iter().map(|v| string(v, "browser_args")).collect::<Result<_, _>>()?;
@@ -579,6 +583,9 @@ impl Config {
         }
         if env("VIZRS_BROWSER_NO_SANDBOX").as_deref() == Some("1") {
             config.no_sandbox = true;
+        }
+        if let Some(v) = env("VIZRS_BROWSER_GPU").filter(|v| !v.is_empty()) {
+            config.browser_gpu = v == "1";
         }
         if let Some(v) = env("VIZRS_BROWSER_ARGS").filter(|v| !v.is_empty()) {
             config.browser_args = v.split_whitespace().map(str::to_owned).collect();
@@ -809,6 +816,15 @@ mod tests {
         assert_eq!((config.live_shows[0].seconds, warnings.len()), (2700.0, 0));
         let (_, warnings) = Config::from_values(None, &env(&[("VIZRS_LIVE_SHOWS", "[{}]")])).unwrap();
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn browser_gpu() {
+        assert!(!Config::default().browser_gpu);
+        let file = json::parse(r#"{"browser_gpu":true}"#).unwrap();
+        assert!(Config::from_values(Some(&file), &env(&[])).unwrap().0.browser_gpu);
+        assert!(!Config::from_values(Some(&file), &env(&[("VIZRS_BROWSER_GPU", "0")])).unwrap().0.browser_gpu);
+        assert!(Config::from_values(None, &env(&[("VIZRS_BROWSER_GPU", "1")])).unwrap().0.browser_gpu);
     }
 
     #[test]
