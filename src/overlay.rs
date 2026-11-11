@@ -46,7 +46,7 @@
 //     VIZRS_FFMPEG_CUDA  encode = with an NVENC encoder, decoding and filters on the CPU;
 //                        overlay = decoding on the CPU, filters and overlay on the card;
 //                        auto = overlay while the card has VIZRS_FFMPEG_CUDA_MIN_FREE MiB free, encode below
-//     VIZRS_FFMPEG_CUDA_MIN_FREE  free GPU memory in MiB for overlay in auto (default 300)
+//     VIZRS_FFMPEG_CUDA_MIN_FREE  free GPU memory in MiB for overlay in auto (default 400)
 //     VIZRS_FFMPEG_NVENC_BF  B-frames of NVENC encoders, e.g. 0 (empty: ffmpeg's)
 //
 // The graphics of a canvas transcode with `-init_hw_device cuda` go to the
@@ -73,8 +73,11 @@
 // back to the CPU (`hwdownload`): waiting for the muxer (3 s of `loudnorm`
 // lookahead) on the card they ran it out of memory. A canvas transcode then
 // reads the media at `-readrate 1` when ErsatzTV gives it no rate
-// (`paced_media`): the graphics come in the channel's time anyway, and media
-// decoded ahead of them waited on the card in front of `overlay_cuda`. Measured on a Quadro P400
+// (`paced_media`), with an initial burst of the graphics the sidecar has
+// ready at once (`ahead` of `/ffmpeg`): the graphics come in the channel's
+// time anyway, media decoded ahead of them waited on the card in front of
+// `overlay_cuda`, and without the burst a piece started late never made up
+// the time lost (HLS at 0.93x, the player's buffer ran out). Measured on a Quadro P400
 // (720p25 media to 1080p50 with a graphics strip): 0.33 of a core instead of
 // 1.40 with `encode`, about the same GPU memory (213 MiB instead of 206).
 //
@@ -124,7 +127,7 @@ const RECONNECT: Duration = Duration::from_secs(1);
 /// A probe without a result this long ago (failed, or still running) is run again.
 /// How often the overlay asks for the zones of its session (as `takeover` for the live state).
 const ZONES_POLL: Duration = Duration::from_millis(100);
-const DEFAULT_CUDA_MIN_FREE: u64 = 300;
+const DEFAULT_CUDA_MIN_FREE: u64 = 400;
 const GPU_QUERY_WAIT: Duration = Duration::from_secs(1);
 const PROBE_RETRY: Duration = Duration::from_secs(60);
 /// Read timeout of a probe of an http input, in microseconds.
@@ -516,8 +519,9 @@ pub fn with_catchup(args: Vec<OsString>, rate: &str) -> Vec<OsString> {
     out
 }
 
-/// The command with the forced rate, blending, preset, B-frames and catch-up rate, when set.
-fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
+/// The command with the forced rate, blending, preset, B-frames and catch-up
+/// rate, when set; `burst` = seconds of graphics ready at once (`paced_media`).
+fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec<OsString> {
     let cuda = match settings.cuda {
         Cuda::Auto if nvenc_with_cuda(&args) => auto_cuda(free_gpu_memory(), settings.cuda_min_free),
         Cuda::Auto => Cuda::Full,
@@ -526,7 +530,7 @@ fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
     let args = match cuda {
         Cuda::Full | Cuda::Auto => args,
         Cuda::Encode => cuda_encode_only(args),
-        Cuda::Overlay => paced_media(cuda_decode_on_cpu(args)),
+        Cuda::Overlay => paced_media(cuda_decode_on_cpu(args), burst),
     };
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
@@ -729,9 +733,12 @@ const UPLOAD_FORMATS: &str = "format=nv12|yuv420p|yuva420p|p010le|yuv444p|p016le
 /// The graphics come in the channel's time (with `lead_seconds` ahead), so
 /// the transcode runs no faster with the media read at full speed – the
 /// decoded frames only wait for them on the card in front of `overlay_cuda`
-/// (Quadro P400, 1080p50, three areas: 387 MiB instead of 159). Any other
-/// command unchanged.
-pub fn paced_media(args: Vec<OsString>) -> Vec<OsString> {
+/// (Quadro P400, 1080p50, three areas: 387 MiB instead of 159). With `burst`
+/// (seconds of graphics the sidecar has ready at once) the media starts that
+/// far ahead too (`-readrate_initial_burst`, at least ffmpeg's 0.5 s): a piece
+/// started late makes up the time lost, as ErsatzTV's own burst does, without
+/// frames waiting for graphics. Any other command unchanged.
+pub fn paced_media(args: Vec<OsString>, burst: Option<f64>) -> Vec<OsString> {
     let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
     let Some(text) = text else { return args };
     let on_card = text.windows(2).any(|w| w[0] == "-filter_complex" && w[1].contains("overlay_cuda"));
@@ -740,10 +747,19 @@ pub fn paced_media(args: Vec<OsString>) -> Vec<OsString> {
     if !on_card || !raw || text[1 + first].starts_with("pipe:") || text[..first].contains(&"-readrate") {
         return args;
     }
+    let mut rate: Vec<OsString> = vec!["-readrate".into(), "1".into()];
+    if let Some(burst) = burst.filter(|b| b.is_finite()) {
+        rate.extend(["-readrate_initial_burst".into(), format!("{:.1}", burst.clamp(MIN_BURST, MAX_BURST)).into()]);
+    }
     let mut out = args;
-    out.splice(first..first, ["-readrate".into(), "1".into()]);
+    out.splice(first..first, rate);
     out
 }
+
+/// ffmpeg's own initial burst of `-readrate`.
+const MIN_BURST: f64 = 0.5;
+/// More would be a wrong clock (the sidecar takes an air time at most 10 s behind).
+const MAX_BURST: f64 = 30.0;
 
 /// A command encoding with NVENC from CUDA decoding, decoding on the CPU
 /// (`VIZRS_FFMPEG_CUDA=overlay`): the decoded frames go to the card where
@@ -907,9 +923,21 @@ pub struct Frames {
     pub resume: String,
     /// The sidecar's session taken over.
     pub session: String,
+    /// Seconds of graphics the sidecar had ready at once when the session was
+    /// taken over, and when (`ahead`); None = an older sidecar.
+    pub ahead: Option<(std::time::Instant, f64)>,
     /// Revision of zones that may widen in the middle of the piece (`area:
     /// auto`, PLAN-strefy S3b); None = fixed for the piece (an older sidecar too).
     pub zones_rev: Option<u64>,
+}
+
+impl Frames {
+    /// Seconds of graphics ready at once for a run from `elapsed` s of the
+    /// piece: those ready at the takeover, plus the time since, minus the
+    /// piece before the run. None = unknown (an older sidecar).
+    fn burst(&self, elapsed: f64) -> Option<f64> {
+        self.ahead.map(|(at, seconds)| seconds + at.elapsed().as_secs_f64() - elapsed)
+    }
 }
 
 /// The parts of a frame layout in a reply of the sidecar (`areas`, stacked).
@@ -1286,15 +1314,16 @@ fn take_over(settings: &Settings, channel: &str, header_rate: &str, place: bool,
     let matrix = info.get("matrix").and_then(Value::as_str).unwrap_or_default().to_owned();
     let resume = info.get("resume").and_then(Value::as_str).unwrap_or_default().to_owned();
     let zones_rev = info.get("zones_rev").and_then(Value::as_f64).map(|n| n as u64).filter(|_| place);
+    let ahead = info.get("ahead").and_then(Value::as_f64).map(|seconds| (std::time::Instant::now(), seconds));
     let frames =
-        Frames { width: size("width")?, height: size("height")?, rate, matrix, areas, resume, session: session.clone(), zones_rev };
+        Frames { width: size("width")?, height: size("height")?, rate, matrix, areas, resume, session: session.clone(), ahead, zones_rev };
     let path = format!("/ffmpeg/frames?session={}&fps={}{area}", quote_plus(&session), quote_plus(&frames.rate));
     Ok((frames, open_frames(&settings.sidecar, &path)?))
 }
 
 /// Replaces this process with the real ffmpeg (at the forced rate, preset and catch-up rate, if any).
 fn plain(settings: &Settings, args: Vec<OsString>) -> ! {
-    let error = Command::new(&settings.ffmpeg).args(adjusted(args, settings)).exec();
+    let error = Command::new(&settings.ffmpeg).args(adjusted(args, settings, None)).exec();
     log(format_args!("{}: {error}", settings.ffmpeg.to_string_lossy()));
     std::process::exit(127)
 }
@@ -1346,7 +1375,7 @@ fn live_command(
         Some(source) => takeover::Picture::Live(source),
         None => takeover::Picture::Standby(standby_image(settings)),
     };
-    adjusted(takeover::live_args(args, job, elapsed, picture, &format, input.as_ref()), settings)
+    adjusted(takeover::live_args(args, job, elapsed, picture, &format, input.as_ref()), settings, None)
 }
 
 /// `VIZRS_FFMPEG_STANDBY` when the file is there; else black.
@@ -1434,6 +1463,7 @@ fn with_graphics(
                         areas: zones.areas,
                         resume: if current.frames.resume.is_empty() { String::new() } else { zones.resume },
                         session: current.frames.session.clone(),
+                        ahead: current.frames.ahead,
                         zones_rev: Some(zones.rev),
                     };
                     let shown = if zones.geometry.is_empty() { "the whole channel" } else { zones.geometry.as_str() };
@@ -1450,7 +1480,7 @@ fn with_graphics(
         let command = match source {
             Some(source) => live_command(settings, args, job, elapsed, Some(source), Some((frames, fd))),
             None if job.slot => live_command(settings, args, job, elapsed, None, Some((frames, fd))),
-            None => adjusted(job.program(&overlay_args(args, canvas, fd, frames), elapsed), settings),
+            None => adjusted(job.program(&overlay_args(args, canvas, fd, frames), elapsed), settings, frames.burst(elapsed)),
         };
         let child = spawn(settings, command, Some(fd))?;
         drop(reader);
@@ -1510,7 +1540,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     let Some(canvas) = canvas else {
         return match live {
             Some((job, on, audio)) => {
-                let program = |elapsed: f64| adjusted(job.program(&args, elapsed), settings);
+                let program = |elapsed: f64| adjusted(job.program(&args, elapsed), settings, None);
                 let run = |elapsed: f64, source: Option<&takeover::Source>| match source {
                     Some(source) => spawn(settings, live_command(settings, &args, &job, elapsed, Some(source), None), None),
                     None if job.slot => spawn(settings, live_command(settings, &args, &job, elapsed, None, None), None),
@@ -1560,7 +1590,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     // Forwarded to ffmpeg from here on; ffmpeg_child_setup unblocks them in the child.
     sys::block_signals(&FORWARDED);
     let mut command = Command::new(&settings.ffmpeg);
-    command.args(adjusted(overlay_args(&args, &canvas, fd, &frames), settings));
+    command.args(adjusted(overlay_args(&args, &canvas, fd, &frames), settings, frames.burst(0.0)));
     // SAFETY: only async-signal-safe calls in the forked child.
     unsafe {
         command.pre_exec(move || sys::ffmpeg_child_setup(fd));
@@ -1922,6 +1952,7 @@ mod tests {
             areas: vec![],
             resume: String::new(),
             session: "1".into(),
+            ahead: None,
             zones_rev: None,
         };
         let raw = ["-i", "media", "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25"];
@@ -2053,14 +2084,19 @@ mod tests {
             args(&all)
         };
         let on_card = "[0:0]hwupload[m];[1:0]hwupload[g];[m][g]overlay_cuda[v]";
-        assert_eq!(paced_media(canvas(&["-ss", "5ms"], on_card)), canvas(&["-ss", "5ms", "-readrate", "1"], on_card));
+        assert_eq!(paced_media(canvas(&["-ss", "5ms"], on_card), None), canvas(&["-ss", "5ms", "-readrate", "1"], on_card));
+        // Graphics ready ahead: the media bursts as far (at least ffmpeg's 0.5 s, at most 30 s).
+        let burst = |seconds: &str| canvas(&["-readrate", "1", "-readrate_initial_burst", seconds], on_card);
+        assert_eq!(paced_media(canvas(&[], on_card), Some(7.46)), burst("7.5"));
+        assert_eq!(paced_media(canvas(&[], on_card), Some(-2.0)), burst("0.5"));
+        assert_eq!(paced_media(canvas(&[], on_card), Some(99.0)), burst("30.0"));
         // Its own rate, the overlay on the CPU, or no raw graphics: unchanged.
         let own = canvas(&["-readrate", "1.0"], on_card);
-        assert_eq!(paced_media(own.clone()), own);
+        assert_eq!(paced_media(own.clone(), Some(4.0)), own);
         let cpu = canvas(&[], "[0:0][1:0]overlay[v]");
-        assert_eq!(paced_media(cpu.clone()), cpu);
+        assert_eq!(paced_media(cpu.clone(), Some(4.0)), cpu);
         let plain = args(&["-i", "http://m", "-filter_complex", on_card, "-c:v", "h264_nvenc", "o"]);
-        assert_eq!(paced_media(plain.clone()), plain);
+        assert_eq!(paced_media(plain.clone(), Some(4.0)), plain);
     }
 
     #[test]

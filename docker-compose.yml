@@ -203,7 +203,7 @@ services:
       # before each piece), encode below: no out-of-memory slate on a card shared with a desktop.
       # Empty = ErsatzTV's command (CUDA decoding and filters with NVENC).
       VIZRS_FFMPEG_CUDA: ${VIZRS_FFMPEG_CUDA:-}
-      # Free GPU memory in MiB that VIZRS_FFMPEG_CUDA=auto needs for overlay (default 300).
+      # Free GPU memory in MiB that VIZRS_FFMPEG_CUDA=auto needs for overlay (default 400).
       VIZRS_FFMPEG_CUDA_MIN_FREE: ${VIZRS_FFMPEG_CUDA_MIN_FREE:-}
       # B-frames of NVENC encoders without their own, e.g. 0: each B-frame keeps
       # reference frames on the card (1080p50 encoder: 139 MiB by default, 79 MiB

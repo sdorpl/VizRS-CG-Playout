@@ -56,6 +56,7 @@ Wnioski:
 | E5 NVDEC | zmierzony, **odrzucony** (niżej) |
 | E6 drugi kanał | nie zrobiony |
 | E7, E8 | pominięte (decyzja użytkownika) |
+| Lagi 1080p50 | **naprawione**: nie karta (SM 30–40%, głównie pulpit; NVENC 12%), tylko `-readrate 1` trybu `overlay` bez zrywu – HLS 0,93×. Zryw = grafika gotowa w sidecarze (`ahead` w `/ffmpeg`): HLS 1,04× do dogonienia ramówki, ffmpeg 167 → 277 MiB, `VIZRS_FFMPEG_CUDA_MIN_FREE` 300 → 400 (DOKUMENTACJA, „Pamięć karty przy NVENC”) |
 
 ## Etapy
 

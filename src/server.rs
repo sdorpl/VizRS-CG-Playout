@@ -811,8 +811,10 @@ impl Server {
             *script.zones.lock().unwrap_or_else(|e| e.into_inner()) = zones;
         }
         let layout = frame_layout(&script, placed);
+        let ahead = crate::stream::graphics_ahead(script.ctx.air_ms(), crate::time::now_ms() as f64, self.config.lead_seconds);
         let mut reply = json::object([
             ("session", script.id.into()),
+            ("ahead", ((ahead * 1000.0).round() / 1000.0).into()),
             ("width", u64::from(layout.width).into()),
             ("height", u64::from(layout.height).into()),
             ("fps", script.fps.into()),

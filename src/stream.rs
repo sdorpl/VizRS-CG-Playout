@@ -39,6 +39,16 @@ pub fn air_is_timeline(air_ms: f64, now_ms: f64, lead_s: f64) -> bool {
     air_ms <= now_ms + (lead_s + EARLY.as_secs_f64()) * 1000.0 && air_ms + WRONG.as_secs_f64() * 1000.0 >= now_ms
 }
 
+/// Seconds of a new raw frame stream ready at once: the lead plus how far its
+/// air time is behind now (the frames missed come at once). A reader that
+/// starts no further ahead than this never waits for the graphics (the
+/// overlay's `-readrate_initial_burst`, PLAN-p400).
+pub fn graphics_ahead(air_ms: Option<f64>, now_ms: f64, lead_s: f64) -> f64 {
+    let lead_s = lead_s.max(0.0);
+    let behind = air_ms.filter(|&air| air_is_timeline(air, now_ms, lead_s)).map_or(0.0, |air| (now_ms - air) / 1000.0);
+    (lead_s + behind).max(0.0)
+}
+
 /// How far back the streams of `lead_seconds` take pictures.
 pub fn history(lead_seconds: f64) -> Duration {
     Duration::from_secs_f64(lead_seconds.max(0.0)) + SAMPLE_DELAY + LATE + Duration::from_millis(500)
@@ -296,6 +306,20 @@ mod tests {
     use crate::packets::Rect;
 
     const PACKETS: Format = Format::Packets;
+
+    #[test]
+    fn graphics_ahead_is_the_lead_plus_the_air_time_missed() {
+        let now = 1_000_000.0;
+        // 3 s behind the air time: the lead and those 3 s at once.
+        assert_eq!(graphics_ahead(Some(now - 3000.0), now, 4.0), 7.0);
+        // Ahead of the air time (ErsatzTV early): less than the lead.
+        assert_eq!(graphics_ahead(Some(now + 1000.0), now, 4.0), 3.0);
+        // No air time, or a wrong clock: the timeline starts now.
+        assert_eq!(graphics_ahead(None, now, 4.0), 4.0);
+        assert_eq!(graphics_ahead(Some(now - 60_000.0), now, 4.0), 4.0);
+        assert_eq!(graphics_ahead(Some(now + 60_000.0), now, 4.0), 4.0);
+        assert_eq!(graphics_ahead(None, now, -1.0), 0.0);
+    }
 
     #[test]
     fn lead_frames_at_once_then_paced() {

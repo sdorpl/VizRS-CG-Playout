@@ -797,6 +797,51 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
   }
 });
 
+test("ffmpeg overlay VIZRS_FFMPEG_CUDA=overlay: the media paced at -readrate 1 with a burst of the graphics ready at once", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const cg = await sidecar(t, { vizrs: { address: vizrs.address, token: "" }, output_url: "http://127.0.0.1:9/output", lead_seconds: 2 });
+  let start = "";
+  const etv = http.createServer((request, response) => {
+    const child = spawn(CLIENT, [`${cg.url}/etv?channel=1`]);
+    child.stdout.resume();
+    const stop = new Date(Date.parse(start) + 1800_000).toISOString();
+    child.stdin.end(JSON.stringify(item("/m/News.mp4", start, { MediaItem_Stop: stop })));
+    response.writeHead(200);
+    response.flushHeaders();
+    response.on("close", () => child.kill());
+  });
+  const etvPort = await listen(etv);
+  t.after(() => etv.close());
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  const env = { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_CUDA: "overlay", FRAME_BYTES: String(yuvaSize(8, 4)), FRAMES: "2" };
+  const burst = async (startMs) => {
+    start = new Date(startMs).toISOString();
+    const result = await runWrapper([
+      "-init_hw_device", "cuda", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+      "-i", "/m/News.mp4", "-headers", "x-etv-frame-rate:25/1\r\n", "-t", "44000ms",
+      "-i", `http://127.0.0.1:${etvPort}/internal/graphics/1/7?exp=1&sig=x`,
+      "-filter_complex", "[0:0]hwupload,scale_cuda=8:4[v_m0];[1:0]format=yuva420p,hwupload_cuda[v_s0];[v_m0][v_s0]overlay_cuda=x=0:y=0[v_o0]",
+      "-map", "[v_o0]", "-vcodec", "h264_nvenc", "-f", "hls", "/t/ffmpeg.m3u8",
+    ], env);
+    // Without CUDA decoding, the media input paced, with its burst.
+    assert.deepEqual(result.args.slice(0, 4), ["-init_hw_device", "cuda", "-readrate", "1"]);
+    assert.equal(result.args[4], "-readrate_initial_burst");
+    assert.deepEqual(result.args.slice(6, 8), ["-i", "/m/News.mp4"]);
+    return Number(result.args[5]);
+  };
+  // An air time out of reach (a wrong clock): the lead only.
+  const lead = await burst(Date.parse("2026-10-24T20:00:00+02:00"));
+  assert.ok(lead >= 2 && lead <= 2.5, `lead ${lead}`);
+  // A piece started 3 s late: the lead and the 3 s missed.
+  const late = await burst(Date.now() - 3000);
+  assert.ok(late >= 4.9 && late <= 5.8, `late ${late}`);
+});
+
 test("ffmpeg overlay VIZRS_FFMPEG_CUDA=auto: overlay with free GPU memory, encode on a full card", async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
