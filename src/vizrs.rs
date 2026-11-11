@@ -292,6 +292,27 @@ pub fn send(address: &str, token: &str, prefix: &str, commands: &[String], clear
 static SENT: Mutex<Vec<(String, i64, String)>> = Mutex::new(Vec::new());
 /// How long a sent command is remembered (several reads of the layers on air).
 const SENT_KEEP_MS: i64 = 30_000;
+/// Pages taken back after a break count as coming on air this long after
+/// their `TAKE` (`STATE` may not show them yet to the zones of a new run).
+const BREAK_PAGES_GRACE_MS: u64 = 10_000;
+
+/// Pages out for a break (None) or taken back (epoch ms), as the sender
+/// thread's `cleared` goes; see `ChannelEvents::break_pages`.
+type BreakPages = Arc<Mutex<Vec<(String, Option<u64>)>>>;
+
+/// The pages `cleared` holds now, and those taken back within the grace.
+fn mirror_break(mirror: &BreakPages, cleared: Option<&Vec<String>>, now: u64) {
+    let mut pages = mirror.lock().unwrap_or_else(|e| e.into_inner());
+    match cleared {
+        Some(out) => *pages = out.iter().map(|page| (page.clone(), None)).collect(),
+        None => {
+            for (_, back) in pages.iter_mut() {
+                back.get_or_insert(now);
+            }
+            pages.retain(|(_, back)| back.is_none_or(|at| now.saturating_sub(at) <= BREAK_PAGES_GRACE_MS));
+        }
+    }
+}
 
 fn antenna_key(address: &str, prefix: &str) -> String {
     format!("{address}|{}", prefix.trim())
@@ -407,12 +428,16 @@ pub struct ChannelEvents {
     /// Bumped by every ad: graphics scheduled before it are not sent.
     ad_generation: Arc<AtomicU64>,
     queue: Mutex<Sender<Batch>>,
+    /// The sender's pages out for a break, for the graphics zones.
+    break_pages: BreakPages,
 }
 
 impl ChannelEvents {
     pub fn new(config: Arc<Config>, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>, channel: String) -> Arc<ChannelEvents> {
         let (queue, batches) = mpsc::channel::<Batch>();
         let sender_config = Arc::clone(&config);
+        let break_pages = BreakPages::default();
+        let mirror = Arc::clone(&break_pages);
         thread::Builder::new()
             .name("vizrs".into())
             .spawn(move || {
@@ -427,6 +452,7 @@ impl ChannelEvents {
                         None if parked.is_some() => park(parked.as_mut().unwrap(), &mut cleared, &batch),
                         None => send_clip(&sender_config, &mut cleared, batch),
                     }
+                    mirror_break(&mirror, cleared.as_ref(), time::now_ms() as u64);
                 }
             })
             .expect("vizrs sender thread");
@@ -442,6 +468,7 @@ impl ChannelEvents {
             state: Mutex::new(State::default()),
             ad_generation: Arc::new(AtomicU64::new(0)),
             queue: Mutex::new(queue),
+            break_pages,
         });
         let mut all = CHANNELS.lock().unwrap_or_else(|e| e.into_inner());
         all.retain(|w| w.strong_count() > 0);
@@ -452,6 +479,18 @@ impl ChannelEvents {
     /// New graphics rules (the channel's configuration with them, and their matchers).
     pub fn set_rules(&self, config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) {
         *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(ClipRules::of(config, ads, shows));
+    }
+
+    /// Pages a new piece may take back from a break: out for it now, or taken
+    /// back within `BREAK_PAGES_GRACE_MS` (their `TAKE` may not be in `STATE`
+    /// yet). The graphics zones of a run count them (PLAN-strefy).
+    pub fn break_pages(&self, now: u64) -> Vec<String> {
+        let pages = self.break_pages.lock().unwrap_or_else(|e| e.into_inner());
+        pages
+            .iter()
+            .filter(|(_, back)| back.is_none_or(|at| now.saturating_sub(at) <= BREAK_PAGES_GRACE_MS))
+            .map(|(p, _)| p.clone())
+            .collect()
     }
 
     fn rules(&self) -> Arc<ClipRules> {
@@ -882,6 +921,26 @@ fn send_clip(config: &Config, cleared: &mut Option<Vec<String>>, Batch { ad, res
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn break_pages_until_a_grace_after_they_come_back() {
+        let mirror = super::BreakPages::default();
+        let pages = |now| {
+            let list = mirror.lock().unwrap();
+            list.iter()
+                .filter(|(_, back)| back.is_none_or(|at| now - at <= super::BREAK_PAGES_GRACE_MS))
+                .map(|(p, _)| p.clone())
+                .collect::<Vec<_>>()
+        };
+        super::mirror_break(&mirror, Some(&vec!["2001".into(), "4001".into()]), 1000);
+        assert_eq!(pages(500_000), ["2001", "4001"]);
+        // Taken back at 600 s: still counted 10 s after, not later.
+        super::mirror_break(&mirror, None, 600_000);
+        assert_eq!(pages(610_000), ["2001", "4001"]);
+        assert!(pages(610_001).is_empty());
+        super::mirror_break(&mirror, None, 610_001);
+        assert!(mirror.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn parked_pages_follow_commands() {

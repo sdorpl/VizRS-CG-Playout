@@ -173,6 +173,10 @@ struct Sessions {
     /// other VizRS elements of the piece send transparent frames, or ErsatzTV
     /// (or the overlay) would draw the same /output twice.
     carriers: HashSet<String>,
+    /// Pages taken by the elements of single pages (`page=` / `take=`) per
+    /// channel, and when (epoch ms): their session may come just after the
+    /// overlay took over the piece, so the zones count them beforehand.
+    element_pages: HashMap<String, Vec<(String, u64)>>,
     next_id: u64,
     next_waiter: u64,
 }
@@ -210,6 +214,8 @@ struct ShowLayers {
     fetched: Option<Instant>,
 }
 
+/// How long the zones count a page an element of a single page took on the channel.
+const ELEMENT_PAGES_KEEP_MS: u64 = 600_000;
 /// How often the layers on air are checked against the list, and how often the show is read anyway.
 const LAYERS_EVERY: Duration = Duration::from_secs(2);
 const SHOW_EVERY: Duration = Duration::from_secs(30);
@@ -375,7 +381,15 @@ impl Server {
             add(show.on_clip.as_deref().unwrap_or(""));
             add(show.on_end.as_deref().unwrap_or(""));
         }
-        let numbers: Vec<String> = vizrs::taken_pages(&lines).into_iter().filter(|p| !p.contains('{')).collect();
+        let mut numbers = vizrs::taken_pages(&lines);
+        // Pages this piece may take besides its rules: back from a break, or by
+        // the elements of single pages (their session may come after this).
+        let now = crate::time::now_ms() as u64;
+        numbers.extend(self.events_for(channel).break_pages(now));
+        let elements = lock(&self.sessions).element_pages.get(channel).cloned().unwrap_or_default();
+        numbers.extend(elements.into_iter().filter(|(_, at)| now.saturating_sub(*at) <= ELEMENT_PAGES_KEEP_MS).map(|(page, _)| page));
+        let mut seen = HashSet::new();
+        numbers.retain(|p| !p.contains('{') && seen.insert(p.clone()));
         let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
         let leaving = footprints.leaving(channel, crate::time::now_ms() as u64);
         footprint::zones(&footprints, &on_air, &leaving, &numbers, size, follows)
@@ -1015,6 +1029,13 @@ impl Server {
             crate::warn!("channel {channel}: {warning}");
         }
         events.session(&ctx, custom_commands.as_deref(), timing);
+        if let Some(commands) = &custom_commands {
+            let now = crate::time::now_ms() as u64;
+            let mut sessions = lock(&self.sessions);
+            let pages = sessions.element_pages.entry(channel.clone()).or_default();
+            pages.retain(|(page, at)| now.saturating_sub(*at) <= ELEMENT_PAGES_KEEP_MS && !vizrs::taken_pages(commands).contains(page));
+            pages.extend(vizrs::taken_pages(commands).into_iter().map(|page| (page, now)));
+        }
 
         let piece = format!("{channel}|{}|{}", ctx.start, ctx.seek);
         let carrier = lock(&self.sessions).carriers.insert(piece.clone());

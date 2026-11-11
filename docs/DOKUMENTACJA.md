@@ -139,7 +139,15 @@ strefy przebiegu to sklejone ślady stron na antenie kanału (`STATE`), stron,
 które zeszły z niej w ostatnich 5 s (ich animacja wyjścia jeszcze się rysuje,
 np. na starcie nowej audycji; strona bez śladu niczego tu nie dodaje), i stron,
 które mogą wziąć reguły (`TAKE` z `on_clip`, `on_end` i reguł audycji, po
-zastosowaniu reguł z live API). Nakładka, której kawałek idzie przez
+zastosowaniu reguł z live API). Do tego strony, które pozycja może wziąć
+poza regułami: zdjęte na czas reklamy (wracają z pierwszym zwykłym klipem;
+liczone do 10 s po powrocie, bo ich `TAKE` może jeszcze nie być w `STATE`)
+i strony brane w ostatnich 10 min na tym kanale przez elementy pojedynczych
+stron (`page=` / `take=`, §3) – ErsatzTV uruchamia sesję takiego elementu
+razem z płótnem, często ułamek milisekundy po przejęciu sesji przez
+nakładkę, a bez tego pierwszy kawałek po reklamach poszerzał strefy do
+całego kanału (`page … outside the zones`, restart przebiegu i grafika
+1080p50 rysowana w 25 kl./s; pomiar 2026-11-11). Nakładka, której kawałek idzie przez
 przebiegi zdolne poszerzyć strefy w środku kawałka (niżej), mówi to
 parametrem `follow=1` i dostaje tylko te ślady: stronę wziętą później
 (np. pełnoekranowe przejście) obsłuży poszerzenie, więc raz widziany wipe nie
