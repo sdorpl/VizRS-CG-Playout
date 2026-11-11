@@ -91,7 +91,7 @@ Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu
 | `tests/contract/` | testy kontraktu w Node.js (`npm test`) |
 | `seed/` | dane startowe stosu: show VizRS, baza ErsatzTV (kanał 1), media testowe; obraz `vizrs-seed` z wydania – `init.sh` wypełnia puste wolumeny i daje sidecarowi dostęp, stos bez plików z hosta (Portainer z GitHuba; DOKUMENTACJA §4) |
 | `bench/` | benchmark sidecara (`sidecar.mjs`, scena `scene.html`, obraz i compose, DOKUMENTACJA §8) |
-| `docs/plany/` | plany prac (`PLAN-rust.md` – migracja z Node.js, `PLAN-plynnosc.md` – płynność animacji, `native.md` – natywny renderer VizRS zamiast Chromium, `PLAN-ampere.md` – emisja w 2 OCPU, `PLAN-live-panel.md` – dawny VizRS Live Panel, zamknięty: UI przeniesione do VizRS Live, tu zostaje live API, `PLAN-strefy.md` – strefy grafiki liczone z tego, co jest na antenie, `VIZRS_AREA=auto`) |
+| `docs/plany/` | plany prac (`PLAN-rust.md` – migracja z Node.js, `PLAN-plynnosc.md` – płynność animacji, `native.md` – natywny renderer VizRS zamiast Chromium, `PLAN-ampere.md` – emisja w 2 OCPU, `PLAN-live-panel.md` – dawny VizRS Live Panel, zamknięty: UI przeniesione do VizRS Live, tu zostaje live API, `PLAN-strefy.md` – strefy grafiki liczone z tego, co jest na antenie, `VIZRS_AREA=auto`, `PLAN-p400.md` – lokalny stos na Quadro P400: pamięć karty, NVENC, `VIZRS_FFMPEG_CUDA=auto`) |
 | `.github/workflows/ci.yml` | testy, binarka jako artefakt |
 | `.github/workflows/release.yml` | po znaczniku `v*`: archiwa Linux x86_64/arm64, obraz amd64 + arm64 do ghcr, wydanie GitHub |
 

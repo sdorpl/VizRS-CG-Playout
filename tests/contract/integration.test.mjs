@@ -797,6 +797,36 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
   }
 });
 
+test("ffmpeg overlay VIZRS_FFMPEG_CUDA=auto: overlay with free GPU memory, encode on a full card", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  // nvidia-smi as in the ErsatzTV container: free MiB of the card from FREE, or a failure.
+  writeFileSync(path.join(dir, "nvidia-smi"), '#!/bin/sh\n[ -n "$FREE" ] || exit 9\necho "$FREE"\n');
+  chmodSync(path.join(dir, "nvidia-smi"), 0o755);
+  const command = [
+    "-init_hw_device", "cuda", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", "/m/News.mp4",
+    "-filter_complex", "[0:0]scale_cuda=8:4:format=yuv420p[v]", "-map", "[v]", "-c:v", "h264_nvenc", "/t/o.ts",
+  ];
+  const run = (env) => runWrapper(command, {
+    VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", VIZRS_FFMPEG_CUDA: "auto", PATH: `${dir}:${process.env.PATH}`, ...env,
+  });
+
+  const roomy = await run({ FREE: "900" });
+  assert.ok(roomy.args.some((arg) => arg.includes("scale_cuda")), "overlay keeps the CUDA filters");
+  assert.ok(!roomy.args.includes("-hwaccel"), "overlay decodes on the CPU");
+  const full = await run({ FREE: "120", VIZRS_FFMPEG_CUDA_MIN_FREE: "200" });
+  assert.ok(!full.args.some((arg) => arg.includes("_cuda")), "encode: no CUDA filters");
+  assert.ok(full.args.some((arg) => arg.includes("scale=8:4")));
+  assert.match(full.stderr, /GPU memory 120 MiB free \(< 200\)/);
+  assert.deepEqual((await run({ FREE: "" })).args, roomy.args, "no answer from nvidia-smi = overlay");
+  assert.deepEqual((await run({ FREE: "250" })).args, full.args, "default threshold 300 MiB");
+  const x264 = ["-i", "/m/News.mp4", "-c:v", "libx264", "/t/o.ts"];
+  assert.deepEqual((await runWrapper(x264, { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", VIZRS_FFMPEG_CUDA: "auto", FREE: "1" })).args, x264);
+});
+
 test("graphics rules from the live API: validated, saved, in force from the next item, kept after a restart", async (t) => {
   const vizrs = await fakeVizrs();
   t.after(vizrs.close);

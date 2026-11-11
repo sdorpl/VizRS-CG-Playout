@@ -44,7 +44,9 @@
 //     VIZRS_FFMPEG_INGEST  1 = live ingest of the sidecar takes the channel over
 //     VIZRS_FFMPEG_STANDBY image of a live programme without its source (empty: black)
 //     VIZRS_FFMPEG_CUDA  encode = with an NVENC encoder, decoding and filters on the CPU;
-//                        overlay = decoding on the CPU, filters and overlay on the card
+//                        overlay = decoding on the CPU, filters and overlay on the card;
+//                        auto = overlay while the card has VIZRS_FFMPEG_CUDA_MIN_FREE MiB free, encode below
+//     VIZRS_FFMPEG_CUDA_MIN_FREE  free GPU memory in MiB for overlay in auto (default 300)
 //     VIZRS_FFMPEG_NVENC_BF  B-frames of NVENC encoders, e.g. 0 (empty: ffmpeg's)
 //
 // The graphics of a canvas transcode with `-init_hw_device cuda` go to the
@@ -75,6 +77,13 @@
 // decoded ahead of them waited on the card in front of `overlay_cuda`. Measured on a Quadro P400
 // (720p25 media to 1080p50 with a graphics strip): 0.33 of a core instead of
 // 1.40 with `encode`, about the same GPU memory (213 MiB instead of 206).
+//
+// With VIZRS_FFMPEG_CUDA=auto a command encoding with NVENC and CUDA asks
+// `nvidia-smi` for the free memory of the card first (at most 1 s): with at
+// least VIZRS_FFMPEG_CUDA_MIN_FREE MiB it runs as `overlay`, below as `encode`
+// (half the GPU memory, more CPU) – a card shared with a desktop that filled
+// it no longer ends a piece with `CUDA_ERROR_OUT_OF_MEMORY` and the
+// fallback slate. Without `nvidia-smi`, or when it fails, `overlay`.
 //
 // With VIZRS_FFMPEG_INGEST=1 a transcode to HLS of a channel whose live
 // source is on (sidecar `/ingest/state`) plays that source in its place
@@ -115,6 +124,8 @@ const RECONNECT: Duration = Duration::from_secs(1);
 /// A probe without a result this long ago (failed, or still running) is run again.
 /// How often the overlay asks for the zones of its session (as `takeover` for the live state).
 const ZONES_POLL: Duration = Duration::from_millis(100);
+const DEFAULT_CUDA_MIN_FREE: u64 = 300;
+const GPU_QUERY_WAIT: Duration = Duration::from_secs(1);
 const PROBE_RETRY: Duration = Duration::from_secs(60);
 /// Read timeout of a probe of an http input, in microseconds.
 const PROBE_TIMEOUT_US: &str = "20000000";
@@ -163,6 +174,8 @@ pub struct Settings {
     pub cuda: Cuda,
     /// B-frames of NVENC encoders without `-bf`; empty = ffmpeg's.
     pub nvenc_bf: String,
+    /// Free GPU memory (MiB) `Cuda::Auto` needs for `overlay` (VIZRS_FFMPEG_CUDA_MIN_FREE).
+    pub cuda_min_free: u64,
 }
 
 /// What of a command encoding with NVENC stays on the card (`VIZRS_FFMPEG_CUDA`).
@@ -175,6 +188,8 @@ pub enum Cuda {
     Encode,
     /// `overlay`: decoding on the CPU; filters, the overlay of the graphics and the encoder on the card.
     Overlay,
+    /// `auto`: `overlay` while the card has enough free memory, `encode` below.
+    Auto,
 }
 
 impl Cuda {
@@ -182,6 +197,7 @@ impl Cuda {
         match spec.trim().to_ascii_lowercase().as_str() {
             "encode" => Cuda::Encode,
             "overlay" => Cuda::Overlay,
+            "auto" => Cuda::Auto,
             _ => Cuda::Full,
         }
     }
@@ -201,6 +217,7 @@ impl Settings {
             standby: var("VIZRS_FFMPEG_STANDBY").trim().to_owned(),
             cuda: Cuda::parse(&var("VIZRS_FFMPEG_CUDA")),
             nvenc_bf: var("VIZRS_FFMPEG_NVENC_BF").trim().to_owned(),
+            cuda_min_free: var("VIZRS_FFMPEG_CUDA_MIN_FREE").trim().parse().unwrap_or(DEFAULT_CUDA_MIN_FREE),
         }
     }
 }
@@ -501,8 +518,13 @@ pub fn with_catchup(args: Vec<OsString>, rate: &str) -> Vec<OsString> {
 
 /// The command with the forced rate, blending, preset, B-frames and catch-up rate, when set.
 fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
-    let args = match settings.cuda {
-        Cuda::Full => args,
+    let cuda = match settings.cuda {
+        Cuda::Auto if nvenc_with_cuda(&args) => auto_cuda(free_gpu_memory(), settings.cuda_min_free),
+        Cuda::Auto => Cuda::Full,
+        mode => mode,
+    };
+    let args = match cuda {
+        Cuda::Full | Cuda::Auto => args,
         Cuda::Encode => cuda_encode_only(args),
         Cuda::Overlay => paced_media(cuda_decode_on_cpu(args)),
     };
@@ -510,6 +532,57 @@ fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
     let blended = with_blend(rated, settings.blend, source);
     with_catchup(with_bframes(with_preset(blended, &settings.preset), &settings.nvenc_bf), &settings.catchup)
+}
+
+/// A command encoding with NVENC that decodes or filters with CUDA.
+fn nvenc_with_cuda(args: &[OsString]) -> bool {
+    let text: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+    let nvenc = text.windows(2).any(|w| CODEC.contains(&w[0]) && w[1].ends_with("_nvenc"));
+    nvenc && (text.windows(2).any(|w| w[0] == "-hwaccel" && w[1] == "cuda") || text.iter().any(|a| a.contains("_cuda")))
+}
+
+/// `VIZRS_FFMPEG_CUDA=auto`: `overlay` with at least `min_free` MiB free on
+/// the card or when that is unknown, `encode` below (logged).
+pub fn auto_cuda(free: Option<u64>, min_free: u64) -> Cuda {
+    match free {
+        Some(free) if free < min_free => {
+            log(format_args!("GPU memory {free} MiB free (< {min_free}): CUDA filters on the CPU (encode)"));
+            Cuda::Encode
+        }
+        _ => Cuda::Overlay,
+    }
+}
+
+/// Free memory of the first card in MiB from `nvidia-smi` (at most 1 s); None = unknown.
+fn free_gpu_memory() -> Option<u64> {
+    let mut query = Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match query.try_wait().ok()? {
+            Some(status) if status.success() => break,
+            Some(_) => return None,
+            None if started.elapsed() > GPU_QUERY_WAIT => {
+                let _ = query.kill();
+                let _ = query.wait();
+                return None;
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    let mut text = String::new();
+    query.stdout.take()?.read_to_string(&mut text).ok()?;
+    parse_free_memory(&text)
+}
+
+/// The first card's free MiB from `nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits`.
+pub fn parse_free_memory(text: &str) -> Option<u64> {
+    text.lines().next()?.trim().parse().ok()
 }
 
 /// Options of ErsatzTV's CUDA decoding left out with `VIZRS_FFMPEG_CUDA=encode` (with their value).
@@ -1737,6 +1810,23 @@ mod tests {
             args(&["-init_hw_device", "cuda", "-i", "a", "-vf", "hwupload_cuda,scale_cuda=1920:1080", "-c:v", "h264_nvenc", "o"]);
         assert_eq!(cuda_decode_on_cpu(uploaded.clone()), uploaded);
         assert_eq!((Cuda::parse(""), Cuda::parse(" Encode "), Cuda::parse("overlay")), (Cuda::Full, Cuda::Encode, Cuda::Overlay));
+        assert_eq!(Cuda::parse("AUTO"), Cuda::Auto);
+    }
+
+    #[test]
+    fn cuda_auto_falls_back_to_encode_on_a_full_card() {
+        assert_eq!(parse_free_memory("439\n"), Some(439));
+        assert_eq!(parse_free_memory(" 1200\n80\n"), Some(1200));
+        assert_eq!(parse_free_memory("[N/A]\n"), None);
+        assert_eq!(parse_free_memory(""), None);
+        assert_eq!(auto_cuda(Some(299), 300), Cuda::Encode);
+        assert_eq!(auto_cuda(Some(300), 300), Cuda::Overlay);
+        assert_eq!(auto_cuda(None, 300), Cuda::Overlay);
+        let nvenc = args(&["-hwaccel", "cuda", "-i", "a", "-c:v", "h264_nvenc", "o"]);
+        assert!(nvenc_with_cuda(&nvenc));
+        assert!(nvenc_with_cuda(&args(&["-i", "a", "-vf", "scale_cuda=8:4", "-vcodec", "h264_nvenc", "o"])));
+        assert!(!nvenc_with_cuda(&args(&["-i", "a", "-c:v", "h264_nvenc", "o"])));
+        assert!(!nvenc_with_cuda(&args(&["-hwaccel", "cuda", "-i", "a", "-c:v", "libx264", "o"])));
     }
 
     #[test]

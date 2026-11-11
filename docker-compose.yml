@@ -199,8 +199,12 @@ services:
       # the CPU (about half the GPU memory per piece, for a card shared with a desktop).
       # overlay = decoding on the CPU, scaling and the overlay of the graphics on the card,
       # frames back to the CPU for the encoder (far less CPU than encode, same GPU memory).
+      # auto = overlay while the card has VIZRS_FFMPEG_CUDA_MIN_FREE MiB free (nvidia-smi
+      # before each piece), encode below: no out-of-memory slate on a card shared with a desktop.
       # Empty = ErsatzTV's command (CUDA decoding and filters with NVENC).
       VIZRS_FFMPEG_CUDA: ${VIZRS_FFMPEG_CUDA:-}
+      # Free GPU memory in MiB that VIZRS_FFMPEG_CUDA=auto needs for overlay (default 300).
+      VIZRS_FFMPEG_CUDA_MIN_FREE: ${VIZRS_FFMPEG_CUDA_MIN_FREE:-}
       # B-frames of NVENC encoders without their own, e.g. 0: each B-frame keeps
       # reference frames on the card (1080p50 encoder: 139 MiB by default, 79 MiB
       # with 0). Empty = ffmpeg's.

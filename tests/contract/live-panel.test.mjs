@@ -279,17 +279,19 @@ test("the state carries the layers on air and what this build can do", async (t)
 
   const state = (await api("GET", "state")).body;
   assert.deepEqual(state.features, ["layers", "take", "asrun"], "no webhook without one configured");
-  const ch = state.channels.find((c) => c.number === "4");
-  // The background refresh reads STATE every two seconds.
-  const layers = await (async () => {
+  // The background refresh reads the channels of ErsatzTV and STATE every two
+  // seconds, so the first answer may have neither yet.
+  const ch = await (async () => {
+    let last;
     for (let i = 0; i < 40; i++) {
-      const now = (await api("GET", "state")).body.channels.find((c) => c.number === "4")?.layers ?? [];
-      if (now.length) return now;
+      last = (await api("GET", "state")).body.channels.find((c) => c.number === "4");
+      if (last?.layers?.length) return last;
       await new Promise((r) => setTimeout(r, 250));
     }
-    return [];
+    return last;
   })();
   assert.ok(ch, "the channels of ErsatzTV are in the state");
+  const layers = ch.layers ?? [];
   assert.equal(layers.length, 2);
   assert.equal(layers[0].layer, "main");
   assert.equal(layers[0].page, "101");
