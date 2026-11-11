@@ -627,7 +627,7 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_FFMPEG_READRATE_CATCHUP` | – (compose: `2`) | tempo nadrabiania strumienia MPEG-TS kanału po przestoju (`-readrate_catchup`); puste = bez nadrabiania |
 | `VIZRS_FFMPEG_FPS_BLEND` | – (compose: `1`) | `1` = zmiana klatkażu materiału szybszego od kanału z mieszaniem klatek (`framerate` zamiast `fps`; klatkaż z `ffprobe`); puste = `fps` |
 | `VIZRS_FFMPEG_STANDBY` | – | obraz audycji na żywo bez sygnału studia (§1, Audycje na żywo w ramówce); puste = czerń |
-| `VIZRS_FFMPEG_CUDA` | – | `encode` = przy koderze NVENC (`*_nvenc`) na karcie zostaje tylko koder: nakładka usuwa z komendy ErsatzTV dekodowanie CUDA (`-hwaccel cuda`, `-hwaccel_output_format`, `-init_hw_device cuda`, `-filter_hw_device`) i wysyłkę na kartę (`hwupload`, `hwupload_cuda`), a `scale_cuda`, `overlay_cuda`, `pad_cuda`, `yadif_cuda`, `bwdif_cuda` zamienia na filtry CPU (`scale`+`format`, `overlay=…:format=auto`, `pad`, `yadif`, `bwdif`). Proces bierze ok. połowę pamięci GPU (720p: 118 MiB zamiast 218 MiB, pomiar 2026-11-07 na Quadro P400) kosztem CPU (ok. 0,3 rdzenia na 720p). Dla karty dzielonej z pulpitem: dwie pozycje kanału naraz (kończąca się i następna) nie kończą się `CUDA_ERROR_OUT_OF_MEMORY` / `Cannot allocate memory` (zastępczą planszą). Inny koder, komenda bez CUDA albo nieznany filtr `*_cuda` = komenda bez zmian. `overlay` = przy koderze NVENC i dekodowaniu CUDA (`-hwaccel cuda`) nakładka usuwa tylko dekodowanie (`-hwaccel`, `-hwaccel_output_format`, `-hwaccel_device`); zdekodowane klatki trafiają na kartę (`format=nv12\|yuv420p\|…,hwupload`) tam, gdzie filtry ErsatzTV ich tam oczekują (pierwszy `hwupload` albo filtr `*_cuda` łańcucha z wejścia), skalowanie i nakładanie grafiki (`overlay_cuda`) zostają na karcie, a klatki dla kodera (łańcuch z `-map`) wracają do RAM (`hwdownload`). Bez tego klatki czekające na muxer – dźwięk ErsatzTV idzie przez `loudnorm` z ok. 3 s wyprzedzenia – zapełniały pamięć karty w kilka sekund (`CUDA_ERROR_OUT_OF_MEMORY`, plansza zastępcza; pomiar 2026-11-11). Pomiar 2026-11-11 na Quadro P400 (materiał 720p25 do 1080p50 z paskiem grafiki): 0,33 rdzenia zamiast 1,40 przy `encode`, pamięć GPU podobna (213 MiB zamiast 206). Komenda bez dekodowania CUDA albo z innym koderem = bez zmian; puste = komenda ErsatzTV |
+| `VIZRS_FFMPEG_CUDA` | – | `encode` = przy koderze NVENC (`*_nvenc`) na karcie zostaje tylko koder: nakładka usuwa z komendy ErsatzTV dekodowanie CUDA (`-hwaccel cuda`, `-hwaccel_output_format`, `-init_hw_device cuda`, `-filter_hw_device`) i wysyłkę na kartę (`hwupload`, `hwupload_cuda`), a `scale_cuda`, `overlay_cuda`, `pad_cuda`, `yadif_cuda`, `bwdif_cuda` zamienia na filtry CPU (`scale`+`format`, `overlay=…:format=auto`, `pad`, `yadif`, `bwdif`). Proces bierze ok. połowę pamięci GPU (720p: 118 MiB zamiast 218 MiB, pomiar 2026-11-07 na Quadro P400) kosztem CPU (ok. 0,3 rdzenia na 720p). Dla karty dzielonej z pulpitem: dwie pozycje kanału naraz (kończąca się i następna) nie kończą się `CUDA_ERROR_OUT_OF_MEMORY` / `Cannot allocate memory` (zastępczą planszą). Inny koder, komenda bez CUDA albo nieznany filtr `*_cuda` = komenda bez zmian. `overlay` = przy koderze NVENC i dekodowaniu CUDA (`-hwaccel cuda`) nakładka usuwa tylko dekodowanie (`-hwaccel`, `-hwaccel_output_format`, `-hwaccel_device`); zdekodowane klatki trafiają na kartę (`format=nv12\|yuv420p\|…,hwupload`) tam, gdzie filtry ErsatzTV ich tam oczekują (pierwszy `hwupload` albo filtr `*_cuda` łańcucha z wejścia), skalowanie i nakładanie grafiki (`overlay_cuda`) zostają na karcie, a klatki dla kodera (łańcuch z `-map`) wracają do RAM (`hwdownload`). Bez tego klatki czekające na muxer – dźwięk ErsatzTV idzie przez `loudnorm` z ok. 3 s wyprzedzenia – zapełniały pamięć karty w kilka sekund (`CUDA_ERROR_OUT_OF_MEMORY`, plansza zastępcza; pomiar 2026-11-11). Pomiar 2026-11-11 na Quadro P400 (materiał 720p25 do 1080p50 z paskiem grafiki): 0,33 rdzenia zamiast 1,40 przy `encode`, pamięć GPU podobna (213 MiB zamiast 206). W transkodowaniu z płótnem grafiki nakładanej przez `overlay_cuda` materiał bez własnego `-readrate` dostaje `-readrate 1` (niżej, Pamięć karty przy NVENC). Komenda bez dekodowania CUDA albo z innym koderem = bez zmian; puste = komenda ErsatzTV |
 | `VIZRS_FFMPEG_NVENC_BF` | – | liczba klatek B koderów NVENC (`*_nvenc`) bez własnego `-bf`, np. `0`; nakładka dopisuje `-bf:v N` po nazwie kodera w każdym wywołaniu. Klatki B trzymają na karcie klatki odniesienia: koder 1080p50 zajmuje 139 MiB przy domyślnych ffmpeg, 99 MiB przy `1`, 79 MiB przy `0` (pomiar 2026-11-11, Quadro P400) – dla karty dzielonej z pulpitem, kosztem kilku procent bitrate przy tej samej jakości; puste = ffmpeg |
 | `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
 
@@ -644,6 +644,27 @@ do 1080p50, dwie strefy grafiki, `VIZRS_FFMPEG_CUDA=overlay`:
 | grafika przez `hwupload_cuda` (wcześniej) | 249 MiB |
 | grafika przez `hwupload` (teraz zawsze) | 193 MiB |
 | oraz `VIZRS_FFMPEG_NVENC_BF=0` | 133 MiB |
+
+To pomiar w czasie rzeczywistym (`-re`, bez dźwięku). Na antenie silnik next
+ErsatzTV często puszcza kawałki **bez** `-readrate` (nadrabia bufor). Grafika
+z sidecara płynie jednak w czasie kanału (z `lead_seconds` zapasu), więc
+materiał dekodowany z pełną prędkością tylko czeka na nią w kolejce przed
+`overlay_cuda` – już na karcie. Pełna komenda z anteny (dźwięk z `loudnorm`,
+HLS, 3 strefy, `-bf:v 0`; pomiar 2026-11-11):
+
+| Wejście materiału | `hwupload_cuda` | `hwupload` |
+|---|---|---|
+| bez `-readrate` | 473 MiB | 387 MiB |
+| `-readrate 1` | 253 MiB | 159 MiB |
+| `-readrate 1 -readrate_initial_burst 2` | – | 271 MiB |
+
+Dlatego w trybie `VIZRS_FFMPEG_CUDA=overlay` transkodowanie z płótnem
+grafiki nakładanej na karcie (`overlay_cuda`, klatki z `pipe:N`) czyta
+materiał (pierwsze wejście) z `-readrate 1`, gdy ErsatzTV nie dał własnego
+tempa. Kawałek trwa tyle samo (44 s materiału w 44 s), bo tempo i tak
+dyktuje grafika; zapas kawałka względem anteny daje dalej `lead_seconds`
+grafiki, a materiał wyprzedza swój start najwyżej o domyślny burst ffmpeg
+(0,5 s).
 
 Każdy `hwupload_cuda` otwiera własny kontekst CUDA (ok. 28 MiB), a nakładka
 wstawia go dla każdej strefy grafiki (`area: auto`). W transkodowaniu z płótnem

@@ -69,7 +69,10 @@
 // where ErsatzTV's filters expect them on the card, scaling and the overlay of
 // the graphics (`overlay_cuda`) stay there, and the frames for the encoder come
 // back to the CPU (`hwdownload`): waiting for the muxer (3 s of `loudnorm`
-// lookahead) on the card they ran it out of memory. Measured on a Quadro P400
+// lookahead) on the card they ran it out of memory. A canvas transcode then
+// reads the media at `-readrate 1` when ErsatzTV gives it no rate
+// (`paced_media`): the graphics come in the channel's time anyway, and media
+// decoded ahead of them waited on the card in front of `overlay_cuda`. Measured on a Quadro P400
 // (720p25 media to 1080p50 with a graphics strip): 0.33 of a core instead of
 // 1.40 with `encode`, about the same GPU memory (213 MiB instead of 206).
 //
@@ -501,7 +504,7 @@ fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
     let args = match settings.cuda {
         Cuda::Full => args,
         Cuda::Encode => cuda_encode_only(args),
-        Cuda::Overlay => cuda_decode_on_cpu(args),
+        Cuda::Overlay => paced_media(cuda_decode_on_cpu(args)),
     };
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
@@ -646,6 +649,28 @@ const DECODE_OPTIONS: [&str; 3] = ["-hwaccel", "-hwaccel_output_format", "-hwacc
 /// Before an upload of decoded frames: the formats a CUDA device takes (the
 /// decoder's own, e.g. yuv420p10le, becomes the nearest of them).
 const UPLOAD_FORMATS: &str = "format=nv12|yuv420p|yuva420p|p010le|yuv444p|p016le|yuv444p16le";
+
+/// A canvas transcode overlaying the graphics on the card (`overlay_cuda`
+/// with raw frames from `pipe:N`) reads the media (its first input) at
+/// `-readrate 1` when it has no rate of its own (`VIZRS_FFMPEG_CUDA=overlay`).
+/// The graphics come in the channel's time (with `lead_seconds` ahead), so
+/// the transcode runs no faster with the media read at full speed – the
+/// decoded frames only wait for them on the card in front of `overlay_cuda`
+/// (Quadro P400, 1080p50, three areas: 387 MiB instead of 159). Any other
+/// command unchanged.
+pub fn paced_media(args: Vec<OsString>) -> Vec<OsString> {
+    let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
+    let Some(text) = text else { return args };
+    let on_card = text.windows(2).any(|w| w[0] == "-filter_complex" && w[1].contains("overlay_cuda"));
+    let raw = text.windows(2).any(|w| w[0] == "-i" && w[1].starts_with("pipe:"));
+    let Some(first) = text.iter().position(|a| *a == "-i") else { return args };
+    if !on_card || !raw || text[1 + first].starts_with("pipe:") || text[..first].contains(&"-readrate") {
+        return args;
+    }
+    let mut out = args;
+    out.splice(first..first, ["-readrate".into(), "1".into()]);
+    out
+}
 
 /// A command encoding with NVENC from CUDA decoding, decoding on the CPU
 /// (`VIZRS_FFMPEG_CUDA=overlay`): the decoded frames go to the card where
@@ -1928,6 +1953,24 @@ mod tests {
         assert_eq!(with_bframes(own.clone(), "0"), own);
         let x264 = args(&["-i", "a", "-vcodec", "libx264", "o"]);
         assert_eq!(with_bframes(x264.clone(), "0"), x264);
+    }
+
+    #[test]
+    fn media_paced_only_in_canvas_transcodes_overlaid_on_the_card() {
+        let canvas = |head: &[&str], filter: &str| {
+            let mut all: Vec<&str> = head.to_vec();
+            all.extend(["-i", "http://m", "-f", "rawvideo", "-i", "pipe:6", "-filter_complex", filter, "-c:v", "h264_nvenc", "o"]);
+            args(&all)
+        };
+        let on_card = "[0:0]hwupload[m];[1:0]hwupload[g];[m][g]overlay_cuda[v]";
+        assert_eq!(paced_media(canvas(&["-ss", "5ms"], on_card)), canvas(&["-ss", "5ms", "-readrate", "1"], on_card));
+        // Its own rate, the overlay on the CPU, or no raw graphics: unchanged.
+        let own = canvas(&["-readrate", "1.0"], on_card);
+        assert_eq!(paced_media(own.clone()), own);
+        let cpu = canvas(&[], "[0:0][1:0]overlay[v]");
+        assert_eq!(paced_media(cpu.clone()), cpu);
+        let plain = args(&["-i", "http://m", "-filter_complex", on_card, "-c:v", "h264_nvenc", "o"]);
+        assert_eq!(paced_media(plain.clone()), plain);
     }
 
     #[test]
