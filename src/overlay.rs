@@ -45,6 +45,15 @@
 //     VIZRS_FFMPEG_STANDBY image of a live programme without its source (empty: black)
 //     VIZRS_FFMPEG_CUDA  encode = with an NVENC encoder, decoding and filters on the CPU;
 //                        overlay = decoding on the CPU, filters and overlay on the card
+//     VIZRS_FFMPEG_NVENC_BF  B-frames of NVENC encoders, e.g. 0 (empty: ffmpeg's)
+//
+// The graphics of a canvas transcode with `-init_hw_device cuda` go to the
+// card through `hwupload` (that device), not `hwupload_cuda`: each
+// `hwupload_cuda` opens a CUDA context of its own, about 28 MiB of GPU memory
+// per graphics area. With VIZRS_FFMPEG_NVENC_BF an NVENC encoder (`*_nvenc`)
+// without `-bf` gets `-bf:v <n>`: ffmpeg's default B-frames hold reference
+// frames on the card (Quadro P400, 1080p50: 139 MiB with the default, 99 with
+// 1, 79 with 0).
 //
 // With VIZRS_FFMPEG_CUDA=encode a command that encodes with NVENC (`*_nvenc`)
 // loses ErsatzTV's CUDA decoding and filters (`-hwaccel cuda`,
@@ -149,6 +158,8 @@ pub struct Settings {
     pub standby: String,
     /// What of an NVENC command stays on the card (VIZRS_FFMPEG_CUDA).
     pub cuda: Cuda,
+    /// B-frames of NVENC encoders without `-bf`; empty = ffmpeg's.
+    pub nvenc_bf: String,
 }
 
 /// What of a command encoding with NVENC stays on the card (`VIZRS_FFMPEG_CUDA`).
@@ -186,6 +197,7 @@ impl Settings {
             ingest: var("VIZRS_FFMPEG_INGEST").trim() == "1",
             standby: var("VIZRS_FFMPEG_STANDBY").trim().to_owned(),
             cuda: Cuda::parse(&var("VIZRS_FFMPEG_CUDA")),
+            nvenc_bf: var("VIZRS_FFMPEG_NVENC_BF").trim().to_owned(),
         }
     }
 }
@@ -430,6 +442,24 @@ pub fn with_preset(args: Vec<OsString>, preset: &str) -> Vec<OsString> {
     out
 }
 
+/// An NVENC video encoder without `-bf` gets `-bf:v <frames>` (a number).
+pub fn with_bframes(args: Vec<OsString>, frames: &str) -> Vec<OsString> {
+    let has_bf = args.iter().any(|a| a.to_str().is_some_and(|a| a == "-bf" || a.starts_with("-bf:")));
+    if frames.is_empty() || !frames.bytes().all(|b| b.is_ascii_digit()) || has_bf {
+        return args;
+    }
+    let mut out = Vec::with_capacity(args.len() + 2);
+    let mut previous: Option<&OsString> = None;
+    for arg in &args {
+        out.push(arg.clone());
+        if previous.is_some_and(|p| CODEC.iter().any(|c| p == c)) && arg.to_str().is_some_and(|a| a.ends_with("_nvenc")) {
+            out.extend(["-bf:v".into(), frames.into()]);
+        }
+        previous = Some(arg);
+    }
+    out
+}
+
 /// An HLS playlist input read at `-readrate` without a catch-up rate gets
 /// `-readrate_catchup <rate>` after its `-readrate`.
 pub fn with_catchup(args: Vec<OsString>, rate: &str) -> Vec<OsString> {
@@ -466,7 +496,7 @@ pub fn with_catchup(args: Vec<OsString>, rate: &str) -> Vec<OsString> {
     out
 }
 
-/// The command with the forced rate, blending, preset and catch-up rate, when set.
+/// The command with the forced rate, blending, preset, B-frames and catch-up rate, when set.
 fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
     let args = match settings.cuda {
         Cuda::Full => args,
@@ -476,7 +506,7 @@ fn adjusted(args: Vec<OsString>, settings: &Settings) -> Vec<OsString> {
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
     let blended = with_blend(rated, settings.blend, source);
-    with_catchup(with_preset(blended, &settings.preset), &settings.catchup)
+    with_catchup(with_bframes(with_preset(blended, &settings.preset), &settings.nvenc_bf), &settings.catchup)
 }
 
 /// Options of ErsatzTV's CUDA decoding left out with `VIZRS_FFMPEG_CUDA=encode` (with their value).
@@ -983,6 +1013,35 @@ pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames
     let at_origin = matches!(frames.areas.as_slice(), [(a, _)] if (a.x, a.y) == (0, 0));
     if !frames.areas.is_empty() && !at_origin {
         out = with_areas(&out, input_number(args, canvas.index), &frames.areas).unwrap_or(out);
+    }
+    shared_upload(out)
+}
+
+fn upload_filter() -> &'static Regex {
+    static UPLOAD: OnceLock<Regex> = OnceLock::new();
+    // `hwupload_cuda` without options, a whole filter of a chain.
+    UPLOAD.get_or_init(|| Regex::new(r"(^|[,;\]])hwupload_cuda([,;\[]|$)").expect("upload pattern"))
+}
+
+/// A command with one CUDA device (`-init_hw_device cuda`) uploads through it:
+/// `hwupload_cuda` (each one a CUDA context of its own, ~28 MiB of GPU memory)
+/// becomes `hwupload`. Any other command unchanged.
+pub fn shared_upload(args: Vec<OsString>) -> Vec<OsString> {
+    let devices: Vec<&OsString> = args.windows(2).filter(|w| w[0] == "-init_hw_device").map(|w| &w[1]).collect();
+    let cuda =
+        matches!(devices.as_slice(), [d] if d.to_str().is_some_and(|d| d == "cuda" || d.starts_with("cuda:") || d.starts_with("cuda=")));
+    if !cuda {
+        return args;
+    }
+    let mut out = args;
+    for i in 0..out.len().saturating_sub(1) {
+        if out[i] != "-filter_complex" {
+            continue;
+        }
+        let Some(graph) = out[i + 1].to_str() else { continue };
+        // Twice: neighbouring uploads share the separator between them.
+        let once = upload_filter().replace_all(graph, "${1}hwupload${2}").into_owned();
+        out[i + 1] = upload_filter().replace_all(&once, "${1}hwupload${2}").into_owned().into();
     }
     out
 }
@@ -1857,6 +1916,43 @@ mod tests {
         let label = args(&["-i", "a", "-filter_complex", "[0:v]fps=30000/1001[v]", "-f", "hls", "o"]);
         assert_eq!(with_blend(label.clone(), true, None)[3], "[0:v]framerate=fps=30000/1001[v]");
         assert_eq!(with_blend(label.clone(), true, Some(29.97)), label);
+    }
+
+    #[test]
+    fn bframes_only_for_nvenc_encoders_without_them() {
+        let nvenc = args(&["-i", "a", "-vcodec", "h264_nvenc", "-b:v", "6000k", "o"]);
+        assert_eq!(with_bframes(nvenc.clone(), "0"), args(&["-i", "a", "-vcodec", "h264_nvenc", "-bf:v", "0", "-b:v", "6000k", "o"]));
+        assert_eq!(with_bframes(nvenc.clone(), ""), nvenc);
+        assert_eq!(with_bframes(nvenc.clone(), "x"), nvenc);
+        let own = args(&["-i", "a", "-c:v", "hevc_nvenc", "-bf", "2", "o"]);
+        assert_eq!(with_bframes(own.clone(), "0"), own);
+        let x264 = args(&["-i", "a", "-vcodec", "libx264", "o"]);
+        assert_eq!(with_bframes(x264.clone(), "0"), x264);
+    }
+
+    #[test]
+    fn graphics_upload_through_the_one_cuda_device() {
+        let graph = "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=8:2:0:0,format=yuva420p,hwupload_cuda[vz_g0];\
+                     [vz_s1]crop=8:2:0:2,hwupload_cuda[vz_g1];[0:0]hwupload,scale_cuda=8:4[v];[v][vz_g0]overlay_cuda[o0];\
+                     [o0][vz_g1]overlay_cuda[o]";
+        let command = |device: &[&str], graph: &str| {
+            let mut all: Vec<&str> = device.to_vec();
+            all.extend(["-i", "a", "-i", "pipe:6", "-filter_complex", graph, "-c:v", "h264_nvenc", "o"]);
+            args(&all)
+        };
+        let shared = graph.replace("hwupload_cuda", "hwupload");
+        assert_eq!(shared_upload(command(&["-init_hw_device", "cuda"], graph)), command(&["-init_hw_device", "cuda"], &shared));
+        assert_eq!(shared_upload(command(&["-init_hw_device", "cuda=gpu:0"], graph)), command(&["-init_hw_device", "cuda=gpu:0"], &shared));
+        // No device of its own, two devices, or an upload with options: unchanged.
+        assert_eq!(shared_upload(command(&[], graph)), command(&[], graph));
+        let two = ["-init_hw_device", "cuda", "-init_hw_device", "vaapi"];
+        assert_eq!(shared_upload(command(&two, graph)), command(&two, graph));
+        let device = "[1:0]hwupload_cuda=device=1[g]";
+        assert_eq!(shared_upload(command(&["-init_hw_device", "cuda"], device)), command(&["-init_hw_device", "cuda"], device));
+        assert_eq!(
+            shared_upload(command(&["-init_hw_device", "cuda"], "[1:0]hwupload_cuda,hwupload_cuda[g]")),
+            command(&["-init_hw_device", "cuda"], "[1:0]hwupload,hwupload[g]")
+        );
     }
 
     #[test]

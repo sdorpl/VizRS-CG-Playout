@@ -509,7 +509,7 @@ ErsatzTV ── ffmpeg ──► vizrs-ffmpeg ── -i pipe:N (yuva420p) ◄─
 1. Wywołanie bez wejścia płótna grafiki (`-i http://…/internal/graphics/<kanał>/<pozycja>`)
    idzie do prawdziwego ffmpeg bez zmian (`exec`; poza jawnie włączonymi
    `VIZRS_FFMPEG_FPS`, `VIZRS_FFMPEG_PRESET`, `VIZRS_FFMPEG_READRATE_CATCHUP`,
-   `VIZRS_FFMPEG_FPS_BLEND` niżej). Płótno z parametrem
+   `VIZRS_FFMPEG_FPS_BLEND`, `VIZRS_FFMPEG_CUDA`, `VIZRS_FFMPEG_NVENC_BF` niżej). Płótno z parametrem
    `region` (same watermarki, bez elementu VizRS) też, podobnie płótno po
    `https` (ErsatzTV podaje `http://localhost`).
 2. Nakładka sama otwiera płótno z nagłówkami ErsatzTV i odczytuje je do
@@ -628,7 +628,37 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_FFMPEG_FPS_BLEND` | – (compose: `1`) | `1` = zmiana klatkażu materiału szybszego od kanału z mieszaniem klatek (`framerate` zamiast `fps`; klatkaż z `ffprobe`); puste = `fps` |
 | `VIZRS_FFMPEG_STANDBY` | – | obraz audycji na żywo bez sygnału studia (§1, Audycje na żywo w ramówce); puste = czerń |
 | `VIZRS_FFMPEG_CUDA` | – | `encode` = przy koderze NVENC (`*_nvenc`) na karcie zostaje tylko koder: nakładka usuwa z komendy ErsatzTV dekodowanie CUDA (`-hwaccel cuda`, `-hwaccel_output_format`, `-init_hw_device cuda`, `-filter_hw_device`) i wysyłkę na kartę (`hwupload`, `hwupload_cuda`), a `scale_cuda`, `overlay_cuda`, `pad_cuda`, `yadif_cuda`, `bwdif_cuda` zamienia na filtry CPU (`scale`+`format`, `overlay=…:format=auto`, `pad`, `yadif`, `bwdif`). Proces bierze ok. połowę pamięci GPU (720p: 118 MiB zamiast 218 MiB, pomiar 2026-11-07 na Quadro P400) kosztem CPU (ok. 0,3 rdzenia na 720p). Dla karty dzielonej z pulpitem: dwie pozycje kanału naraz (kończąca się i następna) nie kończą się `CUDA_ERROR_OUT_OF_MEMORY` / `Cannot allocate memory` (zastępczą planszą). Inny koder, komenda bez CUDA albo nieznany filtr `*_cuda` = komenda bez zmian. `overlay` = przy koderze NVENC i dekodowaniu CUDA (`-hwaccel cuda`) nakładka usuwa tylko dekodowanie (`-hwaccel`, `-hwaccel_output_format`, `-hwaccel_device`); zdekodowane klatki trafiają na kartę (`format=nv12\|yuv420p\|…,hwupload`) tam, gdzie filtry ErsatzTV ich tam oczekują (pierwszy `hwupload` albo filtr `*_cuda` łańcucha z wejścia), skalowanie i nakładanie grafiki (`overlay_cuda`) zostają na karcie, a klatki dla kodera (łańcuch z `-map`) wracają do RAM (`hwdownload`). Bez tego klatki czekające na muxer – dźwięk ErsatzTV idzie przez `loudnorm` z ok. 3 s wyprzedzenia – zapełniały pamięć karty w kilka sekund (`CUDA_ERROR_OUT_OF_MEMORY`, plansza zastępcza; pomiar 2026-11-11). Pomiar 2026-11-11 na Quadro P400 (materiał 720p25 do 1080p50 z paskiem grafiki): 0,33 rdzenia zamiast 1,40 przy `encode`, pamięć GPU podobna (213 MiB zamiast 206). Komenda bez dekodowania CUDA albo z innym koderem = bez zmian; puste = komenda ErsatzTV |
+| `VIZRS_FFMPEG_NVENC_BF` | – | liczba klatek B koderów NVENC (`*_nvenc`) bez własnego `-bf`, np. `0`; nakładka dopisuje `-bf:v N` po nazwie kodera w każdym wywołaniu. Klatki B trzymają na karcie klatki odniesienia: koder 1080p50 zajmuje 139 MiB przy domyślnych ffmpeg, 99 MiB przy `1`, 79 MiB przy `0` (pomiar 2026-11-11, Quadro P400) – dla karty dzielonej z pulpitem, kosztem kilku procent bitrate przy tej samej jakości; puste = ffmpeg |
 | `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
+
+#### Pamięć karty przy NVENC
+
+Pamięci karty (vRAM) nie da się przenieść do RAM ani tmpfs: dekoder, filtry
+`*_cuda` i koder NVENC trzymają klatki na karcie, a ich pliki wynikowe
+(`/transcode`) i tak leżą w tmpfs. Da się zmniejszyć to, co na karcie siedzi.
+Pomiar 2026-11-11 na Quadro P400 (2 GB, dzielona z pulpitem), materiał 720p25
+do 1080p50, dwie strefy grafiki, `VIZRS_FFMPEG_CUDA=overlay`:
+
+| Komenda | vRAM procesu |
+|---|---|
+| grafika przez `hwupload_cuda` (wcześniej) | 249 MiB |
+| grafika przez `hwupload` (teraz zawsze) | 193 MiB |
+| oraz `VIZRS_FFMPEG_NVENC_BF=0` | 133 MiB |
+
+Każdy `hwupload_cuda` otwiera własny kontekst CUDA (ok. 28 MiB), a nakładka
+wstawia go dla każdej strefy grafiki (`area: auto`). W transkodowaniu z płótnem
+grafiki i jednym urządzeniem `-init_hw_device cuda` nakładka zamienia więc
+`hwupload_cuda` bez opcji na `hwupload`: wysyłka idzie przez to urządzenie,
+wspólne z filtrami ErsatzTV. Z dekodowaniem CUDA (bez `VIZRS_FFMPEG_CUDA`)
+to samo daje 223 → 197 MiB przy jednej strefie. Sam kontekst CUDA
+ffmpeg to ok. 30 MiB (kernele ładowane leniwie, `CUDA_MODULE_LOADING` nic nie
+zmienia), koder NVENC 1080p50 – 139 MiB z domyślnymi klatkami B (`-surfaces`,
+`-delay`, `-preset`, `-tune` nie zmieniają tego istotnie). Przy zmianie
+pozycji dwa procesy kanału działają chwilę naraz, więc zapas karty musi
+mieścić dwa. Chromium sidecara z `VIZRS_BROWSER_GPU=1` też zajmuje kartę
+(EGL; `nvidia-smi` go nie wypisuje, bo proces jest w kontenerze bez CUDA):
+przy rendererze natywnym (`renderer: native`) rysuje mało, więc na małej
+karcie zostaw go na CPU.
 
 #### Nadrabianie strumienia MPEG-TS (`VIZRS_FFMPEG_READRATE_CATCHUP`)
 

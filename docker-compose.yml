@@ -201,6 +201,10 @@ services:
       # frames back to the CPU for the encoder (far less CPU than encode, same GPU memory).
       # Empty = ErsatzTV's command (CUDA decoding and filters with NVENC).
       VIZRS_FFMPEG_CUDA: ${VIZRS_FFMPEG_CUDA:-}
+      # B-frames of NVENC encoders without their own, e.g. 0: each B-frame keeps
+      # reference frames on the card (1080p50 encoder: 139 MiB by default, 79 MiB
+      # with 0). Empty = ffmpeg's.
+      VIZRS_FFMPEG_NVENC_BF: ${VIZRS_FFMPEG_NVENC_BF:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config

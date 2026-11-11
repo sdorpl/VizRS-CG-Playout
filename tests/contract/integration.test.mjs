@@ -762,8 +762,9 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
   const cases = [
     {
       input: ["-init_hw_device", "cuda", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
+      // One CUDA device (-init_hw_device cuda): the graphics upload through it, without a CUDA context of their own.
       filter: "[0:0]hwupload,scale_cuda=8:4:format=yuv420p,setsar=1[v_m0];[1:0]format=yuva420p,hwupload_cuda[v_s0];[v_m0][v_s0]overlay_cuda=x=0:y=0[v_o0]",
-      expected: "[0:0]hwupload,scale_cuda=8:4:format=yuv420p,setsar=1[v_m0];[1:0]format=yuva420p,hwupload_cuda[v_s0];[v_m0]fps=50[v_m0_fps];[v_m0_fps][v_s0]overlay_cuda=x=0:y=0[v_o0]",
+      expected: "[0:0]hwupload,scale_cuda=8:4:format=yuv420p,setsar=1[v_m0];[1:0]format=yuva420p,hwupload[v_s0];[v_m0]fps=50[v_m0_fps];[v_m0_fps][v_s0]overlay_cuda=x=0:y=0[v_o0]",
       encoder: "h264_nvenc",
     },
     {
