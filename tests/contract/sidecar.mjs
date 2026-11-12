@@ -66,13 +66,16 @@ function freePort() {
  * Starts the sidecar with `config` written to a config file and `env` on top
  * of a clean environment; resolves once `/health` answers. Without a browser
  * in `env`, VIZRS_BROWSER is a program that exits at once: captures exist,
- * their frames stay transparent (as after a Chromium crash).
+ * their frames stay transparent (as after a Chromium crash). The whole
+ * channel (`area: "full"`) unless the test sets `area`: the sidecar's default
+ * `auto` asks VizRS for `STATE` to learn footprints, which would mix into the
+ * commands the tests compare; the zone tests set `area: "auto"` themselves.
  */
 export async function startSidecar(config = {}, env = {}) {
   const port = await freePort();
   const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-sidecar-"));
   const file = path.join(dir, "config.json");
-  writeFileSync(file, JSON.stringify(config));
+  writeFileSync(file, JSON.stringify({ area: "full", ...config }));
 
   const [command, ...args] = sidecarCommand();
   const child = spawn(command, [...args, file], {
