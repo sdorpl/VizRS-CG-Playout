@@ -27,9 +27,11 @@ const LATE: Duration = Duration::from_secs(1);
 /// How late the ffmpeg overlay may read a raw frame and still get the picture
 /// of its moment: its pipeline (media start, GPU, 3 s of `loudnorm` lookahead,
 /// queues) reads a piece's frames up to 10–14 s after their moment at the
-/// start of a piece (measured: Quadro P400, 1080p50, two areas). Later than
-/// the history reaches, the graphics have to jump ahead. A second of a crawl
-/// in the history is about 5 MB.
+/// start of a piece (measured: Quadro P400, 1080p50, two areas), 16–21 s
+/// when `-readrate` kept the channel ~8 s behind the schedule; synced in RAM
+/// without it (`VIZRS_FFMPEG_SYNC_RAM`) a few seconds. Later than the history
+/// reaches, the graphics have to jump ahead. A second of a crawl in the
+/// history is about 5 MB.
 const RAW_LATE: Duration = Duration::from_secs(12);
 /// Raw frames later than the history reaches take their pictures this far
 /// inside it, so the reader's small delays do not reach its edge.

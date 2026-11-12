@@ -96,7 +96,10 @@
 // and a burst ran a Quadro P400 out of memory. Measured (1080p50, loudnorm,
 // graphics from a pipe): 91 MiB instead of 667, with or without `-readrate`
 // and its burst; the frames take that RAM instead (+430 MB RSS) and the sync
-// about 0.09 of a core (PLAN-p400, E9).
+// about 0.09 of a core (PLAN-p400, E9). Such a command gets no `-readrate`:
+// the graphics pace the media, and a piece no longer starts behind the
+// schedule (its burst never made up the seek's preroll), so the overlay reads
+// its frames while the history still holds their pictures – no jump.
 //
 // With VIZRS_FFMPEG_CUDA=auto a command encoding with NVENC and CUDA asks
 // `nvidia-smi` for the free memory of the card first (at most 1 s): with at
@@ -652,7 +655,7 @@ fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec
     let args = match cuda {
         Cuda::Full | Cuda::Auto => args,
         Cuda::Encode => cuda_encode_only(args),
-        Cuda::Overlay => media_waits_in_ram(paced_media(cuda_decode_on_cpu(args), burst), settings.sync_ram),
+        Cuda::Overlay => overlay_paced(cuda_decode_on_cpu(args), burst, settings.sync_ram),
     };
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
@@ -884,6 +887,24 @@ pub fn paced_media(args: Vec<OsString>, burst: Option<f64>) -> Vec<OsString> {
     let mut out = args;
     out.splice(first..first, rate);
     out
+}
+
+/// The media of a `Cuda::Overlay` command: with `sync_ram` and a graph it
+/// syncs in RAM (`media_waits_in_ram`), read as fast as the graphics come –
+/// no `-readrate`: frames decoded ahead wait in RAM, and the graphics of the
+/// sidecar (at most `lead_seconds` ahead of the clock) pace the piece. Its
+/// burst never made up a piece's start: a seek reads from the keyframe before
+/// it (up to a GOP, 5 s) and that counts against the burst, so the channel
+/// settled about 8 s behind the schedule, and the overlay read the first
+/// frames of each piece 16–21 s after their moment – older than the
+/// history, the graphics jumped (entry animations cut). Otherwise
+/// `paced_media`.
+fn overlay_paced(args: Vec<OsString>, burst: Option<f64>, sync_ram: bool) -> Vec<OsString> {
+    let synced = media_waits_in_ram(args.clone(), sync_ram);
+    if synced != args {
+        return synced;
+    }
+    paced_media(args, burst)
 }
 
 /// The filters that hold a media frame until the graphics of its moment are
@@ -2388,6 +2409,36 @@ mod tests {
         assert_eq!(media_waits_in_ram(two.clone(), true), two);
         let twice = canvas("[0:0]hwupload[m];[1:0]hwupload[g];[m][g]overlay_cuda[o];[o][1:0]overlay_cuda[v_o0]");
         assert_eq!(media_waits_in_ram(twice.clone(), true), twice);
+    }
+
+    #[test]
+    fn media_synced_in_ram_is_not_paced() {
+        let canvas = |filter: &str| {
+            args(&[
+                "-init_hw_device",
+                "cuda",
+                "-i",
+                "/m/a.mp4",
+                "-f",
+                "rawvideo",
+                "-i",
+                "pipe:6",
+                "-filter_complex",
+                filter,
+                "-c:v",
+                "h264_nvenc",
+                "o",
+            ])
+        };
+        let graph = "[0:0]format=yuv420p,hwupload[m];[1:0]format=yuva420p,hwupload[g];[m][g]overlay_cuda[v]";
+        // Synced: no -readrate, the graphics pace the media.
+        let synced = overlay_paced(canvas(graph), Some(12.0), true);
+        assert!(!synced.contains(&OsString::from("-readrate")));
+        assert_eq!(synced, media_waits_in_ram(canvas(graph), true));
+        // Off, or a graph the sync does not take: paced as before.
+        assert_eq!(overlay_paced(canvas(graph), Some(12.0), false), paced_media(canvas(graph), Some(12.0)));
+        let two = "[0:0]hwupload[m];[2:0]hwupload[n];[m][1:0]overlay_cuda[o];[o][n]overlay_cuda[v]";
+        assert_eq!(overlay_paced(canvas(two), Some(12.0), true), paced_media(canvas(two), Some(12.0)));
     }
 
     #[test]

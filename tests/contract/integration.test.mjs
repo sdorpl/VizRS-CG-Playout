@@ -867,7 +867,9 @@ test("ffmpeg overlay VIZRS_FFMPEG_CUDA=overlay: the media paced at -readrate 1 w
   assert.ok(late >= 4.9 && late <= 5.8, `late ${late}`);
   // VIZRS_FFMPEG_SYNC_RAM=1: the media waits for the graphics in RAM, before its upload.
   const graph = (result) => result.args[result.args.indexOf("-filter_complex") + 1];
-  const synced = graph(await transcode(Date.now(), { VIZRS_FFMPEG_SYNC_RAM: "1" }));
+  const syncedRun = await transcode(Date.now(), { VIZRS_FFMPEG_SYNC_RAM: "1" });
+  assert.ok(!syncedRun.args.includes("-readrate"), "synced in RAM: the graphics pace the media, no -readrate");
+  const synced = graph(syncedRun);
   assert.match(synced, /^\[1:0\]split=2\[vz_w0\]\[vz_w1\];\[vz_w0\]crop=2:2:0:0\[vz_wt\];/);
   assert.match(synced, /\[0:0\]\[vz_wt\]overlay=x=main_w:y=main_h:format=auto:eof_action=pass,[^;]*hwupload,scale_cuda/);
   assert.match(synced, /\[vz_w1\]format=yuva420p,hwupload\[v_s0\]/);

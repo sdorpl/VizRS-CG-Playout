@@ -346,6 +346,17 @@ frame … read 16–21 s late; the graphics jump … ahead` są w obu wariantach
 historia sidecara). Stały vRAM pozwala obniżyć `VIZRS_FFMPEG_CUDA_MIN_FREE`
 (dziś 400 MiB) – do decyzji po dłuższej obserwacji.
 
+**Przeskoki grafiki (2026-11-12, poprawione).** Z `-readrate 1` i zrywem
+kanał ustalał się ok. 8 s za ramówką (zryw zjadany przez rozbieg `-ss` do
+klatki kluczowej, GOP 5 s, plus ok. 3,5 s rozruchu), nakładka czytała
+pierwsze klatki kawałka 16–21 s po ich chwili, a historia sidecara sięga
+`lead_seconds` + 12 s – grafika przeskakiwała o 0,4–5 s na starcie kawałka
+(ucięte animacje wejścia). Z synchronizacją w RAM `-readrate` jest zbędne
+(tempo daje grafika): kanał ok. 3 s przed ramówką, zero przeskoków w 9
+kawałkach, animacje `OUT`/`TAKE` pełne w obrazie HLS (DOKUMENTACJA, „Tempo
+materiału przy `VIZRS_FFMPEG_SYNC_RAM=1`”). Zostaje osobno: jedna brakująca
+klatka materiału (40 ms) na granicy kawałków ErsatzTV.
+
 ## Poza zakresem
 
 - HEVC/AV1 na wyjściu: P400 nie ma klatek B w HEVC ani AV1, a odtwarzacze

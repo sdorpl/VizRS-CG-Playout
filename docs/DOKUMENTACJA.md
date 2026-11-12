@@ -654,7 +654,7 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_FFMPEG_CUDA_MIN_FREE` | `400` | wolna pamięć karty w MiB, przy której `VIZRS_FFMPEG_CUDA=auto` wybiera `overlay`. Kawałek `overlay` 1080p50 zajmuje ok. 280 MiB (pule klatek po początkowym zrywie; 160 MiB bez niego), a przy zmianie pozycji poprzedni działa jeszcze chwilę |
 | `VIZRS_FFMPEG_NVENC_BF` | – | liczba klatek B koderów sprzętowych (NVENC `*_nvenc`, QSV `*_qsv`, VAAPI `*_vaapi`) bez własnego `-bf`, np. `0`; nakładka dopisuje `-bf:v N` po nazwie kodera w każdym wywołaniu. Tylko dopóki `encoder.json` nie ma klucza `bframes` – potem ustawia je VizRS Live. Klatki B trzymają na karcie klatki odniesienia: koder 1080p50 zajmuje 139 MiB przy domyślnych ffmpeg, 99 MiB przy `1`, 79 MiB przy `0` (pomiar 2026-11-11, Quadro P400) – dla karty dzielonej z pulpitem, kosztem kilku procent bitrate przy tej samej jakości; puste = ffmpeg |
 | `VIZRS_FFMPEG_NO_SHORTEST` | – | `1` = nakładka usuwa `-shortest` z każdego wywołania, którego wyjście i tak kończy `-t` (ErsatzTV podaje oba). Dźwięk ErsatzTV idzie przez `apad` i `loudnorm` z ok. 3 s wyprzedzenia, a `-shortest` trzyma surowe klatki obrazu w kolejce, aż dojdzie dźwięk tej samej chwili: przy 1080p50 ok. 150 klatek, czyli RSS ffmpeg 657 MB zamiast 268 MB, i drugi raz przy zmianie pozycji, gdy działają dwa procesy (pomiar 2026-11-11, materiał 1080p, NVENC). Długość wyjścia bez zmian. Wywołanie bez `-t` wyjścia – bez zmian; puste = komenda ErsatzTV |
-| `VIZRS_FFMPEG_SYNC_RAM` | – | `1` = w trybie `overlay` (także wybranym przez `auto`) klatki materiału czekają na grafikę swojej chwili w RAM, zanim trafią na kartę: w grafie z `overlay_cuda` jedyny łańcuch materiału z `hwupload` dostaje na początku synchronizację z wejściem grafiki (`pipe:N`) na CPU – wycinek grafiki 2×2 px nałożony poza kadrem (`overlay=x=main_w:y=main_h`, nic nie rysuje), z formatem bez alfy; wejście grafiki rozdziela `split`. Bez tego klatki zdekodowane z wyprzedzeniem (ok. 3 s `loudnorm`, zryw, brak `-readrate`) czekają na karcie przed `overlay_cuda` (niżej, Pamięć karty przy NVENC). Graf bez jednoznacznego łańcucha materiału albo z grafiką użytą dwa razy = bez zmian; puste = wyłączone |
+| `VIZRS_FFMPEG_SYNC_RAM` | – | `1` = w trybie `overlay` (także wybranym przez `auto`) klatki materiału czekają na grafikę swojej chwili w RAM, zanim trafią na kartę: w grafie z `overlay_cuda` jedyny łańcuch materiału z `hwupload` dostaje na początku synchronizację z wejściem grafiki (`pipe:N`) na CPU – wycinek grafiki 2×2 px nałożony poza kadrem (`overlay=x=main_w:y=main_h`, nic nie rysuje), z formatem bez alfy; wejście grafiki rozdziela `split`. Bez tego klatki zdekodowane z wyprzedzeniem (ok. 3 s `loudnorm`, zryw, brak `-readrate`) czekają na karcie przed `overlay_cuda` (niżej, Pamięć karty przy NVENC). Graf z synchronizacją nie dostaje `-readrate` ani zrywu: tempo materiału wyznacza grafika z sidecara (najwyżej `lead_seconds` przed zegarem), a klatki zdekodowane wcześniej czekają w RAM – kanał nie zostaje za ramówką i grafika nie przeskakuje (niżej). Graf bez jednoznacznego łańcucha materiału albo z grafiką użytą dwa razy = bez zmian (wtedy `-readrate` jak dotąd); puste = wyłączone |
 | `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
 
 #### Pamięć karty przy NVENC
@@ -684,7 +684,7 @@ HLS, 3 strefy, `-bf:v 0`; pomiar 2026-11-11):
 | `-readrate 1` | 253 MiB | 159 MiB |
 | `-readrate 1 -readrate_initial_burst 2` | – | 271 MiB |
 
-Dlatego w trybie `VIZRS_FFMPEG_CUDA=overlay` transkodowanie z płótnem
+Dlatego w trybie `VIZRS_FFMPEG_CUDA=overlay` (bez `VIZRS_FFMPEG_SYNC_RAM`, niżej) transkodowanie z płótnem
 grafiki nakładanej na karcie (`overlay_cuda`, klatki z `pipe:N`) czyta
 materiał (pierwsze wejście) z `-readrate 1`, gdy ErsatzTV nie dał własnego
 tempa, oraz z `-readrate_initial_burst` równym grafice, którą sidecar ma od
@@ -722,6 +722,21 @@ ffmpeg kawałka stale 139 MiB zamiast 259–463 MiB, karta najwyżej 991 zamiast
 1289 MiB. Koszt: klatki czekają w RAM (na antenie RSS ffmpeg 429–566 MB
 zamiast do 524 MB; w próbie z samym 1080p do +430 MB) i ok. 0,09 rdzenia
 (CPU `overlay` kopiuje klatkę).
+
+**Tempo materiału przy `VIZRS_FFMPEG_SYNC_RAM=1`.** Zryw `-readrate` nie
+nadrabiał startu kawałka: przewinięcie `-ss` czyta od klatki kluczowej przed
+punktem (do długości GOP, np. 5 s) i to zjada zryw, a do tego ok. 3,5 s
+rozruchu ffmpeg (otwarcie materiału po HTTP, przewinięcie). Kanał ustalał się
+ok. 8 s za ramówką (`graphics stream: frame 0 on air -8.5 s from now`),
+pierwsze klatki kawałka nakładka czytała 16–21 s po ich chwili – dalej, niż
+sięga historia sidecara (`lead_seconds` + 12 s) – i grafika przeskakiwała
+o 0,4–5 s (`graphics stream: frame … read … s late; the graphics jump …`),
+ucinając animacje wejścia. Z synchronizacją w RAM nakładka nie dodaje
+`-readrate`: materiał idzie tak szybko, jak przychodzi grafika. Pomiar
+2026-11-12 (lokalny stos, kanał 1, 9 kawałków): kanał ok. 3 s **przed**
+ramówką zamiast 8 s za nią, zero przeskoków, ffmpeg 117–135 MiB karty i do
+565 MB RSS (kolejka ograniczona); animacje wyjścia i wejścia strony (`OUT`
+i `TAKE` z live API) w obrazie HLS klatka po klatce, bez skoków.
 
 Każdy `hwupload_cuda` otwiera własny kontekst CUDA (ok. 28 MiB), a nakładka
 wstawia go dla każdej strefy grafiki (`area: auto`). W transkodowaniu z płótnem
