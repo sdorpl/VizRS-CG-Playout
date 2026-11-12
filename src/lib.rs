@@ -5,10 +5,13 @@
 pub mod log;
 
 pub mod area;
+pub mod asrun;
 pub mod base64;
 pub mod capture;
 pub mod config;
+pub mod delta;
 pub mod devtools;
+pub mod encoder;
 pub mod etv_api;
 pub mod etv_client;
 pub mod etv_sync;

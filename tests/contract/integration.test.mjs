@@ -475,7 +475,8 @@ process.stdout.write(JSON.stringify(result) + "\\n");
 /** Runs the wrapper like ErsatzTV runs ffmpeg; resolves with the stand-in's report. */
 function runWrapper(args, env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(WRAPPER, args, { env: { ...process.env, ...env } });
+    // No encoder.json of VizRS Live unless a test gives one (VIZRS_FFMPEG_SETTINGS).
+    const child = spawn(WRAPPER, args, { env: { ...process.env, VIZRS_FFMPEG_SETTINGS: "", ...env } });
     const out = [];
     const err = [];
     child.stdout.on("data", (chunk) => out.push(chunk));
@@ -634,6 +635,27 @@ test("ffmpeg overlay at a forced rate, blending, preset and catch-up: the media 
     (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "libx264", ...hls], env)).args,
     ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-preset:v", "superfast", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
   );
+  // Preset, profile and x264 options set in VizRS Live (encoder.json): the file
+  // as a whole instead of the environment; a value outside the lists is left out.
+  const settings = path.join(dir, "encoder.json");
+  writeFileSync(settings, JSON.stringify({ preset: "veryfast", profile: "main", x264_params: "bframes=0:subme=0" }));
+  assert.deepEqual(
+    (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "libx264", ...hls], { ...env, VIZRS_FFMPEG_SETTINGS: settings })).args,
+    ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-preset:v", "veryfast", "-profile:v", "main", "-x264-params:v", "bframes=0:subme=0", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
+  );
+  writeFileSync(settings, JSON.stringify({ preset: "", profile: "high10", x264_params: "keyint=1" }));
+  assert.deepEqual(
+    (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "libx264", ...hls], { ...env, VIZRS_FFMPEG_SETTINGS: settings, VIZRS_FFMPEG_X264_PARAMS: "subme=0" })).args,
+    ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
+    "empty values of the file are the defaults, not the environment's",
+  );
+  // NVENC: its preset and the H.264 profile from the file; B-frames from the
+  // environment while the file (of an older version) has no such key.
+  writeFileSync(settings, JSON.stringify({ preset: "veryfast", profile: "high", nvenc_preset: "p6" }));
+  assert.deepEqual(
+    (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "h264_nvenc", "-b:v", "6000k", ...hls], { ...env, VIZRS_FFMPEG_SETTINGS: settings, VIZRS_FFMPEG_NVENC_BF: "0" })).args,
+    ["-i", "/m/Ad.mp4", "-vcodec", "h264_nvenc", "-bf:v", "0", "-preset:v", "p6", "-profile:v", "high", "-b:v", "6000k", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
+  );
   // A preset of ErsatzTV's own stays.
   const own = ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-preset:v", "veryfast", "-f", "null", "-"];
   assert.deepEqual((await runWrapper(own, env)).args, own);
@@ -762,8 +784,9 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
   const cases = [
     {
       input: ["-init_hw_device", "cuda", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
+      // One CUDA device (-init_hw_device cuda): the graphics upload through it, without a CUDA context of their own.
       filter: "[0:0]hwupload,scale_cuda=8:4:format=yuv420p,setsar=1[v_m0];[1:0]format=yuva420p,hwupload_cuda[v_s0];[v_m0][v_s0]overlay_cuda=x=0:y=0[v_o0]",
-      expected: "[0:0]hwupload,scale_cuda=8:4:format=yuv420p,setsar=1[v_m0];[1:0]format=yuva420p,hwupload_cuda[v_s0];[v_m0]fps=50[v_m0_fps];[v_m0_fps][v_s0]overlay_cuda=x=0:y=0[v_o0]",
+      expected: "[0:0]hwupload,scale_cuda=8:4:format=yuv420p,setsar=1[v_m0];[1:0]format=yuva420p,hwupload[v_s0];[v_m0]fps=50[v_m0_fps];[v_m0_fps][v_s0]overlay_cuda=x=0:y=0[v_o0]",
       encoder: "h264_nvenc",
     },
     {
@@ -794,6 +817,128 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
     ], encoder);
     assert.equal(result.read, 2 * yuvaSize(8, 4), encoder);
   }
+});
+
+test("ffmpeg overlay VIZRS_FFMPEG_CUDA=overlay: the media paced at -readrate 1 with a burst of the graphics ready at once", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const cg = await sidecar(t, { vizrs: { address: vizrs.address, token: "" }, output_url: "http://127.0.0.1:9/output", lead_seconds: 2 });
+  let start = "";
+  const etv = http.createServer((request, response) => {
+    const child = spawn(CLIENT, [`${cg.url}/etv?channel=1`]);
+    child.stdout.resume();
+    const stop = new Date(Date.parse(start) + 1800_000).toISOString();
+    child.stdin.end(JSON.stringify(item("/m/News.mp4", start, { MediaItem_Stop: stop })));
+    response.writeHead(200);
+    response.flushHeaders();
+    response.on("close", () => child.kill());
+  });
+  const etvPort = await listen(etv);
+  t.after(() => etv.close());
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  const env = { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_CUDA: "overlay", FRAME_BYTES: String(yuvaSize(8, 4)), FRAMES: "2" };
+  const transcode = (startMs, extra = {}) => {
+    start = new Date(startMs).toISOString();
+    return runWrapper([
+      "-init_hw_device", "cuda", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+      "-i", "/m/News.mp4", "-headers", "x-etv-frame-rate:25/1\r\n", "-t", "44000ms",
+      "-i", `http://127.0.0.1:${etvPort}/internal/graphics/1/7?exp=1&sig=x`,
+      "-filter_complex", "[0:0]hwupload,scale_cuda=8:4[v_m0];[1:0]format=yuva420p,hwupload_cuda[v_s0];[v_m0][v_s0]overlay_cuda=x=0:y=0[v_o0]",
+      "-map", "[v_o0]", "-vcodec", "h264_nvenc", "-f", "hls", "/t/ffmpeg.m3u8",
+    ], { ...env, ...extra });
+  };
+  const burst = async (startMs) => {
+    const result = await transcode(startMs);
+    // Without CUDA decoding, the media input paced, with its burst.
+    assert.deepEqual(result.args.slice(0, 4), ["-init_hw_device", "cuda", "-readrate", "1"]);
+    assert.equal(result.args[4], "-readrate_initial_burst");
+    assert.deepEqual(result.args.slice(6, 8), ["-i", "/m/News.mp4"]);
+    return Number(result.args[5]);
+  };
+  // An air time out of reach (a wrong clock): the lead only.
+  const lead = await burst(Date.parse("2026-10-24T20:00:00+02:00"));
+  assert.ok(lead >= 2 && lead <= 2.5, `lead ${lead}`);
+  // A piece started 3 s late: the lead and the 3 s missed.
+  const late = await burst(Date.now() - 3000);
+  assert.ok(late >= 4.9 && late <= 5.8, `late ${late}`);
+  // VIZRS_FFMPEG_SYNC_RAM=1: the media waits for the graphics in RAM, before its upload.
+  const graph = (result) => result.args[result.args.indexOf("-filter_complex") + 1];
+  const syncedRun = await transcode(Date.now(), { VIZRS_FFMPEG_SYNC_RAM: "1" });
+  assert.ok(!syncedRun.args.includes("-readrate"), "synced in RAM: the graphics pace the media, no -readrate");
+  const synced = graph(syncedRun);
+  assert.match(synced, /^\[1:0\]split=2\[vz_w0\]\[vz_w1\];\[vz_w0\]crop=2:2:0:0\[vz_wt\];/);
+  assert.match(synced, /\[0:0\]\[vz_wt\]overlay=x=main_w:y=main_h:format=auto:eof_action=pass,[^;]*hwupload,scale_cuda/);
+  assert.match(synced, /\[vz_w1\]format=yuva420p,hwupload\[v_s0\]/);
+  assert.ok(!graph(await transcode(Date.now())).includes("vz_w"), "off by default");
+});
+
+test("ffmpeg overlay VIZRS_FFMPEG_CUDA=auto: overlay with free GPU memory, encode on a full card", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  // nvidia-smi as in the ErsatzTV container: free MiB of the card from FREE, or a failure.
+  writeFileSync(path.join(dir, "nvidia-smi"), '#!/bin/sh\n[ -n "$FREE" ] || exit 9\necho "$FREE"\n');
+  chmodSync(path.join(dir, "nvidia-smi"), 0o755);
+  const command = [
+    "-init_hw_device", "cuda", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", "/m/News.mp4",
+    "-filter_complex", "[0:0]scale_cuda=8:4:format=yuv420p[v]", "-map", "[v]", "-c:v", "h264_nvenc", "/t/o.ts",
+  ];
+  const run = (env) => runWrapper(command, {
+    VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", VIZRS_FFMPEG_CUDA: "auto", PATH: `${dir}:${process.env.PATH}`, ...env,
+  });
+
+  const roomy = await run({ FREE: "900" });
+  assert.ok(roomy.args.some((arg) => arg.includes("scale_cuda")), "overlay keeps the CUDA filters");
+  assert.ok(!roomy.args.includes("-hwaccel"), "overlay decodes on the CPU");
+  const full = await run({ FREE: "120", VIZRS_FFMPEG_CUDA_MIN_FREE: "200" });
+  assert.ok(!full.args.some((arg) => arg.includes("_cuda")), "encode: no CUDA filters");
+  assert.ok(full.args.some((arg) => arg.includes("scale=8:4")));
+  assert.match(full.stderr, /GPU memory 120 MiB free \(< 200\)/);
+  assert.deepEqual((await run({ FREE: "" })).args, roomy.args, "no answer from nvidia-smi = overlay");
+  assert.deepEqual((await run({ FREE: "250" })).args, full.args, "default threshold 300 MiB");
+  const x264 = ["-i", "/m/News.mp4", "-c:v", "libx264", "/t/o.ts"];
+  assert.deepEqual((await runWrapper(x264, { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", VIZRS_FFMPEG_CUDA: "auto", FREE: "1" })).args, x264);
+});
+
+test("VIZRS_FFMPEG_NO_SHORTEST: -shortest left out where the output ends at a -t anyway", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  const audio = "[0:1]loudnorm=I=-23:TP=-1.5:LRA=11,aresample=48000,apad[a]";
+  const piece = ["-i", "/m/News.mp4", "-filter_complex", audio, "-map", "0:0", "-map", "[a]", "-c:v", "libx264", "-t", "44000ms", "-shortest", "-f", "hls", "/t/o.m3u8"];
+  const run = (args, env) => runWrapper(args, { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", ...env });
+  assert.deepEqual((await run(piece, { VIZRS_FFMPEG_NO_SHORTEST: "1" })).args, piece.filter((arg) => arg !== "-shortest"));
+  assert.deepEqual((await run(piece, {})).args, piece, "off by default");
+  // No -t of the output: -shortest is what ends it.
+  const open = ["-i", "/m/News.mp4", "-filter_complex", audio, "-map", "0:0", "-map", "[a]", "-shortest", "-f", "hls", "/t/o.m3u8"];
+  assert.deepEqual((await run(open, { VIZRS_FFMPEG_NO_SHORTEST: "1" })).args, open);
+});
+
+test("VIZRS_FFMPEG_NO_DISCARDCORRUPT: the MPEG-TS channel stream keeps the frame at each join of pieces", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  // ErsatzTV's channel stream: its own HLS (a new ffmpeg per piece) copied to MPEG-TS.
+  const stream = (flags) => [
+    "-nostdin", "-threads", "1", "-hide_banner", "-fflags", flags, "-readrate", "1.0",
+    "-i", "http://localhost:8409/iptv/channel/1.m3u8?mode=segmenter&subtitles=false", "-map", "0", "-c", "copy", "-f", "mpegts", "pipe:1",
+  ];
+  const run = (args, env) => runWrapper(args, { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", ...env });
+  assert.deepEqual((await run(stream("+genpts+discardcorrupt+igndts"), { VIZRS_FFMPEG_NO_DISCARDCORRUPT: "1" })).args, stream("+genpts+igndts"));
+  assert.deepEqual((await run(stream("+genpts+discardcorrupt+igndts"), {})).args, stream("+genpts+discardcorrupt+igndts"), "off by default");
+  // A transcode of a playlist (not a copy): unchanged.
+  const transcode = ["-fflags", "+genpts+discardcorrupt", "-i", "http://h/a.m3u8", "-c:v", "libx264", "-f", "mpegts", "pipe:1"];
+  assert.deepEqual((await run(transcode, { VIZRS_FFMPEG_NO_DISCARDCORRUPT: "1" })).args, transcode);
 });
 
 test("graphics rules from the live API: validated, saved, in force from the next item, kept after a restart", async (t) => {

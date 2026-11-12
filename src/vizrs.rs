@@ -157,6 +157,38 @@ pub fn on_air(state_reply: &str) -> Option<(String, Vec<String>)> {
     (!names.is_empty()).then(|| (format!("OUT {}", names.join(",")), pages))
 }
 
+/// The layers on air in a `STATE` reply, for VizRS Live (K12): `[{layer, page, name?, scene?}]`.
+/// VizRS reports a page as an object (`{id, number, name}`) or, in older builds, as its number.
+pub fn layers(state_reply: &str) -> Vec<Value> {
+    let Some(rest) = state_reply.strip_prefix("OK") else { return Vec::new() };
+    let Ok(state) = json::parse(rest.trim()) else { return Vec::new() };
+    let layers = state.get("layers").and_then(Value::as_array).unwrap_or(&[]);
+    layers
+        .iter()
+        .filter_map(|l| {
+            let name = l.get("layer")?;
+            let page = l.get("page");
+            let number = match page {
+                Some(page @ Value::Object(_)) => page.get("number").map(js_string),
+                Some(page) => Some(js_string(page)),
+                None => None,
+            };
+            let mut members = vec![("layer".to_owned(), name.clone()), ("page".to_owned(), number.map_or(Value::Null, Value::from))];
+            for (field, from) in [("name", "name"), ("scene", "scene")] {
+                let value = match page {
+                    Some(page @ Value::Object(_)) => page.get(from).cloned(),
+                    _ => None,
+                }
+                .or_else(|| l.get(from).cloned());
+                if let Some(value @ Value::String(_)) = value {
+                    members.push((field.to_owned(), value));
+                }
+            }
+            Some(Value::Object(members))
+        })
+        .collect()
+}
+
 /// The `STATE` reply of an antenna (`prefix` `@N ` = a channel's).
 pub fn state(address: &str, token: &str, prefix: &str) -> Result<String, String> {
     let mut connection = Connection::open(address)?;
@@ -246,7 +278,95 @@ pub fn send(address: &str, token: &str, prefix: &str, commands: &[String], clear
         let reply = connection.command(&format!("{prefix}{command}"))?;
         sent.replies.push((command.clone(), reply));
     }
+    for (command, reply) in &sent.replies {
+        if reply.starts_with("OK") {
+            note_sent(address, prefix, command);
+        }
+    }
     Ok(sent)
+}
+
+/// Commands this sidecar sent with an `OK` reply: `(antenna, epoch ms, command)`.
+/// The as-run log (K14) tells by them a change on air the sidecar made from one
+/// made elsewhere (Trio, a macro or carousel in VizRS, Companion).
+static SENT: Mutex<Vec<(String, i64, String)>> = Mutex::new(Vec::new());
+/// How long a sent command is remembered (several reads of the layers on air).
+const SENT_KEEP_MS: i64 = 30_000;
+/// Pages taken back after a break count as coming on air this long after
+/// their `TAKE` (`STATE` may not show them yet to the zones of a new run).
+const BREAK_PAGES_GRACE_MS: u64 = 10_000;
+
+/// Pages out for a break (None) or taken back (epoch ms), as the sender
+/// thread's `cleared` goes; see `ChannelEvents::break_pages`.
+type BreakPages = Arc<Mutex<Vec<(String, Option<u64>)>>>;
+
+/// The pages `cleared` holds now, and those taken back within the grace.
+fn mirror_break(mirror: &BreakPages, cleared: Option<&Vec<String>>, now: u64) {
+    let mut pages = mirror.lock().unwrap_or_else(|e| e.into_inner());
+    match cleared {
+        Some(out) => *pages = out.iter().map(|page| (page.clone(), None)).collect(),
+        None => {
+            for (_, back) in pages.iter_mut() {
+                back.get_or_insert(now);
+            }
+            pages.retain(|(_, back)| back.is_none_or(|at| now.saturating_sub(at) <= BREAK_PAGES_GRACE_MS));
+        }
+    }
+}
+
+fn antenna_key(address: &str, prefix: &str) -> String {
+    format!("{address}|{}", prefix.trim())
+}
+
+fn note_sent(address: &str, prefix: &str, command: &str) {
+    let now = time::now_ms();
+    let mut sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+    sent.retain(|(_, at, _)| now - at <= SENT_KEEP_MS);
+    if sent.len() >= 1000 {
+        sent.remove(0);
+    }
+    sent.push((antenna_key(address, prefix), now, command.to_owned()));
+}
+
+/// The commands sent with an `OK` to the antenna (`address` + `prefix`) since `since_ms`.
+pub fn sent_since(address: &str, prefix: &str, since_ms: i64) -> Vec<String> {
+    let key = antenna_key(address, prefix);
+    let sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+    sent.iter().filter(|(antenna, at, _)| *antenna == key && *at >= since_ms).map(|(_, _, command)| command.clone()).collect()
+}
+
+/// Changes on an antenna between two reads of its layers (`(layer, page)`) that
+/// none of the `sent` commands explains: `(kind, layer, page)` with kind `take`
+/// (a new page on a layer) or `out` (a layer gone). A page that only moved to
+/// another layer is not a change.
+pub fn foreign_changes(before: &[(String, String)], after: &[(String, String)], sent: &[String]) -> Vec<(&'static str, String, String)> {
+    let words = |command: &str| -> (String, Vec<String>) {
+        let mut parts = command.split_whitespace();
+        let verb = parts.next().unwrap_or("").to_ascii_uppercase();
+        let targets = parts.next().unwrap_or("").split(',').filter(|t| !t.is_empty()).map(str::to_owned).collect();
+        (verb, targets)
+    };
+    let took = |page: &str| sent.iter().map(|c| words(c)).any(|(verb, targets)| verb == "TAKE" && targets.iter().any(|t| t == page));
+    let took_out = |layer: &str| {
+        sent.iter().map(|c| words(c)).any(|(verb, targets)| {
+            verb.starts_with("CLEAR") || (verb == "OUT" && (targets.is_empty() || targets.iter().any(|t| t == layer)))
+        })
+    };
+    let mut changes = Vec::new();
+    for (layer, page) in after {
+        let was = before.iter().find(|(l, _)| l == layer).map(|(_, p)| p);
+        if was == Some(page) || page.is_empty() || before.iter().any(|(_, p)| p == page) || took(page) {
+            continue;
+        }
+        changes.push(("take", layer.clone(), page.clone()));
+    }
+    for (layer, page) in before {
+        if after.iter().any(|(l, _)| l == layer) || after.iter().any(|(_, p)| p == page) || took_out(layer) {
+            continue;
+        }
+        changes.push(("out", layer.clone(), page.clone()));
+    }
+    changes
 }
 
 /// A batch for the channel's sender, in the order the events happened.
@@ -299,6 +419,8 @@ impl Timeline {
 
 /// Clip events of one channel, sent in order.
 pub struct ChannelEvents {
+    /// The ErsatzTV channel these events belong to (the as-run log, K14).
+    channel: String,
     config: Arc<Config>,
     /// Graphics rules; VizRS Live replaces them (src/graphics.rs), from the next clip.
     rules: RwLock<Arc<ClipRules>>,
@@ -306,12 +428,16 @@ pub struct ChannelEvents {
     /// Bumped by every ad: graphics scheduled before it are not sent.
     ad_generation: Arc<AtomicU64>,
     queue: Mutex<Sender<Batch>>,
+    /// The sender's pages out for a break, for the graphics zones.
+    break_pages: BreakPages,
 }
 
 impl ChannelEvents {
-    pub fn new(config: Arc<Config>, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) -> Arc<ChannelEvents> {
+    pub fn new(config: Arc<Config>, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>, channel: String) -> Arc<ChannelEvents> {
         let (queue, batches) = mpsc::channel::<Batch>();
         let sender_config = Arc::clone(&config);
+        let break_pages = BreakPages::default();
+        let mirror = Arc::clone(&break_pages);
         thread::Builder::new()
             .name("vizrs".into())
             .spawn(move || {
@@ -326,6 +452,7 @@ impl ChannelEvents {
                         None if parked.is_some() => park(parked.as_mut().unwrap(), &mut cleared, &batch),
                         None => send_clip(&sender_config, &mut cleared, batch),
                     }
+                    mirror_break(&mirror, cleared.as_ref(), time::now_ms() as u64);
                 }
             })
             .expect("vizrs sender thread");
@@ -335,11 +462,13 @@ impl ChannelEvents {
         }
         let rules = RwLock::new(Arc::new(ClipRules::of(&config, ads, shows)));
         let events = Arc::new(ChannelEvents {
+            channel,
             config,
             rules,
             state: Mutex::new(State::default()),
             ad_generation: Arc::new(AtomicU64::new(0)),
             queue: Mutex::new(queue),
+            break_pages,
         });
         let mut all = CHANNELS.lock().unwrap_or_else(|e| e.into_inner());
         all.retain(|w| w.strong_count() > 0);
@@ -350,6 +479,18 @@ impl ChannelEvents {
     /// New graphics rules (the channel's configuration with them, and their matchers).
     pub fn set_rules(&self, config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) {
         *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(ClipRules::of(config, ads, shows));
+    }
+
+    /// Pages a new piece may take back from a break: out for it now, or taken
+    /// back within `BREAK_PAGES_GRACE_MS` (their `TAKE` may not be in `STATE`
+    /// yet). The graphics zones of a run count them (PLAN-strefy).
+    pub fn break_pages(&self, now: u64) -> Vec<String> {
+        let pages = self.break_pages.lock().unwrap_or_else(|e| e.into_inner());
+        pages
+            .iter()
+            .filter(|(_, back)| back.is_none_or(|at| now.saturating_sub(at) <= BREAK_PAGES_GRACE_MS))
+            .map(|(p, _)| p.clone())
+            .collect()
     }
 
     fn rules(&self) -> Arc<ClipRules> {
@@ -372,11 +513,26 @@ impl ChannelEvents {
     /// `custom_commands` overrides on_clip for this specific session (e.g. from
     /// ?take=ID&fields=...), `timing` its times (`at=`, `out=`, `ref=`).
     pub fn session(&self, ctx: &ClipContext, custom_commands: Option<&[String]>, timing: Option<Timing>) {
-        {
+        let item = format!("{}|{}", ctx.source, ctx.start);
+        let started = {
             let mut state = self.state();
             state.active += 1;
             state.gap_generation += 1;
-            state.last_item = Some(format!("{}|{}", ctx.source, ctx.start));
+            let started = state.last_item.as_deref() != Some(item.as_str());
+            state.last_item = Some(item);
+            started
+        };
+        // The as-run log (K14): the item goes on the air with this, its first session.
+        if started {
+            crate::asrun::log(
+                &self.config.etv_config,
+                &self.channel,
+                &crate::asrun::Entry::of(crate::asrun::ITEM_START).title(&ctx.title).detail(if ctx.stop.is_empty() {
+                    String::new()
+                } else {
+                    format!("do {}", ctx.stop)
+                }),
+            );
         }
         self.clip(ctx, custom_commands, timing);
     }
@@ -384,14 +540,14 @@ impl ChannelEvents {
     /// A session ended. When no session follows by the item's stop (ErsatzTV
     /// runs ahead of the clock), the next item has no VizRS element: an ad.
     pub fn ended(self: &Arc<Self>, ctx: &ClipContext) {
-        let generation = {
+        let (generation, ad_after) = {
             let mut state = self.state();
             state.active = state.active.saturating_sub(1);
             state.gap_generation += 1;
-            if !self.config.ad_without_element || state.active > 0 {
+            if state.active > 0 {
                 return;
             }
-            state.gap_generation
+            (state.gap_generation, self.config.ad_without_element)
         };
 
         let key = format!("{}|{}", ctx.source, ctx.start);
@@ -405,7 +561,16 @@ impl ChannelEvents {
                 let state = events.state();
                 state.gap_generation == generation && state.active == 0 && state.last_item.as_deref() == Some(key.as_str())
             };
-            if gap {
+            if !gap {
+                return;
+            }
+            // The as-run log (K14): no session took the item over, so it is over.
+            crate::asrun::log(
+                &events.config.etv_config,
+                &events.channel,
+                &crate::asrun::Entry::of(crate::asrun::ITEM_END).title(&ctx.title),
+            );
+            if ad_after {
                 events.ad(&ctx);
             }
         });
@@ -758,6 +923,26 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
 
     #[test]
+    fn break_pages_until_a_grace_after_they_come_back() {
+        let mirror = super::BreakPages::default();
+        let pages = |now| {
+            let list = mirror.lock().unwrap();
+            list.iter()
+                .filter(|(_, back)| back.is_none_or(|at| now - at <= super::BREAK_PAGES_GRACE_MS))
+                .map(|(p, _)| p.clone())
+                .collect::<Vec<_>>()
+        };
+        super::mirror_break(&mirror, Some(&vec!["2001".into(), "4001".into()]), 1000);
+        assert_eq!(pages(500_000), ["2001", "4001"]);
+        // Taken back at 600 s: still counted 10 s after, not later.
+        super::mirror_break(&mirror, None, 600_000);
+        assert_eq!(pages(610_000), ["2001", "4001"]);
+        assert!(pages(610_001).is_empty());
+        super::mirror_break(&mirror, None, 610_001);
+        assert!(mirror.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn parked_pages_follow_commands() {
         let mut pages = vec!["1001".to_string()];
         let mut cleared = None;
@@ -910,7 +1095,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows));
+        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into());
 
         // Clip matching show "Wiadomości"
         let ctx_news = ClipContext {
@@ -960,7 +1145,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows));
+        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into());
 
         // ErsatzTV transcodes the item 30 s before it is on air: its frames
         // show the graphics of now, so TAKE and OUT go by the transcode.
@@ -1012,7 +1197,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        ChannelEvents::new(config, Arc::new(ads), Arc::new(shows))
+        ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into())
     }
 
     #[test]
@@ -1123,6 +1308,47 @@ mod tests {
     }
 
     #[test]
+    fn layers_on_air_for_the_panel() {
+        let reply = r#"OK {"layers":[{"layer":"main","page":{"number":1001,"name":"belka"}},{"layer":"bug","page":"7"}]}"#;
+        let on = layers(reply);
+        assert_eq!(on.len(), 2);
+        assert_eq!(on[0].get("layer").and_then(Value::as_str), Some("main"));
+        assert_eq!(on[0].get("page").and_then(Value::as_str), Some("1001"));
+        assert_eq!(on[0].get("name").and_then(Value::as_str), Some("belka"));
+        assert_eq!(on[1].get("page").and_then(Value::as_str), Some("7"));
+        assert!(on[1].get("name").is_none());
+        assert!(layers("ERR nope").is_empty() && layers("OK {}").is_empty());
+    }
+
+    #[test]
+    fn changes_on_air_the_sidecar_did_not_send() {
+        let on = |pairs: &[(&str, &str)]| pairs.iter().map(|(l, p)| ((*l).to_owned(), (*p).to_owned())).collect::<Vec<_>>();
+        let before = on(&[("main", "1001"), ("bug", "7")]);
+        // Trio: a new page on a layer, another layer taken out.
+        let after = on(&[("main", "1002")]);
+        assert_eq!(
+            foreign_changes(&before, &after, &[]),
+            [("take", "main".to_owned(), "1002".to_owned()), ("out", "bug".to_owned(), "7".to_owned())]
+        );
+        // The same, sent by the sidecar (rules or VizRS Live): nothing to log.
+        assert!(foreign_changes(&before, &after, &["TAKE 1002 a=b".into(), "OUT bug".into()]).is_empty());
+        assert!(foreign_changes(&before, &on(&[]), &["OUT main,bug".into()]).is_empty());
+        assert!(foreign_changes(&before, &on(&[]), &["CLEAR".into()]).is_empty());
+        // No change, or a page that only moved to another layer.
+        assert!(foreign_changes(&before, &before, &[]).is_empty());
+        assert!(foreign_changes(&before, &on(&[("main", "1001"), ("top", "7")]), &[]).is_empty());
+    }
+
+    #[test]
+    fn sent_commands_are_remembered_per_antenna() {
+        let since = time::now_ms();
+        note_sent("cg-test:6100", "@9 ", "TAKE 5001");
+        assert_eq!(sent_since("cg-test:6100", "@9", since), ["TAKE 5001"]);
+        assert!(sent_since("cg-test:6100", "@8 ", since).is_empty());
+        assert!(sent_since("cg-test:6100", "@9 ", since + 60_000).is_empty());
+    }
+
+    #[test]
     fn taken_pages_for_out() {
         let commands = ["TAKE 4001 headline=a|b=c".into(), "UPDATE 2001 t=x".into(), "take 3001,4001".into(), "TAKE".into()];
         assert_eq!(taken_pages(&commands), ["4001", "3001"]);
@@ -1140,7 +1366,7 @@ mod tests {
         let config = Arc::new(config);
         let (ads, _) = AdMatcher::new(&config.ad_match);
         let (shows, _) = ShowMatcher::new(&config.shows);
-        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows));
+        let events = ChannelEvents::new(config, Arc::new(ads), Arc::new(shows), "24".into());
 
         let now = time::now_ms();
         let item = |source: &str, length: i64| ClipContext {

@@ -9,16 +9,20 @@
 // 3 not drawn (`c`: something on air needs Chromium), 4 picture of a region:
 // x, y, width, height (u32 LE), its RGBA, the rest transparent, 5 pictures of
 // several `--area`: their count (u32 LE), then each as in kind 4, in channel
-// pixels. Flags: bit 0 all on air
+// pixels, 6 a patch of the last picture (kind 1 or 4, or a patch) – asked for
+// with `p`: a count (u32 LE), then each rectangle as in kind 4, whose pixels
+// replace those of the last picture. Flags: bit 0 all on air
 // drawn natively, bit 1 connected to VizRS.
 
 use std::io::{BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::area::{Area, cut_to};
+use crate::json::{self, Value};
 use crate::packets::{Rect, crop};
 use crate::rects::visible_rects;
 use crate::sys;
@@ -84,6 +88,8 @@ pub enum Kind {
     Empty,
     /// Something on air needs Chromium; nothing drawn.
     Skipped,
+    /// Rectangles (x, y, w, h of the frame) of the last picture with new pixels; the rest unchanged.
+    Patch(Vec<(Area, Vec<u8>)>),
 }
 
 #[derive(Debug)]
@@ -134,6 +140,15 @@ pub fn read_reply(input: &mut impl Read) -> Result<Option<Reply>, String> {
             }
             Kind::Regions((0..count).map(|_| read_region(input, width, height)).collect::<Result<_, _>>()?)
         }
+        6 => {
+            let mut count = [0u8; 4];
+            input.read_exact(&mut count).map_err(|e| e.to_string())?;
+            let count = u32::from_le_bytes(count);
+            if count > MAX_REGIONS {
+                return Err(format!("native renderer: {count} patches"));
+            }
+            Kind::Patch((0..count).map(|_| read_region(input, width, height)).collect::<Result<_, _>>()?)
+        }
         other => return Err(format!("native renderer: record kind {other}")),
     };
     Ok(Some(Reply { kind, complete: head[5] & 1 != 0, connected: head[5] & 2 != 0, width, height }))
@@ -164,6 +179,8 @@ pub struct Native {
     child: Child,
     stdin: ChildStdin,
     replies: Receiver<Result<Reply, String>>,
+    /// The last picture (its region of the frame and RGBA), which a patch updates.
+    base: Option<(Area, Vec<u8>)>,
 }
 
 impl Native {
@@ -197,22 +214,67 @@ impl Native {
                 }
             }
         });
-        Ok(Native { child, stdin, replies })
+        Ok(Native { child, stdin, replies, base: None })
     }
 
     /// The frame at monotonic time `ms`: `complete_only` = only when all on air is native,
     /// `force` = the picture even when unchanged.
     pub fn frame(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<Reply, String> {
-        let flags = format!("{}{}", if complete_only { "c" } else { "" }, if force { "f" } else { "" });
-        writeln!(self.stdin, "F {ms:.3} {wall:.3} {flags}")
-            .and_then(|_| self.stdin.flush())
-            .map_err(|e| format!("native renderer: {e}"))?;
-        match self.replies.recv_timeout(FRAME_TIMEOUT) {
+        self.request(ms, wall, complete_only, force)?;
+        self.receive(Instant::now() + FRAME_TIMEOUT)
+    }
+
+    /// Asks for the frame at `ms` (see `frame`); `receive` takes it, so several renderers draw at once.
+    pub fn request(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<(), String> {
+        // `p`: patches welcome (a renderer without them ignores it and sends whole pictures)
+        let flags = format!("{}{}p", if complete_only { "c" } else { "" }, if force { "f" } else { "" });
+        writeln!(self.stdin, "F {ms:.3} {wall:.3} {flags}").and_then(|_| self.stdin.flush()).map_err(|e| format!("native renderer: {e}"))
+    }
+
+    /// The frame asked for, by `deadline`.
+    pub fn receive(&mut self, deadline: Instant) -> Result<Reply, String> {
+        match self.replies.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(reply) => reply,
             Err(RecvTimeoutError::Timeout) => Err("native renderer: no frame in time".into()),
             Err(RecvTimeoutError::Disconnected) => Err("native renderer exited".into()),
         }
     }
+
+    /// The last picture (its region of the frame and RGBA), the base of the next patch.
+    pub fn base(&self) -> Option<(Area, &[u8])> {
+        self.base.as_ref().map(|(r, px)| (*r, px.as_slice()))
+    }
+    /// Keeps the picture (`region` of the frame, RGBA) as the base of the next patch.
+    pub fn keep(&mut self, region: Area, rgba: Vec<u8>) {
+        self.base = Some((region, rgba));
+    }
+
+    /// No base: the renderer sends a whole picture before patching again.
+    pub fn forget(&mut self) {
+        self.base = None;
+    }
+
+    /// The last picture with `patches` applied: its region of the frame and RGBA.
+    pub fn patch(&mut self, patches: &[(Area, Vec<u8>)]) -> Result<(Area, &[u8]), String> {
+        let base = self.base.as_mut().ok_or("native renderer: a patch without a picture")?;
+        apply_patch(base, patches)?;
+        Ok((base.0, &base.1))
+    }
+}
+
+/// Puts the pixels of `patches` (rectangles of the frame) into the picture `base` (its region, RGBA).
+pub fn apply_patch((region, rgba): &mut (Area, Vec<u8>), patches: &[(Area, Vec<u8>)]) -> Result<(), String> {
+    for (p, px) in patches {
+        if p.x < region.x || p.y < region.y || p.x + p.w > region.x + region.w || p.y + p.h > region.y + region.h {
+            return Err(format!("native renderer: patch {}x{}+{}+{} outside the picture", p.w, p.h, p.x, p.y));
+        }
+        let row = p.w as usize * 4;
+        for r in 0..p.h as usize {
+            let to = (((p.y - region.y) as usize + r) * region.w as usize + (p.x - region.x) as usize) * 4;
+            rgba[to..to + row].copy_from_slice(&px[r * row..(r + 1) * row]);
+        }
+    }
+    Ok(())
 }
 
 impl Drop for Native {
@@ -223,6 +285,407 @@ impl Drop for Native {
     }
 }
 
+/// Where a VizRS layer is in the stack of the /output page (`layerZ`): back,
+/// main and front, `z<N>_name` (N 0–99) and any other name between main and
+/// front. Layers of the same place stack in the order they came.
+pub fn layer_z(name: &str) -> u32 {
+    match name {
+        "back" => 1000,
+        "main" => 2000,
+        "front" => 3000,
+        _ => {
+            let n = name.strip_prefix('z').and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                (!digits.is_empty() && digits.len() <= 2 && rest[digits.len()..].starts_with('_')).then(|| digits.parse().unwrap_or(0))
+            });
+            2500 + n.unwrap_or(0)
+        }
+    }
+}
+
+/// `names` without repeats, bottom of the stack first (`layer_z`, then as listed).
+pub fn stack(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        if !name.is_empty() && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out.sort_by_key(|n| layer_z(n));
+    out
+}
+
+/// The layers of a show (`GET /api/show`: the `layer` of each scene), bottom first.
+pub fn show_layers(show_json: &str) -> Result<Vec<String>, String> {
+    let show = json::parse(show_json).map_err(|e| format!("show: {e}"))?;
+    let scenes = show.get("scenes").ok_or("show: no scenes")?;
+    let list: Vec<&Value> = match scenes {
+        Value::Array(items) => items.iter().collect(),
+        Value::Object(members) => members.iter().map(|(_, v)| v).collect(),
+        _ => return Err("show: scenes are not a list".into()),
+    };
+    Ok(stack(list.into_iter().map(|scene| scene.get("layer").and_then(Value::as_str).unwrap_or("main").to_owned())))
+}
+
+/// The layers on the air of a `STATE` reply.
+pub fn state_layers(state_reply: &str) -> Vec<String> {
+    let Some(state) = state_reply.strip_prefix("OK").and_then(|s| json::parse(s.trim()).ok()) else { return Vec::new() };
+    let Some(layers) = state.get("layers").and_then(Value::as_array) else { return Vec::new() };
+    layers.iter().filter_map(|l| l.get("layer").and_then(Value::as_str)).map(str::to_owned).collect()
+}
+
+/// The /output page `url` showing only `layer`.
+pub fn layer_url(url: &str, layer: &str) -> String {
+    let encoded: String = layer
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    format!("{url}{}layers={encoded}", if url.contains('?') { '&' } else { '?' })
+}
+
+/// What a frame of `Layered` gives.
+#[derive(Debug)]
+pub enum Drawn {
+    /// Something on air needs Chromium (`complete_only`).
+    Skipped,
+    Unchanged,
+    /// The new picture: visible rectangles in channel pixels.
+    Changed(Vec<Rect>),
+}
+
+/// The layers of the show drawn by one native renderer each (`native_layers`).
+pub type LayerList = Arc<Mutex<Vec<String>>>;
+
+/// One renderer: its layer ("" = all of them), and the visible rectangles of its last picture.
+struct Layer {
+    name: String,
+    native: Native,
+    rects: Vec<Rect>,
+    /// Started now: its first frame is asked for in full.
+    fresh: bool,
+    /// The frame asked for last, not read yet, and how many replies wait to be read.
+    asked: Option<Asked>,
+    unread: u32,
+}
+
+/// A frame asked of a renderer (`Layered::ask`).
+#[derive(Clone, Copy, Debug)]
+struct Asked {
+    ms: f64,
+    complete_only: bool,
+    force: bool,
+}
+
+impl Asked {
+    /// The reply to this ask is the frame at `ms` with these flags (a forced picture serves an unforced ask).
+    fn serves(self, ms: f64, complete_only: bool, force: bool) -> bool {
+        (self.ms - ms).abs() < 0.001 && self.complete_only == complete_only && (self.force || !force)
+    }
+}
+
+/// What one reply did to the picture of a layer.
+enum Taken {
+    Skipped,
+    Unchanged,
+    Changed,
+}
+
+impl Layer {
+    /// The reply as the layer's picture: its visible rectangles (in channel pixels) and the base of the next patch.
+    fn take(&mut self, reply: Reply, part: Area, areas: &[Area]) -> Result<Taken, String> {
+        if matches!(reply.kind, Kind::Picture(_) | Kind::Region(..) | Kind::Patch(_)) && (reply.width, reply.height) != (part.w, part.h) {
+            return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
+        }
+        let in_channel = |r: Area| Area { x: part.x + r.x, y: part.y + r.y, w: r.w, h: r.h };
+        // The picture (Picture, Region) stays as the base of the next patch: with a patch only the
+        // changed rectangles cross the pipe (a crawl under a large board: 0.6 MB a frame, not 4 MB).
+        match reply.kind {
+            Kind::Skipped => return Ok(Taken::Skipped),
+            Kind::Unchanged => {
+                self.fresh = false;
+                return Ok(Taken::Unchanged);
+            }
+            Kind::Empty => {
+                self.native.forget();
+                self.rects.clear();
+            }
+            Kind::Picture(rgba) => {
+                self.rects = picture_rects(&rgba, part, areas);
+                self.native.keep(Area { x: 0, y: 0, w: part.w, h: part.h }, rgba);
+            }
+            Kind::Regions(regions) => {
+                self.native.forget();
+                self.rects = regions.iter().flat_map(|(region, rgba)| picture_rects(rgba, *region, areas)).collect();
+            }
+            Kind::Region(r, rgba) => {
+                self.rects = picture_rects(&rgba, in_channel(r), areas);
+                self.native.keep(r, rgba);
+            }
+            Kind::Patch(patches) => {
+                let (r, rgba) = self.native.patch(&patches)?;
+                self.rects = picture_rects(rgba, in_channel(r), areas);
+            }
+        }
+        self.fresh = false;
+        Ok(Taken::Changed)
+    }
+}
+
+/// The native renderers of a capture: one per layer of the show (`layers`,
+/// `native_layers`) or one for all. Each frame is asked of all of them at once,
+/// so they draw in parallel, and a standing layer answers "unchanged" and costs
+/// nothing; the picture is their rectangles, bottom layer first, with the
+/// overlapping ones of different layers blended into one ("over", straight alpha).
+pub struct Layered {
+    bin: String,
+    url: String,
+    size: (u32, u32),
+    areas: Vec<Area>,
+    /// The part of the channel the renderers draw: the area, else all of it.
+    part: Area,
+    names: Option<LayerList>,
+    layers: Vec<Layer>,
+    blends: Blends,
+}
+
+impl Layered {
+    /// The renderers of the /output page `url`; `names` = the layers of the show
+    /// (none or empty: one renderer for all, with the `areas` as they are; a renderer per layer draws their union).
+    pub fn start(bin: &str, url: &str, size: (u32, u32), areas: &[Area], part: Area, names: Option<LayerList>) -> Result<Layered, String> {
+        let mut layered = Layered {
+            bin: bin.to_owned(),
+            url: url.to_owned(),
+            size,
+            areas: areas.to_vec(),
+            part,
+            names,
+            layers: Vec::new(),
+            blends: Vec::new(),
+        };
+        layered.follow()?;
+        Ok(layered)
+    }
+
+    /// The layers drawn now (empty = one renderer for all).
+    pub fn layer_names(&self) -> Vec<String> {
+        self.layers.iter().map(|l| l.name.clone()).filter(|n| !n.is_empty()).collect()
+    }
+
+    /// Renderers for the layers of the show as they are now: new ones started, gone ones stopped.
+    fn follow(&mut self) -> Result<(), String> {
+        let wanted: Vec<String> = match &self.names {
+            Some(list) => list.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => Vec::new(),
+        };
+        let wanted = if wanted.is_empty() { vec![String::new()] } else { wanted };
+        if self.layers.len() == wanted.len() && self.layers.iter().zip(&wanted).all(|(l, w)| l.name == *w) {
+            return Ok(());
+        }
+        let mut old: Vec<Layer> = std::mem::take(&mut self.layers);
+        for name in wanted {
+            let layer = match old.iter().position(|l| l.name == name) {
+                Some(i) => old.remove(i),
+                None => {
+                    // A renderer of one layer draws the part (the union of the areas) as one region,
+                    // patched from frame to frame; the sidecar cuts its rectangles to the areas. With an
+                    // area each, a crawl in one area made it draw and send all the areas every frame.
+                    let (url, areas) = if name.is_empty() {
+                        (self.url.clone(), self.areas.clone())
+                    } else {
+                        (layer_url(&self.url, &name), if self.areas.is_empty() { Vec::new() } else { vec![self.part] })
+                    };
+                    Layer {
+                        native: Native::start(&self.bin, &url, self.size, &areas)?,
+                        name,
+                        rects: Vec::new(),
+                        fresh: true,
+                        asked: None,
+                        unread: 0,
+                    }
+                }
+            };
+            self.layers.push(layer);
+        }
+        if !self.layer_names().is_empty() {
+            crate::debug!("native renderer: one per layer: {}", self.layer_names().join(", "));
+        }
+        Ok(())
+    }
+
+    /// Asks all the renderers for the frame at `ms` (see `Native::frame`) without waiting: asked
+    /// right after a frame for the next slot, they draw it while the capture waits for that slot,
+    /// so one renderer late for a moment no longer makes the frame late (seven layers asked and
+    /// waited for each frame: 7.6% of 50 fps frames late, asked ahead: 0.1%).
+    pub fn ask(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<(), String> {
+        self.follow()?;
+        for layer in &mut self.layers {
+            if layer.asked.is_some_and(|a| a.serves(ms, complete_only, force || layer.fresh)) {
+                continue;
+            }
+            let force = force || layer.fresh;
+            layer.native.request(ms, wall, complete_only, force)?;
+            layer.unread += 1;
+            layer.asked = Some(Asked { ms, complete_only, force });
+        }
+        Ok(())
+    }
+
+    /// The frame at monotonic time `ms` from all the renderers: the one asked ahead (`ask`) when it
+    /// is that frame, else asked now; replies asked for another frame are read first and kept as
+    /// the picture (a patch needs its base).
+    pub fn frame(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<Drawn, String> {
+        self.ask(ms, wall, complete_only, force)?;
+        let deadline = Instant::now() + FRAME_TIMEOUT;
+        let (mut skipped, mut changed) = (false, false);
+        let (part, areas) = (self.part, self.areas.clone());
+        for layer in &mut self.layers {
+            while layer.unread > 0 {
+                let reply = layer.native.receive(deadline)?;
+                layer.unread -= 1;
+                let last = layer.unread == 0;
+                match layer.take(reply, part, &areas)? {
+                    Taken::Skipped => skipped |= last,
+                    Taken::Unchanged => {}
+                    Taken::Changed => changed = true,
+                }
+            }
+            layer.asked = None;
+        }
+        if skipped {
+            return Ok(Drawn::Skipped);
+        }
+        if !changed {
+            return Ok(Drawn::Unchanged);
+        }
+        Ok(Drawn::Changed(self.compose()))
+    }
+
+    /// The rectangles of all the layers, bottom first; see `compose`.
+    fn compose(&mut self) -> Vec<Rect> {
+        let layers: Vec<&[Rect]> = self.layers.iter().map(|l| l.rects.as_slice()).collect();
+        compose(&layers, self.size, &mut self.blends)
+    }
+}
+
+/// Blends of overlapping rectangles: the pixels they came from (held, so
+/// their memory is not another's), and the result.
+pub type Blends = Vec<(Vec<Arc<[u8]>>, Vec<Rect>)>;
+
+/// The rectangles of the layers (bottom first) as one picture: rectangles of
+/// different layers that overlap blended into the visible rectangles of their
+/// group, the rest as they are (their pixels shared). A blend of the same
+/// pixels as last time (`blends`) is not made again.
+pub fn compose(layers: &[&[Rect]], size: (u32, u32), blends: &mut Blends) -> Vec<Rect> {
+    let all: Vec<(usize, &Rect)> = layers.iter().enumerate().flat_map(|(i, rects)| rects.iter().map(move |r| (i, r))).collect();
+    if layers.len() < 2 {
+        blends.clear();
+        return all.into_iter().map(|(_, r)| r.clone()).collect();
+    }
+    // Groups of overlapping rectangles (union-find).
+    let mut parent: Vec<usize> = (0..all.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..all.len() {
+        for j in i + 1..all.len() {
+            if all[i].0 != all[j].0 && overlap(all[i].1, all[j].1) {
+                let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                parent[a] = b;
+            }
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut group_of = vec![usize::MAX; all.len()];
+    for i in 0..all.len() {
+        let r = root(&mut parent, i);
+        if group_of[r] == usize::MAX {
+            group_of[r] = groups.len();
+            groups.push(Vec::new());
+        }
+        groups[group_of[r]].push(i);
+    }
+    let mut out = Vec::with_capacity(all.len());
+    let mut kept = Vec::new();
+    for group in groups {
+        if group.len() == 1 {
+            out.push(all[group[0]].1.clone());
+            continue;
+        }
+        // Members in stack order (layer, then as drawn); a blend of the same pixels is kept.
+        let members: Vec<&Rect> = group.iter().map(|&i| all[i].1).collect();
+        let key: Vec<Arc<[u8]>> = members.iter().map(|r| Arc::clone(&r.pixels)).collect();
+        let same = |k: &[Arc<[u8]>]| k.len() == key.len() && k.iter().zip(&key).all(|(a, b)| Arc::ptr_eq(a, b));
+        let blended = match blends.iter().position(|(k, _)| same(k)) {
+            Some(i) => blends.swap_remove(i).1,
+            None => blend(&members, size),
+        };
+        out.extend(blended.iter().cloned());
+        kept.push((key, blended));
+    }
+    *blends = kept;
+    out
+}
+
+fn overlap(a: &Rect, b: &Rect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+/// Rectangles (bottom first) drawn over one another on their bounding box,
+/// straight alpha "over" like the /output page; its visible rectangles.
+fn blend(rects: &[&Rect], (cw, ch): (u32, u32)) -> Vec<Rect> {
+    let x0 = rects.iter().map(|r| r.x).min().unwrap_or(0);
+    let y0 = rects.iter().map(|r| r.y).min().unwrap_or(0);
+    let x1 = rects.iter().map(|r| r.x + r.w).max().unwrap_or(0).min(cw);
+    let y1 = rects.iter().map(|r| r.y + r.h).max().unwrap_or(0).min(ch);
+    if x1 <= x0 || y1 <= y0 {
+        return Vec::new();
+    }
+    let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let mut canvas = vec![0u8; w * h * 4];
+    for rect in rects {
+        let stride = rect.w as usize * 4;
+        for row in 0..rect.h as usize {
+            let y = rect.y as usize + row;
+            if y >= y1 as usize {
+                break;
+            }
+            let cols = (rect.w.min(x1 - rect.x)) as usize;
+            let src = &rect.pixels[row * stride..row * stride + cols * 4];
+            let at = ((y - y0 as usize) * w + (rect.x - x0) as usize) * 4;
+            for (d, s) in canvas[at..at + cols * 4].chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                over(d, s);
+            }
+        }
+    }
+    picture_rects(&canvas, Area { x: x0, y: y0, w: w as u32, h: h as u32 }, &[])
+}
+
+/// `src` over `dst` (RGBA, straight alpha), into `dst`.
+fn over(dst: &mut [u8], src: &[u8]) {
+    let sa = u32::from(src[3]);
+    if sa == 255 || dst[3] == 0 {
+        if sa != 0 {
+            dst.copy_from_slice(src);
+        }
+        return;
+    }
+    if sa == 0 {
+        return;
+    }
+    let da = u32::from(dst[3]);
+    // Alpha out, in 255ths of 255: sa*255 + da*(255-sa).
+    let out = sa * 255 + da * (255 - sa);
+    for c in 0..3 {
+        let v = u32::from(src[c]) * sa * 255 + u32::from(dst[c]) * da * (255 - sa);
+        dst[c] = ((v + out / 2) / out) as u8;
+    }
+    dst[3] = ((out + 127) / 255) as u8;
+}
+
 /// Visible rectangles of a native picture of `part` (channel coordinates), cut to `areas`.
 pub fn picture_rects(rgba: &[u8], part: Area, areas: &[Area]) -> Vec<Rect> {
     let (w, h) = (part.w, part.h);
@@ -231,7 +694,7 @@ pub fn picture_rects(rgba: &[u8], part: Area, areas: &[Area]) -> Vec<Rect> {
     }
     let mut rects: Vec<Rect> = visible_rects(rgba, w, h)
         .into_iter()
-        .map(|(x, y, rw, rh)| Rect { x: x + part.x, y: y + part.y, w: rw, h: rh, pixels: crop(rgba, w, (x, y, rw, rh)) })
+        .map(|(x, y, rw, rh)| Rect { x: x + part.x, y: y + part.y, w: rw, h: rh, pixels: crop(rgba, w, (x, y, rw, rh)).into() })
         .collect();
     if areas.len() > 1 {
         rects = cut_to(rects, areas);
@@ -290,6 +753,25 @@ mod tests {
     }
 
     #[test]
+    fn patches_are_read_and_applied() {
+        // rekord 6: ramka 4x3, jedna łata 2x1 w (1, 1)
+        let mut patch = record(6, 1, 4, 3, &1u32.to_le_bytes());
+        patch.extend([1u32, 1, 2, 1].iter().flat_map(|v| v.to_le_bytes()));
+        patch.extend([7u8; 8]);
+        let reply = read_reply(&mut &patch[..]).unwrap().unwrap();
+        let Kind::Patch(patches) = reply.kind else { panic!("{:?}", reply.kind) };
+        assert_eq!(patches, vec![(Area { x: 1, y: 1, w: 2, h: 1 }, vec![7; 8])]);
+        // obraz 3x2 od (1, 0): łata w drugim wierszu, w dwóch pierwszych pikselach
+        let mut base = (Area { x: 1, y: 0, w: 3, h: 2 }, vec![0u8; 3 * 2 * 4]);
+        apply_patch(&mut base, &patches).unwrap();
+        assert_eq!(&base.1[..12], &[0; 12]);
+        assert_eq!(&base.1[12..20], &[7; 8]);
+        assert_eq!(&base.1[20..24], &[0; 4]);
+        let outside = vec![(Area { x: 0, y: 0, w: 1, h: 1 }, vec![1; 4])];
+        assert!(apply_patch(&mut base, &outside).is_err());
+    }
+
+    #[test]
     fn records_are_read() {
         let mut data = record(1, 3, 1, 1, &[1, 2, 3, 4]);
         data.extend(record(3, 2, 1, 1, &[]));
@@ -310,6 +792,74 @@ mod tests {
         assert_eq!(c.kind, Kind::Region(Area { x: 2, y: 3, w: 1, h: 1 }, vec![9, 9, 9, 9]));
         assert!(read_reply(&mut input).unwrap().is_none());
         assert!(read_reply(&mut &b"XXXX000000000000"[..]).is_err());
+    }
+
+    #[test]
+    fn layers_stack_like_the_output_page() {
+        let names = ["main", "qr", "back", "z05_x", "front", "count", "qr", ""].map(String::from);
+        assert_eq!(stack(names), ["back", "main", "qr", "count", "z05_x", "front"]);
+        assert_eq!((layer_z("z99_top"), layer_z("z100_x"), layer_z("zebra")), (2599, 2500, 2500));
+        let show =
+            r#"{"scenes":[{"name":"Belka","layer":"main"},{"name":"Ticker","layer":"back"},{"name":"QR","layer":"qr"},{"name":"Bez"}]}"#;
+        assert_eq!(show_layers(show).unwrap(), ["back", "main", "qr"]);
+        assert_eq!(show_layers(r#"{"scenes":{"a":{"layer":"front"},"b":{"layer":"back"}}}"#).unwrap(), ["back", "front"]);
+        assert!(show_layers(r#"{"pages":[]}"#).is_err());
+        let state = r#"OK {"layers":[{"layer":"back","page":{"id":"t"}},{"layer":"qr","page":{"id":"q"}}]}"#;
+        assert_eq!(state_layers(state), ["back", "qr"]);
+        assert!(state_layers("ERR no").is_empty());
+        assert_eq!(layer_url("http://v:8088/output?token=a", "main"), "http://v:8088/output?token=a&layers=main");
+        assert_eq!(layer_url("http://v:8088/output", "a b,c"), "http://v:8088/output?layers=a%20b%2Cc");
+    }
+
+    fn solid(x: u32, y: u32, w: u32, h: u32, px: [u8; 4]) -> Rect {
+        Rect { x, y, w, h, pixels: px.repeat((w * h) as usize).into() }
+    }
+
+    fn pixel(rects: &[Rect], x: u32, y: u32) -> [u8; 4] {
+        rects.iter().find(|r| x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h).map_or([0; 4], |r| {
+            let at = (((y - r.y) * r.w + x - r.x) * 4) as usize;
+            [r.pixels[at], r.pixels[at + 1], r.pixels[at + 2], r.pixels[at + 3]]
+        })
+    }
+
+    #[test]
+    fn layers_compose_over_one_another() {
+        let mut d = [10, 20, 30, 255];
+        over(&mut d, &[200, 100, 0, 255]);
+        assert_eq!(d, [200, 100, 0, 255], "opaque over anything");
+        let mut d = [0, 0, 0, 0];
+        over(&mut d, &[200, 100, 0, 128]);
+        assert_eq!(d, [200, 100, 0, 128], "over nothing: itself");
+        let mut d = [0, 0, 255, 255];
+        over(&mut d, &[255, 0, 0, 128]);
+        assert_eq!(d, [128, 0, 127, 255], "half red over blue");
+        let mut d = [0, 0, 255, 128];
+        over(&mut d, &[255, 0, 0, 128]);
+        assert_eq!(d, [170, 0, 85, 192], "half over half");
+
+        // A ticker (bottom) and a logo far from it: the rectangles as they are, the same pixels.
+        let ticker = [solid(0, 100, 320, 20, [0, 0, 255, 255])];
+        let logo = [solid(280, 10, 30, 30, [255, 255, 255, 255])];
+        let mut blends = Blends::new();
+        let out = compose(&[&ticker, &logo], (320, 180), &mut blends);
+        assert_eq!(out.len(), 2);
+        assert!(Arc::ptr_eq(&out[0].pixels, &ticker[0].pixels) && Arc::ptr_eq(&out[1].pixels, &logo[0].pixels));
+        assert!(blends.is_empty());
+        // A half-transparent bar over the ticker: blended where they meet, the top layer on top.
+        let bar = [solid(100, 90, 50, 20, [255, 0, 0, 128])];
+        let out = compose(&[&ticker, &logo, &bar], (320, 180), &mut blends);
+        assert_eq!(pixel(&out, 120, 105), [128, 0, 127, 255], "bar over ticker");
+        assert_eq!(pixel(&out, 120, 95), [255, 0, 0, 128], "bar alone");
+        assert_eq!(pixel(&out, 10, 110), [0, 0, 255, 255], "ticker alone");
+        assert_eq!(pixel(&out, 290, 20), [255, 255, 255, 255], "logo untouched");
+        assert_eq!(blends.len(), 1);
+        // The same pixels again: the blend is kept, not made anew.
+        let again = compose(&[&ticker, &logo, &bar], (320, 180), &mut blends);
+        let blended =
+            |rects: &[Rect]| rects.iter().find(|r| r.y <= 105 && r.y + r.h > 105 && r.x <= 120 && r.x + r.w > 120).cloned().unwrap();
+        assert!(Arc::ptr_eq(&blended(&out).pixels, &blended(&again).pixels));
+        // One layer: as it is.
+        assert_eq!(compose(&[&ticker], (320, 180), &mut blends).len(), 1);
     }
 
     #[test]

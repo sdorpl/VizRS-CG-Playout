@@ -93,6 +93,10 @@ pub struct Config {
     pub etv_config: String,
     /// ErsatzTV's address, e.g. `http://ersatztv:8409`.
     pub etv_url: String,
+    /// The overlay's encoder settings from the environment (`VIZRS_FFMPEG_PRESET`,
+    /// `VIZRS_FFMPEG_X264_PARAMS`, `VIZRS_FFMPEG_NVENC_BF`, the same `.env` as the
+    /// ErsatzTV service): only the first filling of `encoder.json`, which VizRS Live edits.
+    pub ffmpeg_encoder: crate::encoder::Encoder,
     /// The ErsatzTV programs in the image, and the volume they go to; "" = not installed.
     pub client_source: String,
     pub client_dir: String,
@@ -135,6 +139,9 @@ pub struct Config {
     pub renderer: String,
     /// The native renderer program; "" = `vizrs-render` next to the sidecar or on `PATH`.
     pub renderer_bin: String,
+    /// One native renderer process per VizRS layer of the show (the layers draw in
+    /// parallel, a standing layer costs nothing); false = one process for all.
+    pub native_layers: bool,
     /// Shared secret of the live ingest listeners (`vizrs-ffmpeg vizrs-ingest`,
     /// `POST /ingest`); "" = live ingest off.
     pub ingest_token: String,
@@ -153,8 +160,12 @@ pub struct Config {
     pub live_shows: Vec<LiveShow>,
     /// Token of the live API (`/api/live/*`, for VizRS Live); "" = API off.
     pub panel_token: String,
+    /// Where alarms of the as-run log go (K17): `POST {kind, channel, text, t}`; "" = nowhere.
+    pub alert_webhook: String,
     pub browser: String,
     pub no_sandbox: bool,
+    /// Chromium draws on the GPU (EGL) instead of `--disable-gpu`; needs a card in the container.
+    pub browser_gpu: bool,
     /// Extra Chromium flags, e.g. fewer raster threads on small ARM hosts.
     pub browser_args: Vec<String>,
     /// Wait after an item's stop before its gap counts as an ad (tests only).
@@ -174,6 +185,7 @@ impl Default for Config {
             channels: Vec::new(),
             channel_buses: false,
             etv_config: String::new(),
+            ffmpeg_encoder: crate::encoder::Encoder::default(),
             etv_url: String::new(),
             client_source: String::new(),
             client_dir: String::new(),
@@ -195,6 +207,7 @@ impl Default for Config {
             tape: false,
             renderer: "auto".into(),
             renderer_bin: String::new(),
+            native_layers: true,
             ingest_token: String::new(),
             ingest_anytime: true,
             ingest_listeners: String::new(),
@@ -203,8 +216,10 @@ impl Default for Config {
             ingest_srt_port: None,
             live_shows: Vec::new(),
             panel_token: String::new(),
+            alert_webhook: String::new(),
             browser: String::new(),
             no_sandbox: false,
+            browser_gpu: false,
             browser_args: Vec::new(),
             gap_grace_ms: None,
         }
@@ -406,14 +421,17 @@ impl Config {
                     "tape" => config.tape = boolean(value, key)?,
                     "renderer" => config.renderer = string(value, key)?,
                     "renderer_bin" => config.renderer_bin = string(value, key)?,
+                    "native_layers" => config.native_layers = boolean(value, key)?,
                     "ingest_token" => config.ingest_token = string(value, key)?,
                     "ingest_anytime" => config.ingest_anytime = boolean(value, key)?,
                     "ingest" => config.ingest_listeners = string(value, key)?,
                     "ingest_public" => config.ingest_public = string(value, key)?.trim().to_owned(),
                     "live_shows" => config.live_shows = live_shows(value)?,
                     "panel_token" => config.panel_token = string(value, key)?.trim().to_owned(),
+                    "alert_webhook" => config.alert_webhook = string(value, key)?.trim().to_owned(),
                     "browser" => config.browser = string(value, key)?,
                     "no_sandbox" => config.no_sandbox = boolean(value, key)?,
+                    "browser_gpu" => config.browser_gpu = boolean(value, key)?,
                     "browser_args" => {
                         let items = value.as_array().ok_or("browser_args: expected an array of strings")?;
                         config.browser_args = items.iter().map(|v| string(v, "browser_args")).collect::<Result<_, _>>()?;
@@ -456,6 +474,15 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_ETV_CONFIG") {
             config.etv_config = v;
+        }
+        if let Some(v) = env("VIZRS_FFMPEG_PRESET") {
+            config.ffmpeg_encoder.preset = v.trim().to_owned();
+        }
+        if let Some(v) = env("VIZRS_FFMPEG_X264_PARAMS") {
+            config.ffmpeg_encoder.x264_params = v.trim().to_owned();
+        }
+        if let Some(v) = env("VIZRS_FFMPEG_NVENC_BF") {
+            config.ffmpeg_encoder.bframes = v.trim().to_owned();
         }
         if let Some(v) = env("VIZRS_ETV_URL") {
             config.etv_url = v.trim_end_matches('/').to_owned();
@@ -536,6 +563,9 @@ impl Config {
         if let Some(v) = env("VIZRS_RENDERER").filter(|v| !v.is_empty()) {
             config.renderer = v;
         }
+        if let Some(v) = env("VIZRS_NATIVE_LAYERS").filter(|v| !v.is_empty()) {
+            config.native_layers = v != "0";
+        }
         if let Some(v) = env("VIZRS_RENDERER_BIN").filter(|v| !v.is_empty()) {
             config.renderer_bin = v;
         }
@@ -567,11 +597,17 @@ impl Config {
         if let Some(v) = env("VIZRS_PANEL_TOKEN") {
             config.panel_token = v.trim().to_owned();
         }
+        if let Some(v) = env("VIZRS_ALERT_WEBHOOK") {
+            config.alert_webhook = v.trim().to_owned();
+        }
         if let Some(v) = env("VIZRS_BROWSER").filter(|v| !v.is_empty()) {
             config.browser = v;
         }
         if env("VIZRS_BROWSER_NO_SANDBOX").as_deref() == Some("1") {
             config.no_sandbox = true;
+        }
+        if let Some(v) = env("VIZRS_BROWSER_GPU").filter(|v| !v.is_empty()) {
+            config.browser_gpu = v == "1";
         }
         if let Some(v) = env("VIZRS_BROWSER_ARGS").filter(|v| !v.is_empty()) {
             config.browser_args = v.split_whitespace().map(str::to_owned).collect();
@@ -805,6 +841,15 @@ mod tests {
     }
 
     #[test]
+    fn browser_gpu() {
+        assert!(!Config::default().browser_gpu);
+        let file = json::parse(r#"{"browser_gpu":true}"#).unwrap();
+        assert!(Config::from_values(Some(&file), &env(&[])).unwrap().0.browser_gpu);
+        assert!(!Config::from_values(Some(&file), &env(&[("VIZRS_BROWSER_GPU", "0")])).unwrap().0.browser_gpu);
+        assert!(Config::from_values(None, &env(&[("VIZRS_BROWSER_GPU", "1")])).unwrap().0.browser_gpu);
+    }
+
+    #[test]
     fn tape() {
         assert!(!Config::default().tape);
         let file = json::parse(r#"{"tape":true}"#).unwrap();
@@ -822,6 +867,15 @@ mod tests {
         assert!(warnings.is_empty());
         let (config, _) = Config::from_values(Some(&file), &env(&[("VIZRS_RENDERER", "native"), ("VIZRS_RENDERER_BIN", "/x")])).unwrap();
         assert_eq!((config.renderer.as_str(), config.renderer_bin.as_str()), ("native", "/x"));
+    }
+
+    #[test]
+    fn native_layers() {
+        assert!(Config::default().native_layers);
+        let file = json::parse(r#"{"native_layers":false}"#).unwrap();
+        assert!(!Config::from_values(Some(&file), &env(&[])).unwrap().0.native_layers);
+        assert!(Config::from_values(Some(&file), &env(&[("VIZRS_NATIVE_LAYERS", "1")])).unwrap().0.native_layers);
+        assert!(!Config::from_values(None, &env(&[("VIZRS_NATIVE_LAYERS", "0")])).unwrap().0.native_layers);
     }
 
     #[test]

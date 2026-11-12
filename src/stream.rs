@@ -24,6 +24,15 @@ pub const SAMPLE_DELAY: Duration = Duration::from_millis(100);
 /// An ETV reader this far behind the timeline (a stalled transcode) skips
 /// ahead; the ffmpeg overlay instead takes the frames it missed at once.
 const LATE: Duration = Duration::from_secs(1);
+/// How late the ffmpeg overlay may read a raw frame and still get the picture
+/// of its moment: its pipeline (media start, GPU, 3 s of `loudnorm` lookahead,
+/// queues) reads a piece's frames up to 10–14 s after their moment at the
+/// start of a piece (measured: Quadro P400, 1080p50, two areas), 16–21 s
+/// when `-readrate` kept the channel ~8 s behind the schedule; synced in RAM
+/// without it (`VIZRS_FFMPEG_SYNC_RAM`) a few seconds. Later than the history
+/// reaches, the graphics have to jump ahead. A second of a crawl in the
+/// history is about 5 MB.
+const RAW_LATE: Duration = Duration::from_secs(12);
 /// Raw frames later than the history reaches take their pictures this far
 /// inside it, so the reader's small delays do not reach its edge.
 const HEADROOM: Duration = Duration::from_millis(300);
@@ -39,25 +48,92 @@ pub fn air_is_timeline(air_ms: f64, now_ms: f64, lead_s: f64) -> bool {
     air_ms <= now_ms + (lead_s + EARLY.as_secs_f64()) * 1000.0 && air_ms + WRONG.as_secs_f64() * 1000.0 >= now_ms
 }
 
+/// Seconds of a new raw frame stream ready at once: the lead plus how far its
+/// air time is behind now (the frames missed come at once). A reader that
+/// starts no further ahead than this never waits for the graphics (the
+/// overlay's `-readrate_initial_burst`, PLAN-p400).
+pub fn graphics_ahead(air_ms: Option<f64>, now_ms: f64, lead_s: f64) -> f64 {
+    let lead_s = lead_s.max(0.0);
+    let behind = air_ms.filter(|&air| air_is_timeline(air, now_ms, lead_s)).map_or(0.0, |air| (now_ms - air) / 1000.0);
+    (lead_s + behind).max(0.0)
+}
+
 /// How far back the streams of `lead_seconds` take pictures.
 pub fn history(lead_seconds: f64) -> Duration {
-    Duration::from_secs_f64(lead_seconds.max(0.0)) + SAMPLE_DELAY + LATE + Duration::from_millis(500)
+    Duration::from_secs_f64(lead_seconds.max(0.0)) + SAMPLE_DELAY + LATE.max(RAW_LATE) + Duration::from_millis(500)
 }
 
 /// The moment whose picture a raw output frame takes: its own moment `at`
 /// plus `shift`. A reader later than the history (a slow seek) must not take
 /// "the oldest picture" when it reads, as ffmpeg reads a few frames at once:
 /// that repeats pictures and jumps. The shift grows once to bring the frames
-/// into the history, so the pictures still follow one another, and shrinks
-/// when the reader catches up; a picture never comes from the future.
+/// into the history, so the pictures still follow one another. It never
+/// shrinks: a reader catching up waits for the pictures instead (the stream
+/// sends a frame once its picture is drawn), so every output frame moves the
+/// graphics on by one frame – shrinking it held one picture for seconds.
 fn picture_moment(at: Instant, shift: &mut Duration, oldest: Instant, newest: Instant) -> Instant {
     let shown = at + *shift;
     if shown < oldest {
         *shift += oldest - shown + HEADROOM;
-    } else if shown > newest {
-        *shift = shift.saturating_sub(shown - newest);
     }
-    at + *shift
+    (at + *shift).min(newest)
+}
+
+/// The graphics timeline of one channel's raw streams, from one run of the
+/// ffmpeg overlay to the next: where frame 0 of a run takes its picture,
+/// relative to the run's air time (seconds, signed). ErsatzTV transcodes an
+/// item in 44 s pieces, each starting on the air time where the one before
+/// ended – but often seconds off the clock (late after a slow start, or
+/// further than the air time is trusted). A run placing itself by the clock
+/// instead showed the graphics of up to seconds before or after: a jump at
+/// every piece. Carried, the pictures follow one another across the pieces.
+#[derive(Default)]
+pub struct Carry(Mutex<Option<(f64, Instant)>>);
+
+/// A timeline older than this is not carried: the channel stood (no viewers).
+const CARRY_FOR: Duration = Duration::from_secs(10);
+
+impl Carry {
+    fn take(&self) -> Option<f64> {
+        match *self.0.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some((offset, at)) if at.elapsed() < CARRY_FOR => Some(offset),
+            _ => None,
+        }
+    }
+
+    fn keep(&self, offset: f64) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((offset, Instant::now()));
+    }
+}
+
+/// Seconds of a new raw stream ready at once when it goes on with the
+/// channel's timeline (`carry`): every picture drawn since its frame 0's
+/// moment, at most what the history holds. `None`: a new timeline
+/// (`graphics_ahead`). The overlay's media starts that far ahead
+/// (`-readrate_initial_burst`), so a piece makes up a slow start and the
+/// channel keeps to the clock.
+pub fn carried_ahead(carry: &Carry, air_ms: f64, now_ms: f64, lead_s: f64) -> Option<f64> {
+    let offset = carry.take()?;
+    let lead_s = lead_s.max(0.0);
+    let start = air_ms / 1000.0 + offset;
+    // As the stream: no timeline whose first picture is not drawn yet.
+    if start > now_ms / 1000.0 + lead_s + 0.5 {
+        return None;
+    }
+    let first = start - lead_s - SAMPLE_DELAY.as_secs_f64();
+    let held = lead_s + (RAW_LATE.saturating_sub(HEADROOM)).as_secs_f64();
+    Some((now_ms / 1000.0 - first).clamp(0.0, held))
+}
+
+/// `a - b` in seconds, signed.
+fn seconds_between(a: Instant, b: Instant) -> f64 {
+    a.checked_duration_since(b).map_or_else(|| -b.duration_since(a).as_secs_f64(), |d| d.as_secs_f64())
+}
+
+/// `at` moved by `seconds`, signed.
+fn moved(at: Instant, seconds: f64) -> Instant {
+    let by = Duration::from_secs_f64(seconds.abs());
+    if seconds >= 0.0 { at.checked_add(by) } else { at.checked_sub(by) }.unwrap_or(at)
 }
 
 /// Pause, resume and end of a stream from other threads.
@@ -114,8 +190,9 @@ pub enum Format {
     Packets,
     /// Raw yuva420p of `layout` (the channel, its graphics area, or its areas
     /// stacked): every output frame carries all of it. `hd` = BT.709 (the
-    /// channel has 720 lines or more).
-    Yuva { layout: Layout, hd: bool },
+    /// channel has 720 lines or more). `delta`: each frame as a record of
+    /// the rows changed since the one before (src/delta.rs).
+    Yuva { layout: Layout, hd: bool, delta: bool },
 }
 
 pub struct Options {
@@ -139,12 +216,74 @@ fn instant_of(epoch_ms: f64) -> Option<Instant> {
 /// the air time of frame 0, or the start of the stream. A resumed stream
 /// without air time starts its timeline (and lead) again from the frames sent.
 pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options, control: &Control) -> u64 {
+    stream_watched(source, out, options, control, &mut |_| false)
+}
+
+/// What a watched stream does with a new picture before it goes out.
+/// `true` = hold the stream: this picture and those after it wait (at most
+/// `HOLD_MAX`) for the reader to hang up – a run of the ffmpeg overlay whose
+/// zones the picture leaves (PLAN-strefy S3b) stops before a frame cut off.
+pub type Watch<'a> = dyn FnMut(&Picture) -> bool + 'a;
+
+/// A held stream goes on after this long anyway (the reader did not hang up).
+pub const HOLD_MAX: Duration = Duration::from_secs(3);
+
+/// A stream starting just as a paused capture resumes waits this long at most
+/// for its first new picture, rather than send the lead from before the pause.
+const READY_WAIT: Duration = Duration::from_millis(1500);
+
+/// `stream_frames` with every new picture shown to `watch` before it goes out;
+/// only raw frames can be held.
+pub fn stream_watched(source: &dyn Source, out: &mut dyn Write, options: &Options, control: &Control, watch: &mut Watch) -> u64 {
+    stream_carried(source, out, options, control, watch, None)
+}
+
+/// `stream_watched` whose raw frames go on from the shift of the channel's
+/// run before (`carry`, only with an air time: the runs share its timeline).
+pub fn stream_carried(
+    source: &dyn Source,
+    out: &mut dyn Write,
+    options: &Options,
+    control: &Control,
+    watch: &mut Watch,
+    carry: Option<&Carry>,
+) -> u64 {
+    let waiting = Instant::now();
+    while !source.ready() && !control.is_closed() && waiting.elapsed() < READY_WAIT {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let frame_s = 1.0 / options.fps;
     let lead = (options.lead_seconds * options.fps).round().max(0.0) as u64;
     let lead_s = lead as f64 * frame_s;
     let now = Instant::now();
+    let raw = matches!(options.format, Format::Yuva { .. });
+    // The air time as given, trusted or not: the channel's timeline (`carry`) is relative to it.
+    let given = options.air.and_then(instant_of).filter(|_| raw);
+    let carry = carry.filter(|_| given.is_some());
+    // Not a timeline whose first picture is not drawn yet (a jump in the schedule): the reader would wait for it.
+    let carried =
+        carry.and_then(Carry::take).filter(|&offset| given.is_some_and(|given| seconds_between(moved(given, offset), now) <= lead_s + 0.5));
     let air = options.air.filter(|&air| air_is_timeline(air, crate::time::now_ms() as f64, lead_s)).and_then(instant_of);
-    let mut base = air.unwrap_or(now);
+    let mut base = match (given, carried) {
+        // The run before ended where this one starts: on with its timeline.
+        (Some(given), Some(offset)) => moved(given, offset),
+        _ => air.unwrap_or(now),
+    };
+    // The timeline is the air time's or the carried one; without them it starts again after a pause.
+    let anchored = air.is_some() || carried.is_some();
+    if raw {
+        crate::info!(
+            "graphics stream: frame 0 on air {:+.3} s from now ({})",
+            seconds_between(base, now),
+            match (carried, air) {
+                (Some(_), _) => "the channel's timeline, from the run before",
+                (None, Some(_)) => "air time",
+                (None, None) => "no air time: from now",
+            }
+        );
+    }
+    // Where the timeline lies against the given air time, for the next run.
+    let place = |base: Instant, shift: Duration| given.map(|given| seconds_between(base + shift, given));
     let mut sent: u64 = 0;
     let mut sent_seq: Option<u64> = None;
     // Raw frames: the picture shown, held while it lasts so its PNG is decoded
@@ -152,8 +291,24 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
     // The yuva420p frame goes with it: a standing graphic (pictures sharing
     // their pixels) is converted once, not 50 times a second.
     let mut held: Option<(u64, Arc<Picture>, Arc<crate::yuva::Yuva>)> = None;
+    // Raw frames: each one from the frame before, converting only what changed.
+    let mut builder = match &options.format {
+        Format::Yuva { layout, hd, .. } => Some(crate::yuva::Builder::new(layout, *hd)),
+        Format::Packets => None,
+    };
     // Raw frames: how far after its moment an output frame takes its picture.
     let mut shift = Duration::ZERO;
+    let keep = |base: Instant, shift: Duration| {
+        if let (Some(carry), Some(offset)) = (carry, place(base, shift)) {
+            carry.keep(offset);
+        }
+    };
+    // Delta frames: the frame sent last, and its size.
+    let (delta, size) = match &options.format {
+        Format::Yuva { layout, delta, .. } => (*delta, (layout.width, layout.height)),
+        Format::Packets => (false, (0, 0)),
+    };
+    let mut last: Option<Arc<crate::yuva::Yuva>> = None;
 
     // Moment of output frame `n` (signed: the lead's frames are before `base`).
     let moment = |base: Instant, n: u64| {
@@ -168,11 +323,11 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
     let frame_at = |base: Instant, n: u64| source.frame_at(moment(base, n));
     // Graphics off the air (VizRS Live): transparent frames, whatever the source has.
     let off = crate::frames::graphics_off;
-    let kept = Duration::from_secs_f64(lead_s) + SAMPLE_DELAY + LATE;
+    let kept = Duration::from_secs_f64(lead_s) + SAMPLE_DELAY + if raw { RAW_LATE } else { LATE };
 
     while !control.is_closed() {
         if control.wait_while_paused() {
-            if air.is_none() {
+            if !anchored {
                 base = Instant::now() - Duration::from_secs_f64(sent.saturating_sub(lead) as f64 * frame_s);
             }
             continue;
@@ -189,7 +344,9 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
             base += oldest - moment(base, sent);
         }
 
-        let elapsed = now.checked_duration_since(base).map_or(-base.duration_since(now).as_secs_f64(), |d| d.as_secs_f64());
+        // Raw frames go out once their picture (their moment plus the shift) is drawn.
+        let from = if matches!(options.format, Format::Yuva { .. }) { base + shift } else { base };
+        let elapsed = now.checked_duration_since(from).map_or(-from.duration_since(now).as_secs_f64(), |d| d.as_secs_f64());
         let due = ((elapsed / frame_s).floor() + 1.0 + lead as f64).max(0.0) as u64;
         while sent < due {
             let raw = matches!(options.format, Format::Yuva { .. });
@@ -198,11 +355,22 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
             } else if raw {
                 let now = Instant::now();
                 let (oldest, newest) = (now.checked_sub(kept).unwrap_or(now), now.checked_sub(SAMPLE_DELAY).unwrap_or(now));
-                source.frame_at(picture_moment(moment(base, sent), &mut shift, oldest, newest))
+                let before = shift;
+                let at = picture_moment(moment(base, sent), &mut shift, oldest, newest);
+                if shift != before {
+                    // The reader is later than the history: the graphics jump ahead (rare: a stalled transcode).
+                    crate::warn!(
+                        "graphics stream: frame {sent} read {:.1} s late; the graphics jump {:.2} s ahead",
+                        (now.saturating_duration_since(moment(base, sent) + before)).as_secs_f64(),
+                        (shift - before).as_secs_f64()
+                    );
+                    keep(base, shift);
+                }
+                source.frame_at(at)
             } else {
                 frame_at(base, sent)
             };
-            let written = if let Format::Yuva { layout, hd } = &options.format {
+            let written = if let Some(builder) = builder.as_mut() {
                 sent += 1;
                 let yuva = match &held {
                     Some((seq, _, yuva)) if *seq == frame.seq => Arc::clone(yuva),
@@ -210,16 +378,32 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
                         let picture = frame.picture();
                         let yuva = match &held {
                             Some((_, same, yuva)) if Arc::ptr_eq(same, &picture) => Arc::clone(yuva),
-                            _ => picture.yuva(layout, *hd),
+                            _ => {
+                                if watch(&picture) && hold(control) {
+                                    keep(base, shift);
+                                    return sent - 1;
+                                }
+                                builder.build(&picture.rects)
+                            }
                         };
                         Arc::clone(&held.insert((frame.seq, picture, yuva)).2)
                     }
                 };
-                out.write_all(&yuva)
+                if !delta {
+                    out.write_all(&yuva)
+                } else if last.as_ref().is_some_and(|l| Arc::ptr_eq(l, &yuva)) {
+                    out.write_all(&crate::delta::UNCHANGED)
+                } else {
+                    let written = crate::delta::write_record(out, last.as_deref().map(|l| &l[..]), &yuva, size.0, size.1);
+                    last = Some(yuva);
+                    written
+                }
             } else if sent_seq != Some(frame.seq) {
                 sent_seq = Some(frame.seq);
                 sent += 1;
-                out.write_all(frame.picture().packet())
+                let picture = frame.picture();
+                watch(&picture);
+                out.write_all(picture.packet())
             } else {
                 let mut frames = 1;
                 while sent + frames < due && frame_at(base, sent + frames).seq == frame.seq {
@@ -230,12 +414,24 @@ pub fn stream_frames(source: &dyn Source, out: &mut dyn Write, options: &Options
             };
             if written.and_then(|()| out.flush()).is_err() {
                 control.close();
+                keep(base, shift);
                 return sent;
             }
         }
+        keep(base, shift);
         std::thread::sleep(TICK);
     }
+    keep(base, shift);
     sent
+}
+
+/// Holds a stream until its reader hangs up (true) or for `HOLD_MAX` (false).
+fn hold(control: &Control) -> bool {
+    let until = Instant::now() + HOLD_MAX;
+    while !control.is_closed() && Instant::now() < until {
+        std::thread::sleep(TICK);
+    }
+    control.is_closed()
 }
 
 #[cfg(test)]
@@ -245,6 +441,20 @@ mod tests {
     use crate::packets::Rect;
 
     const PACKETS: Format = Format::Packets;
+
+    #[test]
+    fn graphics_ahead_is_the_lead_plus_the_air_time_missed() {
+        let now = 1_000_000.0;
+        // 3 s behind the air time: the lead and those 3 s at once.
+        assert_eq!(graphics_ahead(Some(now - 3000.0), now, 4.0), 7.0);
+        // Ahead of the air time (ErsatzTV early): less than the lead.
+        assert_eq!(graphics_ahead(Some(now + 1000.0), now, 4.0), 3.0);
+        // No air time, or a wrong clock: the timeline starts now.
+        assert_eq!(graphics_ahead(None, now, 4.0), 4.0);
+        assert_eq!(graphics_ahead(Some(now - 60_000.0), now, 4.0), 4.0);
+        assert_eq!(graphics_ahead(Some(now + 60_000.0), now, 4.0), 4.0);
+        assert_eq!(graphics_ahead(None, now, -1.0), 0.0);
+    }
 
     #[test]
     fn lead_frames_at_once_then_paced() {
@@ -281,6 +491,49 @@ mod tests {
         assert_eq!(sent, 6);
     }
 
+    /// Right after a paused capture resumes, the lead waits for the first new
+    /// picture instead of going out with the pictures from before the pause.
+    #[test]
+    fn the_lead_waits_for_a_resumed_capture() {
+        let history = Arc::new(crate::frames::History::new(Duration::from_secs(2)));
+        history.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![1, 1, 1, 255].into() }], Instant::now());
+        history.restart();
+        let control = Control::new(false);
+        let (closer, drawer) = (Arc::clone(&control), Arc::clone(&history));
+        let timer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            drawer.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![2, 2, 2, 255].into() }], Instant::now());
+            std::thread::sleep(Duration::from_millis(20));
+            closer.close();
+        });
+        let mut out = Vec::new();
+        let options = Options {
+            fps: 25.0,
+            lead_seconds: 0.2,
+            format: Format::Yuva { layout: Layout::whole(1, 1), hd: false, delta: false },
+            air: None,
+        };
+        let sent = stream_frames(history.as_ref(), &mut out, &options, &control);
+        timer.join().unwrap();
+        assert!(sent >= 5, "sent {sent}");
+        let frame = out.len() / sent as usize;
+        // Every frame of the lead shows the new picture, none the old one.
+        let first = out[..frame].to_vec();
+        assert!(out.chunks(frame).all(|f| f == first.as_slice()));
+        let mut old = Vec::new();
+        let stale = crate::frames::History::new(Duration::from_secs(2));
+        stale.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![1, 1, 1, 255].into() }], Instant::now());
+        let control = Control::new(false);
+        let closer = Arc::clone(&control);
+        let timer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            closer.close();
+        });
+        stream_frames(&stale, &mut old, &options, &control);
+        timer.join().unwrap();
+        assert_ne!(&old[..frame], first.as_slice(), "the old picture differs from the new one");
+    }
+
     #[test]
     fn raw_stream_writes_the_whole_picture_on_every_output_frame() {
         struct Fixed(Arc<Frame>);
@@ -289,7 +542,8 @@ mod tests {
                 Arc::clone(&self.0)
             }
         }
-        let history = Fixed(Arc::new(Frame::new(1, vec![Rect { x: 1, y: 0, w: 1, h: 1, pixels: vec![0, 0, 255, 255] }], Instant::now())));
+        let history =
+            Fixed(Arc::new(Frame::new(1, vec![Rect { x: 1, y: 0, w: 1, h: 1, pixels: vec![0, 0, 255, 255].into() }], Instant::now())));
         let control = Control::new(false);
         let closer = Arc::clone(&control);
         let timer = std::thread::spawn(move || {
@@ -300,13 +554,65 @@ mod tests {
         let sent = stream_frames(
             &history,
             &mut out,
-            &Options { fps: 25.0, lead_seconds: 0.2, format: Format::Yuva { layout: Layout::whole(4, 2), hd: false }, air: None },
+            &Options {
+                fps: 25.0,
+                lead_seconds: 0.2,
+                format: Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false },
+                air: None,
+            },
             &control,
         );
         timer.join().unwrap();
         assert_eq!(sent, 6);
         assert_eq!(out.len(), 6 * 20);
         assert!(out.chunks(20).all(|frame| frame[12 + 1] == 255));
+    }
+
+    /// A picture the watch holds never goes out: the stream waits for its
+    /// reader to hang up (a run of the overlay stopped for wider zones).
+    #[test]
+    fn a_watched_raw_stream_holds_before_a_picture_and_ends_with_its_reader() {
+        struct Two(Instant);
+        impl Source for Two {
+            fn frame_at(&self, at: Instant) -> Arc<Frame> {
+                // the first picture, then another one (a graphic coming up)
+                let late = at >= self.0 + Duration::from_millis(60);
+                let alpha = if late { 255 } else { 0 };
+                Arc::new(Frame::new(u64::from(late), vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![0, 0, 0, alpha].into() }], self.0))
+            }
+        }
+        let control = Control::new(false);
+        let closer = Arc::clone(&control);
+        let timer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            closer.close();
+        });
+        let mut out = Vec::new();
+        let mut seen = 0;
+        let started = Instant::now();
+        // the graphic is in the pictures of output frame 2 on (frames 40 ms apart, looking 100 ms back)
+        let sent = stream_watched(
+            &Two(started.checked_sub(SAMPLE_DELAY).unwrap() + Duration::from_millis(60)),
+            &mut out,
+            &Options {
+                fps: 25.0,
+                lead_seconds: 0.0,
+                format: Format::Yuva { layout: Layout::whole(2, 2), hd: false, delta: false },
+                air: None,
+            },
+            &control,
+            &mut |picture| {
+                seen += 1;
+                picture.rects[0].pixels[3] == 255
+            },
+        );
+        timer.join().unwrap();
+        // frames of the first picture only, none with the graphic (alpha plane at 6), then held to the end
+        assert_eq!(seen, 2);
+        assert_eq!(sent as usize * 10, out.len());
+        assert!((1..=3).contains(&sent), "sent {sent}");
+        assert!(out.chunks(10).all(|frame| frame[6] == 0), "a frame of the held picture went out");
+        assert!(started.elapsed() >= Duration::from_millis(300));
     }
 
     /// The overlay's ffmpeg behind the timeline gets every frame it missed at
@@ -321,7 +627,7 @@ mod tests {
         });
         let mut out = Vec::new();
         let late = crate::time::now_ms() as f64 - 5000.0;
-        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false };
+        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false };
         let sent = stream_frames(&past_pictures(), &mut out, &Options { fps: 10.0, lead_seconds: 0.8, format, air: Some(late) }, &control);
         timer.join().unwrap();
         // 5 s behind plus the 0.8 s lead, against 19 frames for an ETV reader.
@@ -337,7 +643,7 @@ mod tests {
         let counter = Arc::clone(&decodes);
         let decode: Arc<Decode> = Arc::new(move |_, _: &Shot| {
             counter.fetch_add(1, Ordering::Relaxed);
-            Ok(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4] }])
+            Ok(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4].into() }])
         });
         let history = History::new(Duration::from_secs(5));
         history.set_png(vec![1], Instant::now() - Duration::from_secs(2), &decode);
@@ -348,7 +654,7 @@ mod tests {
             closer.close();
         });
         let mut out = Vec::new();
-        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false };
+        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false };
         let sent = stream_frames(&history, &mut out, &Options { fps: 25.0, lead_seconds: 0.2, format, air: None }, &control);
         timer.join().unwrap();
         assert!(sent >= 8, "sent {sent}");
@@ -379,7 +685,7 @@ mod tests {
                 }
                 while pending.first().is_some_and(|p| p.2 <= now) {
                     let (at, value, _) = pending.remove(0);
-                    feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4] }], at);
+                    feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4].into() }], at);
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -409,11 +715,80 @@ mod tests {
         assert_eq!(picture_moment(late, &mut shift, oldest, newest), t0 + HEADROOM);
         let next = late + Duration::from_millis(40);
         assert_eq!(picture_moment(next, &mut shift, oldest, newest), t0 + HEADROOM + Duration::from_millis(40));
-        // Caught up: the shift goes, no picture from the future.
+        // Caught up: the shift stays (shrinking it held one picture frame after
+        // frame); never a picture from the future – the stream waits for it.
+        let shifted = shift;
         let caught = t0 + Duration::from_secs(5);
         assert_eq!(picture_moment(caught, &mut shift, oldest, newest), newest);
         assert_eq!(picture_moment(newest, &mut shift, oldest, newest), newest);
-        assert_eq!(shift, Duration::ZERO);
+        assert_eq!(shift, shifted);
+    }
+
+    #[test]
+    fn a_carried_timeline_has_its_pictures_ready_at_once() {
+        let now = 1_000_000_000.0;
+        // No timeline before: the lead plus the air time missed (graphics_ahead).
+        assert_eq!(carried_ahead(&Carry::default(), now, now, 4.0), None);
+        let carry = Carry::default();
+        // Frame 0 on air 2 s ago by the channel's timeline: 6.1 s drawn since its moment.
+        carry.keep(-2.0);
+        assert!((carried_ahead(&carry, now, now, 4.0).unwrap() - 6.1).abs() < 1e-6);
+        // Further back than the history: what it holds.
+        carry.keep(-30.0);
+        assert!((carried_ahead(&carry, now, now, 4.0).unwrap() - (4.0 + 12.0 - 0.3)).abs() < 1e-6);
+        // A timeline far ahead (a jump in the schedule): not carried.
+        carry.keep(10.0);
+        assert_eq!(carried_ahead(&carry, now, now, 4.0), None);
+    }
+
+    #[test]
+    fn a_carried_shift_lasts_only_while_the_channel_runs() {
+        let carry = Carry::default();
+        assert_eq!(carry.take(), None);
+        carry.keep(-1.5);
+        assert_eq!(carry.take(), Some(-1.5));
+        *carry.0.lock().unwrap() = Some((-1.5, Instant::now() - CARRY_FOR));
+        assert_eq!(carry.take(), None);
+    }
+
+    /// Two runs of the overlay one after another (44 s pieces), the channel 15 s
+    /// behind its schedule – further than the air time is trusted. The second
+    /// run starts 1 s later on the air timeline: its first frame takes the
+    /// picture 1 s after the first run's, on the timeline the first run had.
+    /// Placed by the clock instead, both took the picture of "now" – a jump.
+    #[test]
+    fn the_next_run_goes_on_on_the_timeline_of_the_run_before() {
+        // A picture per 20 ms over the last 5 s: picture k is 5000 - 20 k ms old.
+        let history = Arc::new(History::new(Duration::from_secs(30)));
+        let t0 = Instant::now();
+        for k in 0..250u8 {
+            let at = t0 - Duration::from_millis(5000 - 20 * u64::from(k));
+            history.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![k, 0, 0, 255].into() }], at);
+        }
+        let first_picture = |carry: &Carry, air: f64| {
+            let source = Recording(Arc::clone(&history), Mutex::new(Vec::new()));
+            let control = Control::new(false);
+            let closer = Arc::clone(&control);
+            let timer = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                closer.close();
+            });
+            let mut out = Vec::new();
+            let format = Format::Yuva { layout: Layout::whole(1, 1), hd: false, delta: false };
+            let options = Options { fps: 50.0, lead_seconds: 3.0, format, air: Some(air) };
+            stream_carried(&source, &mut out, &options, &control, &mut |_| false, Some(carry));
+            timer.join().unwrap();
+            source.1.lock().unwrap()[0]
+        };
+        let air = crate::time::now_ms() as f64 - 15_000.0;
+        let carry = Carry::default();
+        let first = first_picture(&carry, air);
+        assert!(carry.take().is_some_and(|offset| (offset - 15.0).abs() < 0.5), "{:?}", carry.take());
+        let next = first_picture(&carry, air + 1000.0);
+        assert!((48..=52).contains(&(next - first)), "first {first}, next {next}");
+        // Without the run before: by the clock, about where the first run started – 1 s back.
+        let alone = first_picture(&Carry::default(), air + 1000.0);
+        assert!(next > alone + 30, "next {next}, alone {alone}");
     }
 
     /// A source that remembers the pictures it gave.
@@ -467,7 +842,7 @@ mod tests {
             while started.elapsed() < Duration::from_millis(5500) {
                 let at = started + Duration::from_millis(drawn * 40);
                 std::thread::sleep(at.saturating_duration_since(Instant::now()));
-                feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4] }], at);
+                feeder.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![255; 4].into() }], at);
                 drawn += 1;
                 if started.elapsed() >= Duration::from_millis(5000) {
                     closer.close();
@@ -477,7 +852,7 @@ mod tests {
         let source = Recording(Arc::clone(&history), Mutex::new(Vec::new()));
         let frame = Duration::from_millis(40);
         let mut out = Paced { start: Some(Duration::from_millis(2500)), frame, burst: 3, read: 0, next: Instant::now() };
-        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false };
+        let format = Format::Yuva { layout: Layout::whole(4, 2), hd: false, delta: false };
         stream_frames(&source, &mut out, &Options { fps: 25.0, lead_seconds: lead, format, air: None }, &control);
         deliver.join().unwrap();
 
@@ -517,7 +892,10 @@ mod tests {
         let history = History::new(Duration::from_secs(5));
         let now = Instant::now();
         for value in (1..=20u8).rev() {
-            history.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4] }], now - Duration::from_millis(u64::from(value) * 100));
+            history.set(
+                vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4].into() }],
+                now - Duration::from_millis(u64::from(value) * 100),
+            );
         }
         history
     }

@@ -18,14 +18,16 @@ pub enum Type {
     Rectangles = 3,
 }
 
-/// A visible rectangle of RGBA pixels (`w * h * 4` bytes).
+/// A visible rectangle of RGBA pixels (`w * h * 4` bytes). The pixels are
+/// shared: a picture that keeps a rectangle of the one before (a standing
+/// layer) holds the same pixels, and a frame built from the one before skips it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rect {
     pub x: u32,
     pub y: u32,
     pub w: u32,
     pub h: u32,
-    pub pixels: Vec<u8>,
+    pub pixels: std::sync::Arc<[u8]>,
 }
 
 fn header(out: &mut Vec<u8>, kind: Type, length: usize) {

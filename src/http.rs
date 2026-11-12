@@ -224,9 +224,15 @@ pub struct Stream<W: Write> {
 impl<W: Write> Stream<W> {
     /// Sends the head at once (a held session writes nothing at first, the
     /// client must see the reply anyway).
-    pub fn start(mut inner: W, request: &Request) -> io::Result<Stream<W>> {
+    pub fn start(inner: W, request: &Request) -> io::Result<Stream<W>> {
+        Stream::start_with(inner, request, "")
+    }
+
+    /// `start` with more header lines (each ending in CRLF).
+    pub fn start_with(mut inner: W, request: &Request, headers: &str) -> io::Result<Stream<W>> {
         let framing = if request.http10 { "Connection: close" } else { "Transfer-Encoding: chunked" };
-        let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\n{framing}\r\n\r\n");
+        let head =
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\n{headers}{framing}\r\n\r\n");
         inner.write_all(head.as_bytes())?;
         inner.flush()?;
         Ok(Stream { inner, chunked: !request.http10, buffer: Vec::with_capacity(STREAM_BUFFER) })
@@ -246,6 +252,17 @@ impl<W: Write> Write for Stream<W> {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         if self.buffer.len() + data.len() > STREAM_BUFFER {
             self.flush()?;
+        }
+        // A frame of raw graphics (megabytes) goes out as it is, not copied into the buffer first.
+        if data.len() >= STREAM_BUFFER {
+            if self.chunked {
+                self.inner.write_all(format!("{:x}\r\n", data.len()).as_bytes())?;
+                self.inner.write_all(data)?;
+                self.inner.write_all(b"\r\n")?;
+            } else {
+                self.inner.write_all(data)?;
+            }
+            return Ok(data.len());
         }
         self.buffer.extend_from_slice(data);
         Ok(data.len())

@@ -128,7 +128,7 @@ pub fn cut(rect: &Rect, area: Area, (dx, dy): (i64, i64)) -> Option<Rect> {
     }
     let pixels = crop(&rect.pixels, rect.w, (x0 - rect.x, y0 - rect.y, x1 - x0, y1 - y0));
     let (x, y) = (i64::from(x0) + dx, i64::from(y0) + dy);
-    Some(Rect { x: u32::try_from(x).ok()?, y: u32::try_from(y).ok()?, w: x1 - x0, h: y1 - y0, pixels })
+    Some(Rect { x: u32::try_from(x).ok()?, y: u32::try_from(y).ok()?, w: x1 - x0, h: y1 - y0, pixels: pixels.into() })
 }
 
 /// Rectangles cut to `areas` (all of them when there are none).
@@ -224,10 +224,10 @@ mod tests {
 
     #[test]
     fn rectangles_cut_and_stacked() {
-        let rect = Rect { x: 2, y: 2, w: 4, h: 4, pixels: (0..64).collect() };
+        let rect = Rect { x: 2, y: 2, w: 4, h: 4, pixels: (0..64).collect::<Vec<u8>>().into() };
         let cut_rect = cut(&rect, Area { x: 4, y: 0, w: 10, h: 4 }, (0, 0)).unwrap();
         assert_eq!((cut_rect.x, cut_rect.y, cut_rect.w, cut_rect.h), (4, 2, 2, 2));
-        assert_eq!(cut_rect.pixels, [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]);
+        assert_eq!(cut_rect.pixels[..], [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]);
         assert!(cut(&rect, Area { x: 6, y: 0, w: 2, h: 2 }, (0, 0)).is_none());
 
         let atlas = Layout::atlas(&[Area { x: 0, y: 4, w: 8, h: 2 }, Area { x: 4, y: 0, w: 4, h: 4 }]);

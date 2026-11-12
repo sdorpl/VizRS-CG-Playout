@@ -126,6 +126,10 @@ services:
       # auto (native while everything on air is native, Chromium otherwise).
       VIZRS_RENDERER: ${VIZRS_RENDERER:-auto}
       VIZRS_RENDERER_BIN: ${VIZRS_RENDERER_BIN:-}
+      VIZRS_NATIVE_LAYERS: ${VIZRS_NATIVE_LAYERS:-}
+      # 1 = Chromium draws on the GPU (EGL) instead of the CPU; needs the card in this
+      # container (docker-compose.nvidia.yml). Less CPU per frame, some GPU memory.
+      VIZRS_BROWSER_GPU: ${VIZRS_BROWSER_GPU:-}
       # The sidecar installs the ErsatzTV programs and syncs channels and page elements.
       VIZRS_ETV_CONFIG: /etv-config
       VIZRS_ETV_URL: http://ersatztv:8409
@@ -147,6 +151,14 @@ services:
       VIZRS_LIVE_SHOWS: ${VIZRS_LIVE_SHOWS:-}
       # Live API on :7700/api/live for VizRS Live (studio on/off air, live programmes in ErsatzTV); empty = off.
       VIZRS_PANEL_TOKEN: ${VIZRS_PANEL_TOKEN:-}
+      # Only the first filling of the overlay's encoder (vizrs-live/encoder.json): from then
+      # on VizRS Live sets the x264 preset, H.264 profile, x264 options, NVENC/QSV presets
+      # and hardware B-frames (Profile kodowania).
+      VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-}
+      VIZRS_FFMPEG_X264_PARAMS: ${VIZRS_FFMPEG_X264_PARAMS:-}
+      VIZRS_FFMPEG_NVENC_BF: ${VIZRS_FFMPEG_NVENC_BF:-}
+      # Where alarms of the as-run log go (signal lost, studio held, graphics off); empty = nowhere.
+      VIZRS_ALERT_WEBHOOK: ${VIZRS_ALERT_WEBHOOK:-}
     volumes:
       - ersatztv-config:/etv-config
       - vizrs-client:/vizrs-client
@@ -174,8 +186,13 @@ services:
       # Normalize Framerate); empty = the media's rate.
       VIZRS_FFMPEG_FPS: ${VIZRS_FFMPEG_FPS:-}
       # x264/x265 preset added by the overlay, e.g. veryfast; empty = ErsatzTV's
-      # (the next streaming engine passes none: x264 runs at medium).
+      # (the next streaming engine passes none: x264 runs at medium). Only while there is
+      # no /config/vizrs-live/encoder.json: VizRS Live sets the encoder there.
       VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-}
+      # libx264 options added by the overlay, e.g. bframes=0:subme=0 (Ampere, 900p25:
+      # -20% CPU, -1.4 dB SSIM; DOKUMENTACJA §1). Empty = none. Like the preset: only
+      # while there is no encoder.json of VizRS Live.
+      VIZRS_FFMPEG_X264_PARAMS: ${VIZRS_FFMPEG_X264_PARAMS:-}
       # Catch-up rate of the MPEG-TS channel stream (ErsatzTV reads its own HLS at
       # -readrate 1): without it each stall is lost and the stream lags. Empty = none.
       VIZRS_FFMPEG_READRATE_CATCHUP: ${VIZRS_FFMPEG_READRATE_CATCHUP-2}
@@ -191,8 +208,30 @@ services:
       VIZRS_FFMPEG_STANDBY: ${VIZRS_FFMPEG_STANDBY:-}
       # encode = with NVENC only the encoder runs on the card; decoding and filters on
       # the CPU (about half the GPU memory per piece, for a card shared with a desktop).
+      # overlay = decoding on the CPU, scaling and the overlay of the graphics on the card,
+      # frames back to the CPU for the encoder (far less CPU than encode, same GPU memory).
+      # auto = overlay while the card has VIZRS_FFMPEG_CUDA_MIN_FREE MiB free (nvidia-smi
+      # before each piece), encode below: no out-of-memory slate on a card shared with a desktop.
       # Empty = ErsatzTV's command (CUDA decoding and filters with NVENC).
       VIZRS_FFMPEG_CUDA: ${VIZRS_FFMPEG_CUDA:-}
+      # Free GPU memory in MiB that VIZRS_FFMPEG_CUDA=auto needs for overlay (default 400).
+      VIZRS_FFMPEG_CUDA_MIN_FREE: ${VIZRS_FFMPEG_CUDA_MIN_FREE:-}
+      # B-frames of hardware encoders (NVENC, QSV, VAAPI) without their own, e.g. 0: each
+      # B-frame keeps reference frames on the card (1080p50 NVENC: 139 MiB by default,
+      # 79 MiB with 0). Empty = ffmpeg's. Only while encoder.json of VizRS Live has no
+      # B-frames: they are set there.
+      VIZRS_FFMPEG_NVENC_BF: ${VIZRS_FFMPEG_NVENC_BF:-}
+      # 1 = without -shortest where the output ends at -t anyway: with loudnorm it
+      # holds ~3 s of raw video frames (1080p50 ffmpeg 657 MB -> 268 MB). Empty = off.
+      VIZRS_FFMPEG_NO_SHORTEST: ${VIZRS_FFMPEG_NO_SHORTEST:-}
+      # 1 = with VIZRS_FFMPEG_CUDA=overlay (or auto) media frames wait for the graphics in
+      # RAM, not on the card in front of overlay_cuda (loudnorm decodes ~3 s ahead:
+      # P400, 1080p50: 359 -> 111 MiB of GPU memory, ~+430 MB RAM). Empty = off.
+      VIZRS_FFMPEG_SYNC_RAM: ${VIZRS_FFMPEG_SYNC_RAM:-}
+      # 1 = the MPEG-TS channel stream (a copy of the channel's own HLS) keeps the
+      # last frame of each piece: new continuity counters per piece flagged it corrupt
+      # and -fflags +discardcorrupt dropped it (40 ms freeze every 44 s). Empty = off.
+      VIZRS_FFMPEG_NO_DISCARDCORRUPT: ${VIZRS_FFMPEG_NO_DISCARDCORRUPT:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config

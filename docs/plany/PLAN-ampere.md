@@ -63,7 +63,7 @@ miałby do zdobycia najwyżej ok. 0,2 rdzenia.
 
 ## Rezerwa, gdy poprawka nie wystarczy
 
-Wymaga nowej opcji nakładki (parametry x264), bez niej niedostępne.
+Dostępne od 2026-11-12: `VIZRS_FFMPEG_X264_PARAMS` albo panel VizRS Live („Profile kodowania”, DOKUMENTACJA §1 „Opcje x264”).
 
 | Opcje x264 | CPU Warmianin / Gothic | SSIM Warmianin / Gothic |
 |---|---|---|

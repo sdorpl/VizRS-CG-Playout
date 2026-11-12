@@ -68,6 +68,11 @@ pub fn connect(url: &Url) -> io::Result<TcpStream> {
 /// Reads a reply head byte by byte: nothing of the body may stay in a buffer
 /// (the overlay's frame stream socket goes to ffmpeg). Returns the status line.
 pub fn read_head(stream: &mut TcpStream, what: &str) -> io::Result<String> {
+    Ok(read_head_text(stream, what)?.lines().next().unwrap_or("").to_owned())
+}
+
+/// The whole head of a reply (status line and header lines).
+pub fn read_head_text(stream: &mut TcpStream, what: &str) -> io::Result<String> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -76,8 +81,7 @@ pub fn read_head(stream: &mut TcpStream, what: &str) -> io::Result<String> {
         }
         head.push(byte[0]);
     }
-    let text = String::from_utf8_lossy(&head);
-    Ok(text.lines().next().unwrap_or("").to_owned())
+    Ok(String::from_utf8_lossy(&head).into_owned())
 }
 
 /// `GET` of a whole small reply; `headers` are complete header lines. An

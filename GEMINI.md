@@ -1,6 +1,6 @@
 # VizRS CG Playout – instrukcje dla Gemini (Antigravity CLI)
 
-Zasady pracy z tym repozytorium są wspólne dla wszystkich agentów i ludzi; jedynym źródłem jest `CLAUDE.md`. Masz go już w kontekście: `AGENTS.md` to dowiązanie do `CLAUDE.md`, a `agy` wczytuje oba pliki sam. **Jeśli treści `CLAUDE.md` nie widzisz** (np. kopia bez dowiązania), przeczytaj go narzędziem do plików, zanim cokolwiek zrobisz. Importów `@plik` `agy` nie rozwija. To repo nie ma własnego `docs/AGENCI.md` – przy zleceniu przeczytaj §2, §3 i §6 wspólnego opisu pakietu `../VizRS Live/docs/AGENCI.md` (co jest kodem, co możesz, raport; ścieżki z VizRS Live zastąp tymi z `CLAUDE.md` tego repo). Nie powielaj tu treści `CLAUDE.md` – zmiany zasad wprowadza Claude.
+Zasady pracy z tym repozytorium są wspólne dla wszystkich agentów i ludzi; jedynym źródłem jest `CLAUDE.md`. Masz go już w kontekście: `AGENTS.md` to kopia `CLAUDE.md` (Claude ją synchronizuje), a `agy` wczytuje oba pliki sam. **Jeśli treści `CLAUDE.md` nie widzisz** albo `AGENTS.md` wygląda na nieaktualny, przeczytaj go narzędziem do plików, zanim cokolwiek zrobisz. Importów `@plik` `agy` nie rozwija. To repo nie ma własnego `docs/AGENCI.md` – przy zleceniu przeczytaj §2, §3 i §6 wspólnego opisu pakietu `../VizRS Live/docs/AGENCI.md` (co jest kodem, co możesz, raport; ścieżki z VizRS Live zastąp tymi z `CLAUDE.md` tego repo). Nie powielaj tu treści `CLAUDE.md` – zmiany zasad wprowadza Claude.
 
 ## Twoja rola: wykonawca
 

@@ -496,6 +496,8 @@ pub struct Ingest {
     token: String,
     /// A source takes any piece over, not only live programmes.
     anytime: bool,
+    /// ErsatzTV's config folder: where the as-run log lives ("" = no log).
+    etv_config: String,
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
     control: Mutex<HashMap<String, ChannelControl>>,
     events: Mutex<VecDeque<Event>>,
@@ -503,9 +505,15 @@ pub struct Ingest {
 
 impl Ingest {
     pub fn new(token: &str, anytime: bool) -> Ingest {
+        Ingest::with_config(token, anytime, String::new())
+    }
+
+    /// With ErsatzTV's config folder the signal of a channel also reaches the as-run log (K14).
+    pub fn with_config(token: &str, anytime: bool, etv_config: String) -> Ingest {
         Ingest {
             token: token.to_owned(),
             anytime,
+            etv_config,
             feeds: Mutex::new(HashMap::new()),
             control: Mutex::new(HashMap::new()),
             events: Mutex::new(VecDeque::new()),
@@ -663,6 +671,7 @@ impl Ingest {
         stream.set_read_timeout(Some(IDLE))?;
         crate::info!("ingest: channel {channel}: source connected");
         self.event(&channel, "nadawca połączony");
+        crate::asrun::log(&self.etv_config, &channel, &crate::asrun::Entry::of(crate::asrun::LIVE_ON).detail("nadawca połączony"));
         let result = self.receive(&channel, &feed, &mut stream);
         let seconds = feed.lock().since.map(|t| t.elapsed().as_secs());
         self.finish(&channel, &feed);
@@ -672,8 +681,19 @@ impl Ingest {
             (_, None) => crate::info!("ingest: channel {channel}: source gone before a keyframe"),
         }
         match seconds {
-            Some(s) => self.event(&channel, format!("sygnał zakończony po {}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)),
-            None => self.event(&channel, "nadawca rozłączony przed klatką kluczową"),
+            Some(s) => {
+                let text = format!("sygnał zakończony po {}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60);
+                crate::asrun::log(&self.etv_config, &channel, &crate::asrun::Entry::of(crate::asrun::LIVE_OFF).detail(text.clone()));
+                self.event(&channel, text);
+            }
+            None => {
+                crate::asrun::log(
+                    &self.etv_config,
+                    &channel,
+                    &crate::asrun::Entry::of(crate::asrun::LIVE_OFF).detail("nadawca rozłączony przed klatką kluczową"),
+                );
+                self.event(&channel, "nadawca rozłączony przed klatką kluczową");
+            }
         }
         Ok(())
     }

@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -214,6 +215,52 @@ test("holding a channel keeps its studio off and survives a restart", async (t) 
   assert.equal((await ingestState(cg.url, "4")).hold, false);
 });
 
+test("the overlay's encoder: filled once from the environment, then set in the panel, checked, logged", async (t) => {
+  const env = { VIZRS_FFMPEG_PRESET: "superfast", VIZRS_FFMPEG_X264_PARAMS: "", VIZRS_FFMPEG_NVENC_BF: "0" };
+  const { api, folder } = await setup(t, env);
+  const empty = { preset: "", profile: "", x264_params: "", nvenc_preset: "", qsv_preset: "", bframes: "" };
+
+  const file = () => JSON.parse(readFileSync(path.join(folder, "vizrs-live", "encoder.json"), "utf8"));
+  assert.deepEqual(file(), { ...empty, preset: "superfast", bframes: "0" }, "first filling from VIZRS_FFMPEG_PRESET and VIZRS_FFMPEG_NVENC_BF");
+  const first = (await api("GET", "encoder")).body;
+  assert.deepEqual(first.used, { ...empty, preset: "superfast", bframes: "0" });
+  assert.equal(first.from, "panel");
+  assert.ok(first.presets.includes("ultrafast") && first.x264_keys.includes("subme"));
+  assert.deepEqual(first.profiles, ["baseline", "main", "high"]);
+  assert.deepEqual(first.nvenc_presets, ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]);
+  assert.ok(first.qsv_presets.includes("veryslow") && first.max_bframes === 4);
+
+  const want = { preset: "veryfast", profile: "high", x264_params: "bframes=0:subme=0", nvenc_preset: "p5", qsv_preset: "slow", bframes: "1" };
+  const put = await api("PUT", "encoder", { ...want, profile: "High", x264_params: "bframes=0 : subme=0", bframes: 1 });
+  assert.equal(put.status, 200);
+  assert.deepEqual(put.body.used, want);
+  assert.deepEqual(file(), want);
+
+  assert.equal((await api("PUT", "encoder", { preset: "turbo" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { profile: "high10" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { x264_params: "keyint=1" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { x264_params: "stats=/tmp/x" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { nvenc_preset: "hq" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { qsv_preset: "ultrafast" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { bframes: "7" })).status, 400);
+  assert.deepEqual(file(), want, "a refused change keeps the file");
+
+  // Empty = the default, not the environment's; a restart does not fill the file again.
+  assert.deepEqual((await api("PUT", "encoder", { preset: null, profile: "" })).body.used, empty);
+  const again = await startSidecar({ output_url: "", panel_token: TOKEN, etv_config: folder, sync_seconds: 3600 }, env);
+  t.after(again.stop);
+  assert.deepEqual(file(), empty);
+  const log = readFileSync(path.join(folder, "vizrs-live", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.ok(log.some((l) => l.operator === "MCR 1" && l.action.includes("preset veryfast, profil high, opcje x264 bframes=0:subme=0, preset NVENC p5, preset QSV slow, klatki B sprzętowe 1")));
+});
+
+test("the overlay's encoder without a file: the environment, or the defaults", async (t) => {
+  const { api } = await setup(t);
+  const body = (await api("GET", "encoder")).body;
+  assert.equal(body.from, "default");
+  assert.deepEqual(body.used, { preset: "", profile: "", x264_params: "", nvenc_preset: "", qsv_preset: "", bframes: "" });
+});
+
 test("VIZRS_LIVE_SHOWS fills shows.json once", async (t) => {
   const env = { VIZRS_LIVE_SHOWS: JSON.stringify([{ channel: "1", title: "Wiadomości", duration: "00:30:00" }]) };
   const { folder, api } = await setup(t, env);
@@ -236,4 +283,123 @@ test("the panel tells publishers where to send: RTMP server and key, SRT address
   ]);
   assert.equal(of("7")[0].key, "drugi", "a channel with only a listener is listed too");
   assert.ok(body.channels.filter((c) => !["4", "7"].includes(c.number)).every((c) => c.inputs.length === 0), "other channels: no inputs");
+});
+
+// K12–K17 of VizRS Live's PLAN-mcr: the layers on air, TAKE / CONTINUE / OUT by
+// hand, the as-run log and the alarm webhook. `features` of the state says which
+// of them this build has, so an older sidecar never breaks a newer panel.
+async function fakeVizrs(layers = []) {
+  const received = [];
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let index;
+      while ((index = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        received.push(line);
+        socket.write(line.endsWith("STATE") ? `OK ${JSON.stringify({ layers })}\n` : "OK {}\n");
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    received,
+    address: `127.0.0.1:${server.address().port}`,
+    close: () => {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
+}
+
+test("the state carries the layers on air and what this build can do", async (t) => {
+  const vizrs = await fakeVizrs([{ layer: "main", page: { number: 101, name: "belka" } }, { layer: "bug", page: "4001" }]);
+  t.after(vizrs.close);
+  const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
+
+  const state = (await api("GET", "state")).body;
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder"], "no webhook without one configured");
+  // The background refresh reads the channels of ErsatzTV and STATE every two
+  // seconds, so the first answer may have neither yet.
+  const ch = await (async () => {
+    let last;
+    for (let i = 0; i < 40; i++) {
+      last = (await api("GET", "state")).body.channels.find((c) => c.number === "4");
+      if (last?.layers?.length) return last;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return last;
+  })();
+  assert.ok(ch, "the channels of ErsatzTV are in the state");
+  const layers = ch.layers ?? [];
+  assert.equal(layers.length, 2);
+  assert.equal(layers[0].layer, "main");
+  assert.equal(layers[0].page, "101");
+  assert.equal(layers[0].name, "belka");
+  assert.ok(layers[0].since > 0, "since when the page is on that layer");
+  assert.equal(layers[1].page, "4001");
+});
+
+test("TAKE, CONTINUE and OUT by hand reach VizRS and the as-run log", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const { api, folder } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
+
+  assert.equal((await api("POST", "channels/4/take", { page: "101" })).status, 200);
+  assert.equal((await api("POST", "channels/4/continue", { layer: 10 })).status, 200);
+  assert.equal((await api("POST", "channels/4/out", { layer: 10 })).status, 200);
+  assert.ok(vizrs.received.includes("TAKE 101"), vizrs.received.join(" | "));
+  assert.ok(vizrs.received.includes("CONTINUE 10") && vizrs.received.includes("OUT 10"));
+
+  assert.equal((await api("POST", "channels/4/take", {})).status, 400, "a page is needed");
+  assert.equal((await api("POST", "channels/4/out", {})).status, 400, "a layer is needed");
+  assert.equal((await api("POST", "channels/x y/take", { page: "1" })).status, 400);
+
+  const day = new Date().toISOString().slice(0, 10);
+  const log = (await api("GET", `asrun?channel=4&day=${day}`)).body;
+  assert.equal(log.day, day);
+  assert.equal(log.tz, "UTC");
+  const kinds = log.entries.map((e) => e.kind);
+  assert.deepEqual(kinds, ["take", "continue", "out"], JSON.stringify(log.entries));
+  assert.equal(log.entries[0].page, "101");
+  assert.equal(log.entries[0].operator, "MCR 1", "the operator as VizRS Live sent it (it adds its own prefix)");
+  assert.equal(log.entries[1].layer, 10);
+  assert.ok(existsSync(path.join(folder, "vizrs-live", "asrun", `asrun-${day}.jsonl`)));
+
+  // Another channel has its own log; a bad day is refused.
+  assert.deepEqual((await api("GET", `asrun?channel=9&day=${day}`)).body.entries, []);
+  assert.equal((await api("GET", "asrun?channel=4&day=2026-11-9")).status, 400);
+});
+
+test("alarms of the as-run log reach the webhook", async (t) => {
+  const alerts = [];
+  const hook = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      alerts.push(JSON.parse(body));
+      res.writeHead(204).end();
+    });
+  });
+  await new Promise((resolve) => hook.listen(0, "127.0.0.1", resolve));
+  t.after(() => hook.close());
+  const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
+
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "webhook"]);
+  assert.equal((await api("POST", "channels/4/hold")).status, 200);
+  for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(alerts.length, 1, "holding a channel is an alarm");
+  assert.equal(alerts[0].kind, "hold");
+  assert.equal(alerts[0].channel, "4");
+  assert.ok(alerts[0].t > 0);
+  // Letting the studio back on is no alarm.
+  assert.equal((await api("POST", "channels/4/release")).status, 200);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(alerts.length, 1);
 });

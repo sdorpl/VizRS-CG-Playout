@@ -39,6 +39,8 @@ services:
       VIZRS_BROWSER_ARGS: ${VIZRS_BROWSER_ARGS:---num-raster-threads=2 --disable-smooth-scrolling}
       # A1 cores are slower per thread than x86: a little more player buffer.
       LEAD_SECONDS: ${LEAD_SECONDS:-5}
+      # First filling of the encoder VizRS Live sets (encoder.json), as for ersatztv below.
+      VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-veryfast}
 
   ersatztv:
     platform: linux/arm64

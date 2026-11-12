@@ -87,43 +87,130 @@ Obszarów może być kilka, rozdzielonych przecinkami, np. pasek i logo:
 **`area: auto`** (`VIZRS_AREA=auto`, PLAN-strefy) – strefy mają wynikać
 z grafiki na antenie zamiast ze stałego ustawienia. Renderer rysuje cały
 kanał, a sidecar uczy się **śladów stron** i z nich składa strefy każdego
-przebiegu nakładki ffmpeg. Co 0,5 s dla
-każdego kanału z przechwytywaniem bierze widoczne prostokąty ostatniego obrazu
-i strony na jego antenie (`STATE`, z prefiksem `@N` przy `channel_buses`)
-i dopisuje prostokąty do śladu strony. Jest jedna strona – wszystkie jej
-prostokąty. Kilka stron – prostokąt idzie do strony, której ślad pokrywa go
-najbardziej, a nowy do strony wziętej najpóźniej (`since` w `STATE`; dwie
-wzięte w tej samej chwili – nikt się nie uczy). Ślad tylko rośnie, więc
-obejmuje też skrajne fazy animacji. Prostokąty są wyrównane do siatki 16 px
-z marginesem 16 px, sklejane przy odstępie mniejszym niż 64 px, najwyżej
-4 na stronę (więcej – ich obwiednia). Klucz to `id` i numer strony VizRS oraz
-rozmiar kanału (inne show = inne `id` = puste ślady). Ślady zapisują się co
-10 s w `<etv_config>/vizrs-live/footprints.json`; brak albo uszkodzony plik
-oznacza brak śladów.
+przebiegu nakładki ffmpeg. Co 0,5 s dla każdego kanału z przechwytywaniem
+bierze ostatni obraz i strony na jego antenie (`STATE`, z prefiksem `@N` przy
+`channel_buses`), razem z komórkami **wszystkich** obrazów, które sesje
+kanału wysłały od poprzedniego kroku (szybka animacja wejścia, krótsza niż
+0,5 s, też trafia do śladu strony, więc przy kolejnym wejściu strona mieści
+się w strefach od początku). Obraz czyta jako **komórki siatki 16 px** (komórka jest
+narysowana, gdy którykolwiek jej piksel ma alfę), a nie jako widoczne
+prostokąty: grafiki ułożone jedna nad drugą (QR obok tytułu nad tickerem)
+dają jeden prostokąt, ale osobne komórki. Jest jedna strona – wszystkie
+komórki są jej. Kilka stron:
+
+1. komórka, która pojawiła się do 3 s po wejściu strony (`since` w `STATE`)
+   i nie była narysowana przez 2 s przed nim, jest tej strony – także w śladzie
+   innej (pasek wipe'a na pasku tytułu); wejścia w odstępie do 0,5 s to jedna
+   chwila i z nich nikt się nie uczy (np. tytuł z `on_clip` i strona wzięta
+   razem z nim);
+2. komórka w śladzie strony na antenie jest już znana;
+3. gdy wszystkie strony na antenie mają ślady, komórka tuż przy śladzie
+   (do 32 px) dokładnie jednej z nich jest tej strony: jej animacja idzie
+   dalej (rozwijana ramka, cyfry odliczania);
+4. komórka, która pojawiła się do 15 s po ostatnim wejściu, z tą samą ciszą
+   przed nim, jest strony wziętej wtedy; litery przesuwanego tickera, które
+   znikają i wracają, nie są nowej strony;
+5. komórka narysowana dłużej niż 15 s idzie do jedynej strony na antenie bez
+   śladu.
+
+W każdym innym wypadku nikt się nie uczy – błędny ślad nigdy się nie kurczy,
+a brak śladu kosztuje cały kanał. Strona, której wejście sidecar widział
+i która przez 15 s nie narysowała nic swojego (wszystko w śladach innych),
+dostaje pusty ślad: jej piksele są w strefach, dopóki tamte strony są na
+antenie, a bez nich piksele poza strefami poszerzają przebieg. Przez 3 s po
+zejściu strony z anteny (jej animacja wyjścia jeszcze trwa, a `STATE` już jej
+nie ma) nikt się nie uczy; obraz jest brany przed `STATE`, więc strona wzięta
+między nimi jest na liście, ale jeszcze nie na obrazie. Uczenie trwa tylko,
+gdy kanał ma sesję z przechwytywaniem (ErsatzTV transkoduje); komórki
+pierwszego obrazu po przerwie (ponad 5 s bez obrazu) pojawiły się w nieznanej
+chwili, więc nie są „świeże” po żadnym wejściu. Każdy wzrost
+śladu trafia do logu (`footprints: <strona> draws <prostokąt> (<reguła>)`).
+Komórki strony łączą się w prostokąty (grupy sąsiadujących
+komórek), wyrównane do siatki 16 px z marginesem 16 px, sklejane przy
+odstępie mniejszym niż 64 px, najwyżej 4 na stronę (więcej – ich obwiednia).
+Ślad tylko rośnie, więc obejmuje też skrajne fazy animacji. Klucz to `id`
+i numer strony VizRS oraz rozmiar kanału (inne show = inne `id` = puste
+ślady). Ślady zapisują się co 10 s w `<etv_config>/vizrs-live/footprints.json`
+(`version: 2`); brak, uszkodzony plik albo plik starszej wersji (ślady
+z widocznych prostokątów, często zawyżone) oznacza brak śladów i naukę od nowa.
 
 Przy przejęciu sesji przez nakładkę (`GET /ffmpeg?…&area=1`, start przebiegu)
-strefy przebiegu to ślady **wszystkich znanych stron** dla rozmiaru kanału,
-sklejone jak wyżej – także stron, których teraz nie ma na antenie, żeby znana
-strona wzięta przez operatora w trakcie przebiegu nie była ucięta. Warunek:
-mają ślad strony na antenie kanału (`STATE`) i strony, które mogą wziąć reguły
-(`TAKE` z `on_clip`, `on_end` i reguł audycji, po zastosowaniu reguł z live
-API). Nakładka dostaje je tak
-jak stały `area` (`areas`, atlas), a `resume` niesie wyliczone strefy, nie
-`auto` (nakładka po restarcie sidecara dostaje ten sam atlas, co jej graf
-ffmpeg). Cały kanał, gdy którakolwiek strona nie ma jeszcze śladu, gdy nic
-nie jest znane albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
+strefy przebiegu to sklejone ślady stron na antenie kanału (`STATE`), stron,
+które zeszły z niej w ostatnich 5 s (ich animacja wyjścia jeszcze się rysuje,
+np. na starcie nowej audycji; strona bez śladu niczego tu nie dodaje), i stron,
+które mogą wziąć reguły (`TAKE` z `on_clip`, `on_end` i reguł audycji, po
+zastosowaniu reguł z live API). Do tego strony, które pozycja może wziąć
+poza regułami: zdjęte na czas reklamy (wracają z pierwszym zwykłym klipem;
+liczone do 10 s po powrocie, bo ich `TAKE` może jeszcze nie być w `STATE`)
+i strony brane w ostatnich 10 min na tym kanale przez elementy pojedynczych
+stron (`page=` / `take=`, §3) – ErsatzTV uruchamia sesję takiego elementu
+razem z płótnem, często ułamek milisekundy po przejęciu sesji przez
+nakładkę, a bez tego pierwszy kawałek po reklamach poszerzał strefy do
+całego kanału (`page … outside the zones`, restart przebiegu i grafika
+1080p50 rysowana w 25 kl./s; pomiar 2026-11-11). Nakładka, której kawałek idzie przez
+przebiegi zdolne poszerzyć strefy w środku kawałka (niżej), mówi to
+parametrem `follow=1` i dostaje tylko te ślady: stronę wziętą później
+(np. pełnoekranowe przejście) obsłuży poszerzenie, więc raz widziany wipe nie
+zabiera stref każdemu przebiegowi. Nakładka bez `follow=1` dostaje do tego
+ślady **wszystkich znanych stron** dla rozmiaru kanału, żeby znana strona
+wzięta przez operatora w trakcie przebiegu nie była ucięta. Nakładka dostaje
+strefy tak jak stały `area` (`areas`, atlas), a `resume` niesie wyliczone
+strefy, nie `auto` (nakładka po restarcie sidecara dostaje ten sam atlas, co
+jej graf ffmpeg). Cały kanał, gdy którakolwiek z tych stron nie ma jeszcze
+śladu, gdy nic nie jest znane (z `follow=1`: także gdy nic nie ma na antenie,
+nie schodzi z niej ani nie ma w regułach) albo gdy strefy zajmują ponad 60% kanału. Log: `graphics zones
 <strefy> (N% of the channel)` albo `graphics zones: the whole channel`.
 
-Strefy są stałe przez przebieg (graf ffmpeg się nie zmienia) i zmieniają się
-przy następnym starcie przebiegu (nowy kawałek, po live). Strona nigdy
-dotąd niewidziana, wzięta w trakcie przebiegu, jest do jego końca ucięta do
-stref – sidecar uczy się jej śladu z pełnego obrazu, więc następny przebieg
-już ją obejmuje albo dostaje cały kanał; ostrzeżenie `graphics outside the
-zones of this run` (raz na przebieg). Poszerzenie w środku kawałka to
-PLAN-strefy S3b. `/health` ma przy `area: auto` pole `zones`: `pages` (liczba
-śladów) i `runs` – dla każdego przebiegu nakładki `channel`, `zones` (strefy
-albo `null` = cały kanał), `share_percent`, `outside` (obrazy z grafiką poza
-strefami).
+Strefy są stałe przez przebieg ffmpeg (jego graf się nie zmienia). Gdy
+grafika wychodzi poza nie w środku kawałka, **strefy się poszerzają**
+(PLAN-strefy S3b). Co 0,5 s, po uczeniu śladów, sidecar sprawdza każdy przebieg
+ze strefami. Powód poszerzenia to: strona na antenie bez śladu (TAKE
+operatora z Trio albo z VizRS Live, reguła – zanim narysuje pierwszy piksel),
+strona, której ślad wychodzi poza strefy, albo piksele obrazu poza strefami
+(animacja szersza niż dotychczasowy ślad). Nowe strefy to te, które dostałby
+przebieg startujący teraz, jeśli obejmują to, co jest na antenie i co
+narysowane; inaczej – cały kanał. Drugie poszerzenie w ciągu 10 s daje cały
+kanał do końca kawałka (bez „mrugania” przebiegów). Log: `graphics zones
+widened to <strefy> (<powód>)` albo `graphics zones: the whole channel
+(<powód>)`.
+
+Nakładka, która dostała w `/ffmpeg` pole `zones_rev`, co 250 ms pyta o
+strefy swojej sesji (`GET /ffmpeg/zones?session=N`: `rev`, `zones`, rozmiar i
+`areas` klatek, `resume`). Gdy `rev` rośnie, kończy bieżący przebieg kawałka
+(`SIGINT`, jak przy przejęciu live, z eskalacją `SIGTERM`/`SIGKILL`) i startuje
+następny od miejsca, w którym kawałek jest (`-ss`, `-t`, `-output_ts_offset`
+z EXTINF – ta sama playlista HLS, ciągłe znaczniki czasu). Nowy przebieg
+dostaje nowy strumień klatek tej samej sesji
+(`/ffmpeg/frames?session=N&rev=R&zones=…&at=S&area=1`: klatki w podanych
+strefach, klatka 0 w sekundzie S kawałka), a poprzedni strumień znika – sesja
+elementu kończy się dopiero z ostatnim.
+
+**Grafika nie jest ucinana na wejściu.** Strumień klatek nakładki sprawdza
+każdy nowy obraz, zanim zamieni go na klatkę: gdy którakolwiek narysowana
+komórka (16 px) leży poza strefami przebiegu, ta klatka nie wychodzi.
+Strumień **wstrzymuje się**, a sidecar od razu poszerza strefy (powód
+`graphics outside the zones, frames held`; gdy strefy poszerzyły się już
+wcześniej i obejmują obraz – tylko czeka). ffmpeg czeka na grafikę, ale
+strumień wyprzedza zegar o `lead_seconds`, więc widzowie tego nie widzą.
+Nakładka pyta o strefy co 100 ms. Przed SIGINT zamyka staremu przebiegowi rurę
+grafiki (ffmpeg czeka na nią i inaczej nie skończyłby się od razu). Nowy
+przebieg zaczyna od chwili kawałka, w której stary stanął, i pokazuje
+wejście grafiki od pierwszej klatki. Wstrzymanie trwa najwyżej 3 s; potem
+strumień idzie dalej (grafika poza strefami ucięta, jak przed tą zmianą).
+Wstrzymuje się tylko strumień nakładki, która śledzi strefy (`follow=1`,
+pytania o `/ffmpeg/zones`), i tylko raz na strumień.
+
+Przebiegi wymagają `VIZRS_FFMPEG_INGEST=1` (domyślnie w compose) i wyjścia HLS
+z `-t`, jak przy live ingest (§1, Live ingest); kawałek idzie wtedy przez
+przebiegi także bez live ingestu w sidecarze, ale live go nie przejmuje.
+Tylko wtedy nakładka wysyła `follow=1`. W innym przypadku (oraz ze starszą nakładką, która nie pyta o strefy)
+zostaje dawne zachowanie: grafika poza strefami jest ucięta do następnego
+przebiegu i sidecar ostrzega `graphics outside the zones of this run`.
+
+`/health` ma przy `area: auto` pole `zones`: `pages` (liczba śladów) i `runs` –
+dla każdego przebiegu nakładki `channel`, `zones` (strefy albo `null` = cały
+kanał), `share_percent`, `outside` (obrazy z grafiką poza strefami),
+`widenings` (poszerzenia w tym kawałku).
 
 - W trybie `capture_mode: frames` każdy obszar to osobna karta Chromium
   z tą samą stroną i stałym `viewport` równym obszarowi; w każdej klatce
@@ -220,7 +307,7 @@ z grafiką (pasek tickera, nie cały kanał).
 |---|---|
 | `chromium` | bezgłowy Chromium, jak dotąd |
 | `native` | tylko renderer natywny, Chromium się nie uruchamia; czego renderer nie umie, nie ma na obrazie (lista w logu) |
-| `auto` (domyślnie) | renderer natywny, dopóki wszystko na antenie umie narysować; gdy na antenę wejdzie coś, czego nie umie (np. ruch na wzór BTB, obraz WebP albo wideo, font spoza wbudowanych; renderer 0.2 rysuje całe INFO24 i R7), w tej samej klatce rysuje Chromium, a po zejściu tej grafiki znów renderer natywny |
+| `auto` (domyślnie) | renderer natywny, dopóki wszystko na antenie umie narysować; gdy na antenę wejdzie coś, czego nie umie (np. ruch `node.motion`, obraz WebP albo wideo, font spoza wbudowanych; renderer 0.2 rysuje całe INFO24 i R7), w tej samej klatce rysuje Chromium, a po zejściu tej grafiki znów renderer natywny |
 
 W trybie `auto` Chromium działa obok w trybie `frames`, ale nie rysuje, dopóki
 rysuje renderer natywny (prawie nie zużywa CPU). Przejście na Chromium daje
@@ -233,8 +320,66 @@ zatrzymywany. `/health`: `renderer` (ustawienie) i `drawn_by` (`native` albo
 `chromium` – kto narysował ostatnią klatkę). Zmiany listy rzeczy, których
 renderer nie umie, trafiają do logu (`vizrs-render: …`).
 
-Przy kilku obszarach `VIZRS_AREA` jeden proces `vizrs-render` (od 0.3) dostaje
-je wszystkie (`--area` powtórzone) i rysuje każdy osobno, nie ich obwiednię.
+**Łaty renderera natywnego** (2026-11-11, VizRS `vizrs-render` z gałęzi
+next-v). Sidecar dopisuje do każdego żądania klatki flagę `p`. Renderer, który
+ją zna, wysyła przy niezmienionym prostokącie z grafiką tylko zmienione piksele
+(rekord 6, VizRS DOKUMENTACJA §10.1). Sidecar trzyma ostatni obraz renderera,
+nakłada na niego łatę i dalej postępuje jak z całym obrazem. Przewijany crawl
+pod planszą to wtedy ok. 0,6 MB na klatkę zamiast ok. 4 MB, a kanał 1080p50
+utrzymuje crawl w 50 kl./s (wcześniej bezpiecznik płynności schodził do 25).
+Starszy renderer flagę ignoruje i wysyła całe obrazy. Łata bez obrazu albo
+poza nim to błąd renderera: sidecar go zatrzymuje, a rysuje Chromium (jak przy
+każdym błędzie renderera).
+
+**Proces na warstwę** (`native_layers`, `VIZRS_NATIVE_LAYERS`, domyślnie
+włączone; 2026-11-11). Sidecar uruchamia osobny `vizrs-render` dla każdej
+warstwy show (`?layers=<warstwa>` w adresie `/output`, jak osobne źródła
+w OBS) i składa ich obrazy sam. Każde żądanie klatki idzie do wszystkich
+procesów naraz, więc warstwy rysują się równolegle na różnych rdzeniach,
+a warstwa, która stoi, odpowiada „bez zmian” i nic nie kosztuje. Z jednym
+procesem przewijany ticker zmuszał renderer do narysowania i wysłania całego
+prostokąta z grafiką (tytuł, QR i pasek naraz) w każdej klatce. Pomiar
+2026-11-11 (lokalny stos, kanał 1080p, ticker na `back`, tytuł na `main`, QR,
+odliczanie): sam renderer przy 50 kl./s – jeden proces 40% rdzenia i ok.
+74 MB/s przez pipe, procesy na warstwy razem 11% i ok. 6 MB/s; cały kontener
+`cg` w emisji (25 kl./s, strefy 58%) – jeden proces 119% (renderer 80%,
+sidecar 39%), proces na warstwę 21,5% (renderery 10%, sidecar 11%).
+
+- Listę warstw sidecar czyta z show VizRS (`GET /api/show`: warstwa każdej
+  sceny, z tokenem `VIZRS_TOKEN`) w tle zaraz po starcie przechwytywania,
+  potem co 30 s; co 2 s porównuje ją z warstwami na antenie (`STATE`) i nowa
+  warstwa (scena przeniesiona na inną) czyta show od razu. Do pierwszego
+  odczytu, bez dostępu do API i przy kilku obszarach `area` rysuje jeden
+  proces, jak dotąd.
+- Kolejność jak na stronie `/output`: `back`, potem inne nazwy, `main`,
+  `z<N>_nazwa` (N 0–99), `front`; warstwy o tym samym miejscu w kolejności
+  z show. Prostokąty różnych warstw, które się nie nakładają, idą do obrazu
+  takie, jakie są (piksele wspólne z poprzednim obrazem, więc klatka
+  `yuva420p` je pomija, §1 „Klatka z poprzedniej”). Nakładające się grupy
+  sidecar miesza w ich obwiedni (alfa „over”, bez przemnożenia, jak
+  przeglądarka) i zapamiętuje wynik, dopóki ich piksele się nie zmienią.
+- `auto`: gdy którakolwiek warstwa wymaga Chromium (rekord „nie
+  narysowano”), całą klatkę rysuje Chromium, jak przy jednym procesie.
+- Klatkę następnego slotu sidecar zamawia zaraz po odebraniu bieżącej, więc
+  renderery rysują ją, kiedy przechwytywanie czeka na slot. Bez tego każda
+  klatka czekała na najwolniejszy z procesów: przy 7 warstwach i 50 kl./s
+  7,6% klatek po czasie (p99 133 ms), z wyprzedzeniem 0,1% (p99 7 ms; pomiar
+  2026-11-11 sondą na lokalnym stosie). Zamówiona klatka, której slot
+  przepadł, i tak trafia do obrazu (łata potrzebuje swojej bazy), a sidecar
+  zamawia właściwą.
+- Przy kilku obszarach (`VIZRS_AREA`, strefy przebiegu) proces warstwy
+  dostaje jeden `--area`: ich obwiednię. Odpowiada wtedy regionem i łatkami
+  jak przy jednym obszarze, a sidecar przycina prostokąty do obszarów.
+  Wcześniej przy kilku obszarach rysował jeden proces na wszystkie warstwy
+  i przy każdej zmianie wysyłał wszystkie obszary w całości (20–75 ms na
+  klatkę przy dwóch strefach 1080p).
+- Każdy proces to 12–35 MB pamięci (pusta warstwa najmniej); show z 7
+  warstwami to ok. 130 MB. `VIZRS_NATIVE_LAYERS=0` wraca do jednego procesu.
+- `/health`: `captures[].layers` – warstwy rysowane osobno (pusta lista =
+  jeden proces albo Chromium).
+
+Przy kilku obszarach `VIZRS_AREA` jeden proces `vizrs-render` (od 0.3; przy
+procesach na warstwę – obwiednia, wyżej) dostaje je wszystkie (`--area` powtórzone) i rysuje każdy osobno, nie ich obwiednię.
 Pomiar na A1 (s2, 1600×900 25 kl./s, dolny pas i róg, sam renderer): obwiednia
 22,3% rdzenia, osobne obszary w dwóch procesach 12,5%. Sidecar z tą wersją
 wymaga renderera 0.3: starszy wziąłby tylko ostatni `--area`.
@@ -252,10 +397,12 @@ Sidecar to jeden plik binarny `vizrs-cg` (Rust) obok bezgłowego Chromium:
 | Adres | Co |
 |---|---|
 | `POST /etv?channel=1[&render=720p][&area=1920x140+0+930]` | treść: dane szablonu ErsatzTV; odpowiedź: niekończący się strumień pakietów ETV; `render` – rozmiar renderowania grafiki, `area` – obszar grafiki (§1) |
-| `GET /ffmpeg?channel=1[&wait=2000][&area=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki |
+| `GET /ffmpeg?channel=1[&wait=2000][&area=1][&follow=1]` | nakładka ffmpeg przejmuje wolną sesję elementu kanału; odpowiedź: `session`, `width`, `height`, `fps` (404 = brak sesji); z `area=1` (nakładka umie ustawić grafikę) rozmiar i położenie `x`, `y` obszaru grafiki; `follow=1` – kawałek idzie przez przebiegi, które poszerzają strefy w środku kawałka, więc przy `area: auto` strefy to tylko ślady stron na antenie i z reguł (§1, Obszar grafiki) |
 | `GET /ffmpeg/frames?session=N[&fps=25/1][&area=1]` | surowe klatki `yuva420p` przejętej sesji dla ffmpeg, z `area=1` w rozmiarze obszaru grafiki (Nakładka ffmpeg, niżej) |
 | `GET /etv/pages[?channel=1]` | strony VizRS kanału (lista elementów, §3) |
 | `GET /ffmpeg/resume?channel=1&width=…&height=…&fps=…` | klatki dla nakładki po restarcie sidecara, bez sesji elementu; parametry z pola `resume` odpowiedzi `/ffmpeg` |
+| `GET /ffmpeg/zones?session=N` | przy `area: auto`: bieżące strefy przejętej sesji (`rev` rośnie z każdym poszerzeniem w środku kawałka), dla następnego przebiegu nakładki (§1, Obszar grafiki) |
+| `GET /ffmpeg/frames?session=N&rev=R&zones=…&at=S&area=1` | kolejny strumień klatek tej sesji w podanych strefach (puste = cały kanał), klatka 0 w sekundzie S kawałka; zastępuje poprzedni |
 | `GET /health` | liczba sesji, stan przechwytywania (`size` kanału, `render`, `area`, `fps`, `mode`: `screencast` albo `frames`, `status`: `capturing`, `paused`, `restarting`…, `seq`) i kanały z nakładką ffmpeg (`overlay`) |
 
 Chromium wysyła PNG tylko przy zmianie strony. Sidecar dekoduje klatkę
@@ -301,6 +448,23 @@ Płynność animacji (rozwiązania z VizRS ffPlayout System):
   tylko, dopóki sesja ją wysyła, nie przez całą historię. Wcześniej 5,6 s
   historii przy 50 kl./s i ruchomej grafice trzymało ok. 3 GB; teraz sidecar
   z jednym kanałem 1080p50 zajmuje ok. 250 MB.
+- **Klatka `yuva420p` z poprzedniej.** Gdy prostokąty obrazu leżą tam, gdzie
+  w poprzednim, sidecar zmienia płótno w miejscu i tylko w prostokątach
+  z nowymi pikselami (prostokąt stojącej warstwy ma te same piksele i jest
+  pomijany bez porównywania); duża zmiana (ponad 150 tys. pikseli) jest
+  liczona na kilku wątkach (do 4). Pomiar (1080p, tytuł, QR i ramka stoją,
+  ticker 1920×104 się przesuwa): 1,8 ms na klatkę; dawny kod 12–17 ms.
+  Strumień klatek nakładki składa każdy
+  obraz na płótnie RGBA klatki i przelicza na `yuva420p` tylko pary wierszy
+  (jeden wiersz chromy), których piksele zmieniły się od poprzedniego obrazu;
+  resztę bierze z poprzedniej klatki. Przesuwany ticker pod stojącym tytułem
+  kosztuje wiersze tickera, a nie całą klatkę, a obraz równy poprzedniemu
+  (nowy zrzut stojącej grafiki) daje tę samą klatkę. Konwersja liczy na
+  liczbach całkowitych (współczynniki macierzy mają cztery miejsca po
+  przecinku), a chromę bloku 2×2 z sum kanałów; wynik jest ten sam co
+  dawnego sidecara Node.js (wektory `tests/vectors/frames.json`), poza
+  sumami dokładnie całkowitymi (ok. 1 na 10 tys.), gdzie liczby zmiennoprzecinkowe
+  dawały o 1 mniej.
 - **Klatki na żądanie (`capture_mode: frames`, §5).** Screencast bierze
   klatki z zegara Chromium (60 Hz), więc przy 25 kl./s kanału na 5 klatek
   wyjścia przypada 6 klatek źródła i ruch co jakiś czas przeskakuje
@@ -365,8 +529,8 @@ ErsatzTV ── ffmpeg ──► vizrs-ffmpeg ── -i pipe:N (yuva420p) ◄─
 
 1. Wywołanie bez wejścia płótna grafiki (`-i http://…/internal/graphics/<kanał>/<pozycja>`)
    idzie do prawdziwego ffmpeg bez zmian (`exec`; poza jawnie włączonymi
-   `VIZRS_FFMPEG_FPS`, `VIZRS_FFMPEG_PRESET`, `VIZRS_FFMPEG_READRATE_CATCHUP`,
-   `VIZRS_FFMPEG_FPS_BLEND` niżej). Płótno z parametrem
+   `VIZRS_FFMPEG_FPS`, `VIZRS_FFMPEG_PRESET`, `VIZRS_FFMPEG_X264_PARAMS`, `VIZRS_FFMPEG_READRATE_CATCHUP`,
+   `VIZRS_FFMPEG_FPS_BLEND`, `VIZRS_FFMPEG_CUDA`, `VIZRS_FFMPEG_NVENC_BF`, `VIZRS_FFMPEG_NO_SHORTEST`, `VIZRS_FFMPEG_SYNC_RAM`, `VIZRS_FFMPEG_NO_DISCARDCORRUPT` niżej). Płótno z parametrem
    `region` (same watermarki, bez elementu VizRS) też, podobnie płótno po
    `https` (ErsatzTV podaje `http://localhost`).
 2. Nakładka sama otwiera płótno z nagłówkami ErsatzTV i odczytuje je do
@@ -394,7 +558,17 @@ ErsatzTV ── ffmpeg ──► vizrs-ffmpeg ── -i pipe:N (yuva420p) ◄─
    na serwerze z widzami przez opublikowane porty warto i tak wyłączyć
    `userland-proxy` Dockera albo podnieść `fs.pipe-user-pages-soft` (§4).
    Są to surowe klatki `yuva420p` w rozmiarze kanału,
-   w tempie kanału z `lead_seconds` zapasu (§1). Gdy kanał ma obszar grafiki
+   w tempie kanału z `lead_seconds` zapasu (§1). Między sidecarem a nakładką
+   idą jako **delta**: nakładka prosi o nią (`delta=1` w `/ffmpeg/frames`
+   i `/ffmpeg/resume`), sidecar potwierdza nagłówkiem `X-VizRS-Frames: delta`
+   i wysyła dla każdej klatki tylko pasy wierszy (osobno w płaszczyznach Y, U,
+   V, A), które zmieniły się od poprzedniej. Stojąca grafika to 8 bajtów na
+   klatkę, przewijany ticker – wiersze jego paska. Nakładka trzyma klatkę,
+   nakłada na nią zmiany i ffmpeg dostaje całą klatkę jak dawniej (wejście
+   `rawvideo` potrzebuje każdej). Pierwsza klatka strumienia, także po
+   powrocie sidecara, idzie w całości. Sidecar bez delty (bez nagłówka) albo
+   starsza nakładka (bez `delta=1`) – całe klatki. Przy 1080p50 i całym kadrze
+   ruch spada z ok. 260 MB/s do ok. 25 MB/s (§8, Uwagi i wyniki). Gdy kanał ma obszar grafiki
    (§1), klatki mają jego rozmiar, a nakładka ustawia jego położenie
    w filtrze nakładania grafiki (`x=`, `y=` w `overlay`, `overlay_cuda`,
    `overlay_vaapi`…; inne opcje zostają). Kilka obszarów przychodzi ułożonych
@@ -470,12 +644,115 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_CG_URL` | – (compose: `http://cg:7700`) | adres sidecara; puste = nakładka tylko przekazuje wywołania do ffmpeg |
 | `VIZRS_FFMPEG` | `/usr/local/bin/ffmpeg` | prawdziwy ffmpeg |
 | `VIZRS_FFMPEG_FPS` | – | wymuszony klatkaż kanału, `50` albo `25` (także cel **Normalize Framerate**); puste = klatkaż materiałów |
-| `VIZRS_FFMPEG_PRESET` | – (compose A1: `veryfast`) | preset kodera programowego (libx264, libx265), np. `superfast`; puste = preset ErsatzTV |
+| `VIZRS_FFMPEG_PRESET` | – (compose A1: `veryfast`) | preset kodera programowego (libx264, libx265), np. `superfast`; puste = preset ErsatzTV. Tylko dopóki nie ma `encoder.json` – potem koder ustawia VizRS Live (niżej) |
+| `VIZRS_FFMPEG_X264_PARAMS` | – | opcje libx264 (`-x264-params:v`), np. `bframes=0:subme=0` (niżej, „Opcje x264”); puste = bez. Tylko dopóki nie ma `encoder.json` |
+| `VIZRS_FFMPEG_SETTINGS` | `/config/vizrs-live/encoder.json` | plik kodera z VizRS Live (preset x264, profil H.264, opcje x264, presety NVENC i QSV, klatki B koderów sprzętowych; `PUT /api/live/encoder`) – każdy klucz pliku zastępuje odpowiednią zmienną; puste = tylko zmienne środowiskowe |
 | `VIZRS_FFMPEG_READRATE_CATCHUP` | – (compose: `2`) | tempo nadrabiania strumienia MPEG-TS kanału po przestoju (`-readrate_catchup`); puste = bez nadrabiania |
 | `VIZRS_FFMPEG_FPS_BLEND` | – (compose: `1`) | `1` = zmiana klatkażu materiału szybszego od kanału z mieszaniem klatek (`framerate` zamiast `fps`; klatkaż z `ffprobe`); puste = `fps` |
 | `VIZRS_FFMPEG_STANDBY` | – | obraz audycji na żywo bez sygnału studia (§1, Audycje na żywo w ramówce); puste = czerń |
-| `VIZRS_FFMPEG_CUDA` | – | `encode` = przy koderze NVENC (`*_nvenc`) na karcie zostaje tylko koder: nakładka usuwa z komendy ErsatzTV dekodowanie CUDA (`-hwaccel cuda`, `-hwaccel_output_format`, `-init_hw_device cuda`, `-filter_hw_device`) i wysyłkę na kartę (`hwupload`, `hwupload_cuda`), a `scale_cuda`, `overlay_cuda`, `pad_cuda`, `yadif_cuda`, `bwdif_cuda` zamienia na filtry CPU (`scale`+`format`, `overlay=…:format=auto`, `pad`, `yadif`, `bwdif`). Proces bierze ok. połowę pamięci GPU (720p: 118 MiB zamiast 218 MiB, pomiar 2026-11-07 na Quadro P400) kosztem CPU (ok. 0,3 rdzenia na 720p). Dla karty dzielonej z pulpitem: dwie pozycje kanału naraz (kończąca się i następna) nie kończą się `CUDA_ERROR_OUT_OF_MEMORY` / `Cannot allocate memory` (zastępczą planszą). Inny koder, komenda bez CUDA albo nieznany filtr `*_cuda` = komenda bez zmian; puste = komenda ErsatzTV |
+| `VIZRS_FFMPEG_CUDA` | – | `encode` = przy koderze NVENC (`*_nvenc`) na karcie zostaje tylko koder: nakładka usuwa z komendy ErsatzTV dekodowanie CUDA (`-hwaccel cuda`, `-hwaccel_output_format`, `-init_hw_device cuda`, `-filter_hw_device`) i wysyłkę na kartę (`hwupload`, `hwupload_cuda`), a `scale_cuda`, `overlay_cuda`, `pad_cuda`, `yadif_cuda`, `bwdif_cuda` zamienia na filtry CPU (`scale`+`format`, `overlay=…:format=auto`, `pad`, `yadif`, `bwdif`). Proces bierze ok. połowę pamięci GPU (720p: 118 MiB zamiast 218 MiB, pomiar 2026-11-07 na Quadro P400) kosztem CPU (ok. 0,3 rdzenia na 720p). Dla karty dzielonej z pulpitem: dwie pozycje kanału naraz (kończąca się i następna) nie kończą się `CUDA_ERROR_OUT_OF_MEMORY` / `Cannot allocate memory` (zastępczą planszą). Inny koder, komenda bez CUDA albo nieznany filtr `*_cuda` = komenda bez zmian. `overlay` = przy koderze NVENC i dekodowaniu CUDA (`-hwaccel cuda`) nakładka usuwa tylko dekodowanie (`-hwaccel`, `-hwaccel_output_format`, `-hwaccel_device`); zdekodowane klatki trafiają na kartę (`format=nv12\|yuv420p\|…,hwupload`) tam, gdzie filtry ErsatzTV ich tam oczekują (pierwszy `hwupload` albo filtr `*_cuda` łańcucha z wejścia), skalowanie i nakładanie grafiki (`overlay_cuda`) zostają na karcie, a klatki dla kodera (łańcuch z `-map`) wracają do RAM (`hwdownload`). Bez tego klatki czekające na muxer – dźwięk ErsatzTV idzie przez `loudnorm` z ok. 3 s wyprzedzenia – zapełniały pamięć karty w kilka sekund (`CUDA_ERROR_OUT_OF_MEMORY`, plansza zastępcza; pomiar 2026-11-11). Pomiar 2026-11-11 na Quadro P400 (materiał 720p25 do 1080p50 z paskiem grafiki): 0,33 rdzenia zamiast 1,40 przy `encode`, pamięć GPU podobna (213 MiB zamiast 206). W transkodowaniu z płótnem grafiki nakładanej przez `overlay_cuda` materiał bez własnego `-readrate` dostaje `-readrate 1` z początkowym zrywem równym grafice gotowej w sidecarze (niżej, Pamięć karty przy NVENC). Komenda bez dekodowania CUDA albo z innym koderem = bez zmian. `auto` = przed każdym transkodowaniem z koderem NVENC i dekodowaniem albo filtrami CUDA nakładka pyta `nvidia-smi` o wolną pamięć karty (najwyżej 1 s): co najmniej `VIZRS_FFMPEG_CUDA_MIN_FREE` MiB = `overlay`, mniej = `encode` (wpis w logu ErsatzTV: `GPU memory … MiB free`). Brak `nvidia-smi`, błąd albo przekroczony czas = `overlay`. Dla karty dzielonej z pulpitem, którego zużycia stos nie kontroluje: pełna karta kosztuje kawałek z grafiką nakładaną na CPU (ok. 80 zamiast ok. 140 MiB przy 1080p50 z `-bf:v 0`, więcej CPU) zamiast planszy zastępczej. Puste = komenda ErsatzTV |
+| `VIZRS_FFMPEG_CUDA_MIN_FREE` | `400` | wolna pamięć karty w MiB, przy której `VIZRS_FFMPEG_CUDA=auto` wybiera `overlay`. Kawałek `overlay` 1080p50 zajmuje ok. 280 MiB (pule klatek po początkowym zrywie; 160 MiB bez niego), a przy zmianie pozycji poprzedni działa jeszcze chwilę |
+| `VIZRS_FFMPEG_NVENC_BF` | – | liczba klatek B koderów sprzętowych (NVENC `*_nvenc`, QSV `*_qsv`, VAAPI `*_vaapi`) bez własnego `-bf`, np. `0`; nakładka dopisuje `-bf:v N` po nazwie kodera w każdym wywołaniu. Tylko dopóki `encoder.json` nie ma klucza `bframes` – potem ustawia je VizRS Live. Klatki B trzymają na karcie klatki odniesienia: koder 1080p50 zajmuje 139 MiB przy domyślnych ffmpeg, 99 MiB przy `1`, 79 MiB przy `0` (pomiar 2026-11-11, Quadro P400) – dla karty dzielonej z pulpitem, kosztem kilku procent bitrate przy tej samej jakości; puste = ffmpeg |
+| `VIZRS_FFMPEG_NO_SHORTEST` | – | `1` = nakładka usuwa `-shortest` z każdego wywołania, którego wyjście i tak kończy `-t` (ErsatzTV podaje oba). Dźwięk ErsatzTV idzie przez `apad` i `loudnorm` z ok. 3 s wyprzedzenia, a `-shortest` trzyma surowe klatki obrazu w kolejce, aż dojdzie dźwięk tej samej chwili: przy 1080p50 ok. 150 klatek, czyli RSS ffmpeg 657 MB zamiast 268 MB, i drugi raz przy zmianie pozycji, gdy działają dwa procesy (pomiar 2026-11-11, materiał 1080p, NVENC). Długość wyjścia bez zmian. Wywołanie bez `-t` wyjścia – bez zmian; puste = komenda ErsatzTV |
+| `VIZRS_FFMPEG_SYNC_RAM` | – | `1` = w trybie `overlay` (także wybranym przez `auto`) klatki materiału czekają na grafikę swojej chwili w RAM, zanim trafią na kartę: w grafie z `overlay_cuda` jedyny łańcuch materiału z `hwupload` dostaje na początku synchronizację z wejściem grafiki (`pipe:N`) na CPU – wycinek grafiki 2×2 px nałożony poza kadrem (`overlay=x=main_w:y=main_h`, nic nie rysuje), z formatem bez alfy; wejście grafiki rozdziela `split`. Bez tego klatki zdekodowane z wyprzedzeniem (ok. 3 s `loudnorm`, zryw, brak `-readrate`) czekają na karcie przed `overlay_cuda` (niżej, Pamięć karty przy NVENC). Graf z synchronizacją nie dostaje `-readrate` ani zrywu: tempo materiału wyznacza grafika z sidecara (najwyżej `lead_seconds` przed zegarem), a klatki zdekodowane wcześniej czekają w RAM – kanał nie zostaje za ramówką i grafika nie przeskakuje (niżej). Graf bez jednoznacznego łańcucha materiału albo z grafiką użytą dwa razy = bez zmian (wtedy `-readrate` jak dotąd); puste = wyłączone |
+| `VIZRS_FFMPEG_NO_DISCARDCORRUPT` | – | `1` = kopia strumienia (`-c copy`) z wejścia HLS (`….m3u8`) – tak ErsatzTV składa strumień MPEG-TS kanału (`/iptv/channel/N.ts`) z własnego HLS – traci `discardcorrupt` z `-fflags` tego wejścia (puste `-fflags` znika). Każdy kawałek kanału to nowy ffmpeg, którego liczniki ciągłości MPEG-TS zaczynają się od 0, więc demuxer oznaczał ostatnią klatkę wideo kawałka przed granicą jako uszkodzoną, a flaga ją wyrzucała: 40 ms zatrzymania obrazu co kawałek (44 s), choć klatka dekoduje się bez błędów (ta sama suma MD5 co w segmencie; pomiar 2026-11-12: 399 zamiast 400 klatek na dwóch segmentach z granicy). Segmenty HLS same są ciągłe – dotyczy tylko strumienia `.ts`. Flagi zapisane inaczej niż `+…` = bez zmian; puste = wyłączone |
 | `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
+
+#### Pamięć karty przy NVENC
+
+Pamięci karty (vRAM) nie da się przenieść do RAM ani tmpfs: dekoder, filtry
+`*_cuda` i koder NVENC trzymają klatki na karcie, a ich pliki wynikowe
+(`/transcode`) i tak leżą w tmpfs. Da się zmniejszyć to, co na karcie siedzi.
+Pomiar 2026-11-11 na Quadro P400 (2 GB, dzielona z pulpitem), materiał 720p25
+do 1080p50, dwie strefy grafiki, `VIZRS_FFMPEG_CUDA=overlay`:
+
+| Komenda | vRAM procesu |
+|---|---|
+| grafika przez `hwupload_cuda` (wcześniej) | 249 MiB |
+| grafika przez `hwupload` (teraz zawsze) | 193 MiB |
+| oraz `VIZRS_FFMPEG_NVENC_BF=0` | 133 MiB |
+
+To pomiar w czasie rzeczywistym (`-re`, bez dźwięku). Na antenie silnik next
+ErsatzTV często puszcza kawałki **bez** `-readrate` (nadrabia bufor). Grafika
+z sidecara płynie jednak w czasie kanału (z `lead_seconds` zapasu), więc
+materiał dekodowany z pełną prędkością tylko czeka na nią w kolejce przed
+`overlay_cuda` – już na karcie. Pełna komenda z anteny (dźwięk z `loudnorm`,
+HLS, 3 strefy, `-bf:v 0`; pomiar 2026-11-11):
+
+| Wejście materiału | `hwupload_cuda` | `hwupload` |
+|---|---|---|
+| bez `-readrate` | 473 MiB | 387 MiB |
+| `-readrate 1` | 253 MiB | 159 MiB |
+| `-readrate 1 -readrate_initial_burst 2` | – | 271 MiB |
+
+Dlatego w trybie `VIZRS_FFMPEG_CUDA=overlay` (bez `VIZRS_FFMPEG_SYNC_RAM`, niżej) transkodowanie z płótnem
+grafiki nakładanej na karcie (`overlay_cuda`, klatki z `pipe:N`) czyta
+materiał (pierwsze wejście) z `-readrate 1`, gdy ErsatzTV nie dał własnego
+tempa, oraz z `-readrate_initial_burst` równym grafice, którą sidecar ma od
+razu gotową: pole `ahead` w odpowiedzi `/ffmpeg` to `lead_seconds` plus
+spóźnienie kawałka względem czasu emisji (zaległe klatki grafiki idą od
+razu), w nakładce powiększone o czas od przejęcia, a dla przebiegu od
+połowy kawałka (strefy poszerzone, live) pomniejszone o jego początek;
+najmniej 0,5 s (domyślny zryw ffmpeg), najwięcej 30 s. Materiał wyprzedza
+więc grafikę najwyżej o ułamek sekundy, a kawałek, który wystartował później
+(start ffmpeg, przejęcie sesji, restart przebiegu), nadrabia ten czas jak
+zrywem ErsatzTV. Sidecar bez pola `ahead` = samo `-readrate 1`.
+
+Samo `-readrate 1` (bez zrywu, 2026-11-11 przez kilka godzin) gubiło przy
+każdej zmianie kawałka ok. 3,5 s: przerwa między segmentami HLS 7,2–7,7 s
+zamiast 4 s, produkcja 44 s obrazu w 47,4 s (0,93×), więc bufor
+odtwarzacza wyczerpywał się po kilku kawałkach (lagi przy 1080p50 z NVENC,
+choć NVENC miał 85% zapasu). Ze zrywem (pomiar 2026-11-11, P400, 1080p50,
+`overlay`): przerwa ok. 5,3 s, produkcja 1,04× do dogonienia ramówki, potem
+zryw 2,3–4 s; ffmpeg 277 MiB karty zamiast 167 (pule klatek rosną przy
+dekodowaniu szybszym niż czas rzeczywisty), stąd `VIZRS_FFMPEG_CUDA_MIN_FREE`
+400.
+
+Te pule to klatki materiału czekające na grafikę: `loudnorm` oddaje dźwięk
+z ok. 3 s opóźnieniem, więc ffmpeg dekoduje materiał tyle naprzód, a każda
+klatka po `hwupload` czeka w kolejce `overlay_cuda` na grafikę, która płynie
+w czasie kanału – ok. 3 MiB na klatkę 1080p, `-readrate` tego nie ogranicza
+(wyprzedzenie wymusza dźwięk), a zryw dokłada (PLAN-p400, E9).
+`VIZRS_FFMPEG_SYNC_RAM=1` przenosi tę kolejkę do RAM: materiał synchronizuje
+się z grafiką na CPU przed wysyłką na kartę. Pomiar 2026-11-12, ffmpeg 8.1
+z obrazu ErsatzTV, Quadro P400, materiał 720p25 do 1080p50 z dźwiękiem
+(`loudnorm`), dwie strefy grafiki z pipe w czasie rzeczywistym, `-readrate 1
+-readrate_initial_burst 2`: 359 MiB karty bez opcji, **111 MiB** z nią; ten
+sam obraz na wyjściu. Na antenie lokalnego stosu (5 min, 8 kawałków):
+ffmpeg kawałka stale 139 MiB zamiast 259–463 MiB, karta najwyżej 991 zamiast
+1289 MiB. Koszt: klatki czekają w RAM (na antenie RSS ffmpeg 429–566 MB
+zamiast do 524 MB; w próbie z samym 1080p do +430 MB) i ok. 0,09 rdzenia
+(CPU `overlay` kopiuje klatkę).
+
+**Tempo materiału przy `VIZRS_FFMPEG_SYNC_RAM=1`.** Zryw `-readrate` nie
+nadrabiał startu kawałka: przewinięcie `-ss` czyta od klatki kluczowej przed
+punktem (do długości GOP, np. 5 s) i to zjada zryw, a do tego ok. 3,5 s
+rozruchu ffmpeg (otwarcie materiału po HTTP, przewinięcie). Kanał ustalał się
+ok. 8 s za ramówką (`graphics stream: frame 0 on air -8.5 s from now`),
+pierwsze klatki kawałka nakładka czytała 16–21 s po ich chwili – dalej, niż
+sięga historia sidecara (`lead_seconds` + 12 s) – i grafika przeskakiwała
+o 0,4–5 s (`graphics stream: frame … read … s late; the graphics jump …`),
+ucinając animacje wejścia. Z synchronizacją w RAM nakładka nie dodaje
+`-readrate`: materiał idzie tak szybko, jak przychodzi grafika. Pomiar
+2026-11-12 (lokalny stos, kanał 1, 9 kawałków): kanał ok. 3 s **przed**
+ramówką zamiast 8 s za nią, zero przeskoków, ffmpeg 117–135 MiB karty i do
+565 MB RSS (kolejka ograniczona); animacje wyjścia i wejścia strony (`OUT`
+i `TAKE` z live API) w obrazie HLS klatka po klatce, bez skoków.
+
+Każdy `hwupload_cuda` otwiera własny kontekst CUDA (ok. 28 MiB), a nakładka
+wstawia go dla każdej strefy grafiki (`area: auto`). W transkodowaniu z płótnem
+grafiki i jednym urządzeniem `-init_hw_device cuda` nakładka zamienia więc
+`hwupload_cuda` bez opcji na `hwupload`: wysyłka idzie przez to urządzenie,
+wspólne z filtrami ErsatzTV. Z dekodowaniem CUDA (bez `VIZRS_FFMPEG_CUDA`)
+to samo daje 223 → 197 MiB przy jednej strefie. Sam kontekst CUDA
+ffmpeg to ok. 30 MiB (kernele ładowane leniwie, `CUDA_MODULE_LOADING` nic nie
+zmienia), koder NVENC 1080p50 – 139 MiB z domyślnymi klatkami B (`-surfaces`,
+`-delay`, `-preset`, `-tune` nie zmieniają tego istotnie). Przy zmianie
+pozycji dwa procesy kanału działają chwilę naraz, więc zapas karty musi
+mieścić dwa. Chromium sidecara z `VIZRS_BROWSER_GPU=1` też zajmuje kartę
+(EGL; `nvidia-smi` go nie wypisuje, bo proces jest w kontenerze bez CUDA):
+przy rendererze natywnym (`renderer: native`) rysuje mało, więc na małej
+karcie zostaw go na CPU.
 
 #### Nadrabianie strumienia MPEG-TS (`VIZRS_FFMPEG_READRATE_CATCHUP`)
 
@@ -539,6 +816,66 @@ sprzętowe (NVENC, VAAPI) zostają bez zmian. Sprawdzenie: nagłówek x264
 w strumieniu (`grep -a -o "x264 - core.\{0,400\}"` na nagranym `.ts`) pokazuje
 `subme=7 … trellis=1` przy `medium`, `subme=2` przy `veryfast`, `subme=1` przy `superfast`.
 
+Preset (razem z profilem H.264 i opcjami x264) ustawia się w VizRS Live; zmienna
+wypełnia tylko pierwszy raz `encoder.json` (niżej, „Koder z VizRS Live”).
+
+#### Opcje x264 (`VIZRS_FFMPEG_X264_PARAMS`) i koder z VizRS Live
+
+Z `VIZRS_FFMPEG_X264_PARAMS=bframes=0:subme=0` nakładka dopisuje
+`-x264-params:v bframes=0:subme=0` po `libx264` (przed nim preset) w każdym
+wywołaniu. Gdy ErsatzTV podał już `-x264-params`, opcje nakładki trafiają na
+jego koniec (`<ErsatzTV>:<nakładka>`), więc wygrywają przy tym samym kluczu.
+Inne kodery (libx265, NVENC, VAAPI, QSV) zostają bez zmian.
+
+Pomiar 2026-10-31 (`docs/plany/PLAN-ampere.md`, s2: Neoverse-N1,
+1600×900@25, x264 `superfast`, 3000 kb/s; CPU / SSIM Y względem samego
+presetu; materiał Gothic reprezentuje antenę, Warmianin z mocnym ziarnem nie):
+
+| Opcje | CPU Warmianin / Gothic | SSIM Warmianin / Gothic |
+|---|---|---|
+| `subme=0` | −6% / −8% | 0,00 / −0,39 dB |
+| `bframes=0` | −11% / −15% | −0,10 / −0,77 dB |
+| `bframes=0:subme=0` | −18% / −20% | −0,11 / −1,44 dB |
+
+To wymiana jakości na CPU: włączaj, gdy kanał nie trzyma tempa 1× albo trzeba
+zmieścić więcej kanałów. `ultrafast` (−31…−36% CPU, −3,4…−5,0 dB) odrzucono.
+
+**Koder z VizRS Live.** Ustawienia kodera wybiera panel (ekran „Profile
+kodowania”, `PUT /api/live/encoder`). Silnik next ErsatzTV nie przekazuje do
+ffmpeg ani presetu, ani profilu z profilu FFmpeg, także koderom sprzętowym
+(np. `-vcodec h264_nvenc -b:v 6000k` bez `-preset`/`-profile`), więc dokłada je
+nakładka. Sidecar trzyma je w `<etv_config>/vizrs-live/encoder.json`; ten sam
+wolumen jest w kontenerze ErsatzTV pod `/config`, a nakładka czyta plik
+(`VIZRS_FFMPEG_SETTINGS`) przy każdym uruchomieniu – zmiana działa od
+następnego ffmpeg, bez restartu.
+
+| Klucz | Kodery | Dopisuje | Wartości (puste = domyślne kodera) |
+|---|---|---|---|
+| `preset` | libx264, libx265 | `-preset:v` | `ultrafast` … `placebo` (domyślnie ErsatzTV: `medium`) |
+| `profile` | libx264, `h264_nvenc`, `h264_qsv`, `h264_vaapi` | `-profile:v` | `baseline`, `main`, `high`; VAAPI: `baseline` → `constrained_baseline`. Domyślnie x264 `high`, **NVENC `main`**, QSV i VAAPI – sterownik |
+| `x264_params` | libx264 | `-x264-params:v` | opcje z białej listy (niżej) |
+| `nvenc_preset` | `*_nvenc` | `-preset:v` | `p1` (najszybszy) … `p7` (najlepsza jakość); domyślnie `p4` |
+| `qsv_preset` | `*_qsv` | `-preset:v` | `veryfast` … `veryslow`; domyślnie sterownik |
+| `bframes` | `*_nvenc`, `*_qsv`, `*_vaapi` | `-bf:v` | 0–4; mniej klatek B = mniej pamięci karty (NVENC 1080p50: 139 MiB domyślnie, 79 MiB przy `0`) |
+
+Komenda z własnym `-preset`, `-profile` albo `-bf` zostaje przy swoim. Kodery
+HEVC nie dostają profilu (inne nazwy). VAAPI nie ma presetu (`-quality` działa
+inaczej w każdym sterowniku), dostaje tylko profil i klatki B.
+
+- **Klucz w pliku obowiązuje, nawet pusty.** Pusty = domyślne kodera, nie
+  wartość z `.env`. Klucza, którego w pliku nie ma (plik starszej wersji),
+  i całego pliku, gdy go brak (np. bez `etv_config`), dotyczą zmienne
+  środowiskowe kontenera ErsatzTV. VizRS Live zapisuje zawsze wszystkie klucze.
+- **`.env` tylko na start.** Sidecar przy starcie, gdy pliku jeszcze nie ma,
+  zapisuje go raz z `VIZRS_FFMPEG_PRESET`, `VIZRS_FFMPEG_X264_PARAMS` i
+  `VIZRS_FFMPEG_NVENC_BF` (compose podaje je też usłudze `cg`) – jak
+  `inputs.json` z `VIZRS_INGEST`. Potem zmiana `.env` nic nie robi.
+- **Walidacja.** Wartości spoza list i opcja x264 spoza białej listy
+  (`src/encoder.rs`: jakość i szybkość – `bframes`, `subme`, `ref`, `me`,
+  `trellis`, `aq-*`, `psy-rd`, `rc-lookahead` …; bez `keyint`/`scenecut`, wątków,
+  sterowania bitrate i opcji z plikiem) są odrzucane przy zapisie i pomijane
+  przy odczycie.
+
 #### Klatkaż kanału (`VIZRS_FFMPEG_FPS`)
 
 ErsatzTV nie ma ustawienia klatkażu kanału. Bierze klatkaż materiałów, a przy
@@ -583,7 +920,12 @@ Gdy przez 30 s nie ma żadnej sesji danego rozmiaru (ErsatzTV transkoduje
 kanał tylko przy widzach), przechwytywanie przechodzi w `paused`: Chromium
 zostaje uruchomiony ze stroną `/output`, ale nie renderuje klatek (przy
 animowanym pasku 1080p z ~200% CPU do kilku procent). Pierwsza sesja
-wznawia je i od razu dostaje świeżą klatkę. Przerwa między pozycjami
+wznawia je i od razu dostaje świeżą klatkę. Obrazy sprzed pauzy (nawet
+sprzed wielu minut: inna plansza, stara godzina zegara) są wtedy
+zapominane: strumień czeka na pierwszy nowy obraz (najwyżej 1,5 s) i to on
+idzie także jako zapas `lead_seconds`. Wcześniej te sekundy zapasu brały
+ostatni obraz sprzed pauzy, więc po wznowieniu kanał przez ok. 4 s
+pokazywał nieaktualną grafikę. Przerwa między pozycjami
 harmonogramu jest dużo krótsza, więc w trakcie emisji pauza nie występuje.
 
 ### Live ingest
@@ -839,6 +1181,68 @@ z EPG, `inputs` (niżej), ramówkę po kanałach i zdarzenia.
 - **Zdarzenia**: nadawca połączony, sygnał, koniec sygnału, odrzucony drugi
   sygnał albo zły token, decyzje operatorów; ostatnie 100, w pamięci.
 
+**Co umie ta wersja (`features`).** `/api/live/state` ma na najwyższym poziomie
+listę `features` – VizRS Live pokazuje tylko to, co sidecar zgłosi, więc
+starsza wersja sidecara nie psuje nowszego panelu (brak pola = brak elementu
+w UI). Dziś: `layers` (warstwy na antenie), `take` (ręczne TAKE / CONTINUE /
+OUT), `asrun` (dziennik emisji), `encoder` (koder nakładki: presety x264/NVENC/QSV, profil H.264, opcje x264, klatki B, `/api/live/encoder`) i `webhook` – ten ostatni tylko, gdy ustawiony
+jest `alert_webhook`. Kontrakt uzgodniony z VizRS Live (jego DOKUMENTACJA §3,
+punkty K12–K17 planu PLAN-mcr).
+
+**Warstwy na antenie (K12).** Każdy kanał w `/api/live/state` ma `layers`:
+`[{layer, page, name?, scene?, since, manual?}]` – to, co VizRS ma na antenie
+kanału (`STATE`, przy `channel_buses` z przedrostkiem `@<kanał>`). Sidecar
+odpytuje anteny w tle co 2 s (wątek `panel-layers`), więc odpowiedź stanu nigdy
+nie czeka na TCP. `since` to chwila (ms), od której na tej warstwie jest ta sama
+strona; `manual: true` oznacza stronę wprowadzoną ręcznie z panelu (niżej).
+Bez adresu VizRS wątek nie startuje i `layers` jest puste.
+
+**Ręczne TAKE / CONTINUE / OUT (K13).** `POST /api/live/channels/<n>/take`
+z `{"page": "101"}`, `/continue` i `/out` z `{"layer": …}` (albo `{"layer":
+"nazwa"}`) wysyłają jedną komendę na antenę kanału i zwracają `{"ok": true,
+"reply": "OK …"}`; odpowiedź VizRS inna niż `OK` to 502, brak strony albo
+warstwy – 400. Strona wprowadzona ręcznie zostaje na antenie, dopóki ktoś jej
+nie zdejmie: reguły grafiki wprowadzają swoje strony na własnych warstwach, a
+`OUT` tej warstwy oddaje ją regułom. Każda komenda trafia do dziennika emisji
+i do zdarzeń kanału z nazwą stanowiska.
+
+**Dziennik emisji (as-run, K14).** `GET /api/live/asrun?channel=<n>&day=<RRRR-MM-DD>`
+zwraca `{channel, day, tz: "UTC", keep_days, store, entries: [{t, at, kind,
+channel, title?, page?, layer?, operator?, detail?}]}`, najstarsze pierwsze.
+Zapis prowadzi [src/asrun.rs](../src/asrun.rs): jeden plik na dobę
+(`<etv_config>/vizrs-live/asrun/asrun-RRRR-MM-DD.jsonl`), dni starsze niż 30
+znikają same przy pierwszym wpisie nowego dnia. **Dni są w UTC**, jak wszystkie
+czasy sidecara – VizRS Live pisze to obok daty. Rodzaje wpisów: `item_start`
+i `item_end` (pozycja kanału weszła na antenę i zeszła – z danych szablonu
+ErsatzTV), `take`, `continue`, `out` (ręczne komendy), `hold` i `release`
+(ZDEJMIJ / WPUŚĆ studia), `live_on` i `live_off` (nadawca połączony,
+sygnał zakończony), `graphics_off` i `graphics_on` (cała grafika zdjęta
+i przywrócona). Bez `etv_config` nie ma gdzie pisać i dziennika nie ma
+(`store: false`), ale alarmy niżej i tak wychodzą.
+
+**Zmiany na antenie spoza panelu.** Antenę kanału zmienia nie tylko sidecar
+(reguły, komendy z VizRS Live), ale też Trio, `/mobile`, makra i karuzela
+VizRS albo Companion. Wątek `panel-layers` porównuje dwa kolejne odczyty warstw
+(co 2 s) z komendami, które sidecar sam wysłał z odpowiedzią `OK` (pamięta je
+30 s, [src/vizrs.rs](../src/vizrs.rs) `sent_since`). Nowa strona na warstwie,
+której sidecar nie wprowadził, to wpis `take`, a warstwa zdjęta bez jego `OUT`
+albo `CLEAR` – wpis `out`. Oba mają operatora `VizRS (poza panelem)`
+i szczegóły z nazwą warstwy. Strona, która tylko przeszła na inną warstwę, nie
+jest zmianą. Po nieudanym odczycie i po starcie sidecara porównanie zaczyna się
+od nowa, więc wpisów nie ma za czas bez połączenia z VizRS. Zmiana na
+antenie wprowadzona komendą sidecara w tej samej chwili co z Trio może trafić
+do dziennika jako komenda sidecara. Strona wprowadzona z VizRS Live dostaje
+`manual: true` po pierwszym odczycie, który pokazuje jej warstwę.
+
+**Alarmy poza przeglądarką (K17).** `alert_webhook` (env
+`VIZRS_ALERT_WEBHOOK`): przy wpisie dziennika uznanym za alarm – `live_off`
+(utrata sygnału), `hold` (studio wstrzymane), `graphics_off` (grafika zdjęta) –
+sidecar wysyła w tle `POST` z `{"kind", "channel", "text", "t"}`. Wysyłka nigdy
+nie wstrzymuje sidecara: idzie osobnym wątkiem, a błąd trafia tylko do logu.
+Alarmy w samej przeglądarce (banner, dźwięk) liczy VizRS Live z danych, które
+już ma. `settings.graphics_off_since` w stanie mówi, od kiedy grafika jest
+zdjęta (do alarmu „grafika zdjęta dłużej niż N minut”).
+
 Decyzje kanałów i ustawienia są w `<etv_config>/vizrs-live/control.json`.
 Dane z ErsatzTV (kanały, kolekcje, EPG z `/iptv/xmltv.xml`) sidecar pobiera
 co 30 s i po każdej zmianie audycji.
@@ -892,6 +1296,8 @@ API (`/api/live/*`, JSON, token jak wyżej):
 | POST | `/api/live/graphics/off` · `/on` | ZDEJMIJ · PRZYWRÓĆ GRAFIKĘ z animacjami: **off** – na antenie VizRS każdego kanału `STATE` → `OUT` warstw na antenie (VizRS gra animacje wyjścia), po `VIZRS_GRAPHICS_OUT_SECONDS` (domyślnie 3 s, 0–30) przezroczyste klatki na wszystkich kanałach (zabezpieczenie – i w pakietach ETV, i w nakładce ffmpeg); komendy ramówki w tym czasie nie idą do VizRS, sidecar tylko śledzi, które strony byłyby na antenie (TAKE dodaje, OUT i reklama zdejmują); **on** – klatki od razu, potem jeden `TAKE` tych stron (animacje wejścia). Stan w `control.json` (`graphics_off`): po restarcie ze zdjętą grafiką klatki są przezroczyste od razu, bez komend do VizRS; widać go w `settings.graphics_off` stanu |
 | GET | `/api/live/inputs` | wejścia studia w użyciu: `{"listeners":[{"channel","url"}], "from":"env"\|"panel", "store", "ingest", "ports":{"rtmp":[1936,1943],"srt":[9000,9007]}}` (adresy z kluczami – sekrety) |
 | PUT | `/api/live/inputs` | `{"listeners":[{"channel":"2","url":"rtmp://0.0.0.0:1937/live/<klucz>"}]}` – cała lista; walidacja (rtmp/srt, port z zakresu, jeden odbiornik na port, klucz RTMP, hasło SRT 10–79 znaków), zapis `inputs.json`, odbiorniki przejmują ją w ciągu kilku sekund; pusta lista = bez wejść |
+| GET | `/api/live/encoder` | koder nakładki ffmpeg w użyciu od następnego ffmpeg: `{"used":{"preset","profile","x264_params","nvenc_preset","qsv_preset","bframes"}, "from":"panel"\|"env"\|"default", "store", "presets":[…], "profiles":["baseline","main","high"], "x264_keys":[…], "nvenc_presets":["p1"…"p7"], "qsv_presets":[…], "max_bframes":4}` – `panel` = `encoder.json`, `env` = jeszcze bez pliku, ze zmiennych, `default` = ani jedno, ani drugie (§1, „Koder z VizRS Live”) |
+| PUT | `/api/live/encoder` | `{"preset":"veryfast", "profile":"high", "x264_params":"bframes=0:subme=0", "nvenc_preset":"p5", "qsv_preset":"slow", "bframes":"0"}` – wszystkie klucze; puste, `null` albo brak = domyślne; walidacja (listy wartości, biała lista opcji x264, klatki B 0–4), zapis `encoder.json`, wpis w `log.jsonl` |
 
 **Reguły grafiki przez API (`/api/live/graphics`, `src/graphics.rs`).** Dokument
 ma kształt tych pól z `config.json`: `on_clip`, `on_ad`, `ad_match` (`path`,
@@ -1419,9 +1825,12 @@ Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
 `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Panel (`LIVE_IMAGE`) i proxy
 (`PROXY_IMAGE`) to zawsze najnowsze wydania (`vizrs-live:latest`,
 `caddy:alpine`; od 2026-11-09), a ErsatzTV z mostem (`LIVE_LEGACY_IMAGE`)
-zostaje przypięty do wydania VizRS Live (1.2.7) – podnosi go nowe wydanie
+zostaje przypięty do wydania VizRS Live (26.11.1) – podnosi go nowe wydanie
 panelu, które zmienia most. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
-zmiana jednego wymaga zmiany drugiego. Cofnięcie: usunięcie nakładki ze stosu
+zmiana jednego wymaga zmiany drugiego. Zgodność kopii, środowiska usługi `live`
+(z nakładką `compose.cg-playout.yml` VizRS Live) i `docker-compose.vaapi.yml`
+sprawdza `scripts/check-cg-overlay.sh` w VizRS Live – uruchamia go każde
+`tests/deploy.sh` panelu i przerywa wdrożenie przy rozjeździe. Cofnięcie: usunięcie nakładki ze stosu
 i redeploy (ErsatzTV wraca na oficjalny obraz z tą samą bazą).
 
 ### Dane startowe (`seed/`)
@@ -1576,7 +1985,16 @@ Sprawdzenie: `docker compose exec ersatztv nvidia-smi` i
 Komunikat `could not select device driver "nvidia"` oznacza starą wersję nakładki
 albo brak specyfikacji CDI. Grafika się nie
 zmienia – trafia do ffmpeg ErsatzTV jako surowe klatki (§1), więc sidecar i jego
-Chromium nie potrzebują GPU. ErsatzTV wysyła je na kartę (`format=yuva420p,hwupload_cuda`)
+Chromium nie potrzebują GPU. Nakładka daje kartę także kontenerowi `cg`:
+z `VIZRS_BROWSER_GPU=1` Chromium rysuje na GPU (EGL przez ANGLE: `--use-gl=angle
+--use-angle=gl-egl` zamiast `--disable-gpu`; sterownik EGL NVIDIA wstrzykuje CDI,
+`libEGL.so.1` jest w obrazie; Vulkan w ANGLE nie działa bez okna). Pomiar
+2026-11-11 na Quadro P400 (zrzuty PNG 1920×1080 strony z paskiem, crawlem,
+rozmyciem i zegarem): 66 ms CPU na klatkę zamiast 179 ms, za ok. 67 MiB pamięci
+GPU. Renderer natywny (`renderer: auto|native`) zawsze rysuje na CPU, więc
+przełącznik działa tylko na sceny rysowane przez Chromium (np. ruch `node.motion`).
+Sprawdzenie: w logu Chromium (`DEBUG=1`) brak `GLDisplayEGL::Initialize failed`,
+a `nvidia-smi` pokazuje proces `chromium-headless-shell`. ErsatzTV wysyła je na kartę (`format=yuva420p,hwupload_cuda`)
 i nakłada `overlay_cuda`; `VIZRS_FFMPEG_FPS` działa też na klatkach CUDA. Karty konsumenckie ograniczają liczbę
 równoległych sesji NVENC, czyli kanałów transkodowanych naraz.
 
@@ -1648,6 +2066,7 @@ vizrs-cg config.json      # albo CONFIG=config.json vizrs-cg
   "tape": false,
   "renderer": "chromium",
   "renderer_bin": "",
+  "native_layers": true,
   "ingest_token": ""
 }
 ```
@@ -1660,6 +2079,9 @@ samym JSON-em; błędny JSON w env trafia do logu i jest pomijany, błędny wpis
 w pliku zatrzymuje start z nazwą pola): §1, Audycje na żywo w ramówce.
 `panel_token` (env `VIZRS_PANEL_TOKEN`; ustawiona pusta zmienna wyłącza
 token z pliku): token live API dla VizRS Live, puste = API wyłączone (§1, Live API).
+`alert_webhook` (env `VIZRS_ALERT_WEBHOOK`): adres, pod który idą alarmy
+dziennika emisji (utrata sygnału, wstrzymane studio, zdjęta grafika); puste =
+bez alarmów poza przeglądarką (§1, Live API).
 `ingest` (env `VIZRS_INGEST`, ta sama wartość co w usłudze odbiorników; tylko
 pierwsze wypełnienie – po zapisie wejść w VizRS Live obowiązuje `inputs.json`),
 `ingest_public` (env `VIZRS_INGEST_PUBLIC`: host, pod którym nadawcy widzą
@@ -1704,11 +2126,14 @@ kanału), `VIZRS_CAPTURE_MODE` (`frames` albo `screencast`, niżej),
 `VIZRS_TAPE=1` (taśmę crawla przesuwa sidecar, §1; `0` wyłącza),
 `VIZRS_RENDERER` (`chromium`, `native` albo `auto` – kto rysuje grafikę, §1;
 błędna wartość = `chromium` z ostrzeżeniem), `VIZRS_RENDERER_BIN` (program
-`vizrs-render`; puste = obok sidecara albo w `PATH`),
+`vizrs-render`; puste = obok sidecara albo w `PATH`), `VIZRS_NATIVE_LAYERS`
+(`0` = jeden proces renderera natywnego na całą antenę; domyślnie proces na
+warstwę show, §1 „Renderer natywny VizRS”),
 `VIZRS_INGEST_TOKEN`, `VIZRS_INGEST_ANYTIME`, `VIZRS_LIVE_SHOWS` (live ingest, §1),
 `VIZRS_PANEL_TOKEN` (live API dla VizRS Live, §1),
 `VIZRS_BROWSER`, `VIZRS_BROWSER_NO_SANDBOX=1` (root / kontenery),
 `VIZRS_BROWSER_ARGS` (dodatkowe flagi Chromium, rozdzielone spacją),
+`VIZRS_BROWSER_GPU=1` / `"browser_gpu": true` (Chromium rysuje na GPU, §4 NVIDIA; `0` wyłącza),
 `DEBUG=1`.
 
 Nieznana opcja w pliku trafia do logu jako ostrzeżenie. Zły typ wartości
@@ -1729,12 +2154,18 @@ a przy nakładce ffmpeg jej `x-etv-frame-rate` albo `VIZRS_FFMPEG_FPS`. Przy
 materiału, więc przechwytywanie idzie za nim w górę i w dół (przy kilku
 sesjach najwyższy; `/health`: `fps`).
 
-**Bezpiecznik płynności** (tryb `frames`): gdy w oknie 5 s Chromium nie zdąży
-narysować ponad 10% klatek, rysuje połowę klatkażu, nie mniej niż 24 kl./s
+**Bezpiecznik płynności** (tryb `frames`): gdy w dwóch kolejnych oknach 5 s
+Chromium albo renderer natywny nie zdąży narysować ponad 10% klatek, rysuje
+połowę klatkażu, nie mniej niż 24 kl./s
 (50 → 25, 60 → 30; kanału 25 nie obniża). Połowa dzieli się całkowicie, więc
 ruch zostaje równy: każdy obraz trwa dwie klatki. Gdy przez 60 s rysowanie
 zajmuje mniej niż 40% czasu, klatkaż wraca; nieudany powrót podwaja ten czas
 (do 1 h). `/health`: `drawn_fps`, w logu `too slow for the channel's rate`.
+Jedno złe okno to seria, nie przeciążenie: wejście dużej planszy kosztuje
+renderer natywny kilka klatek po 50–200 ms, a połowa klatkażu tego nie
+skraca. Z jednym oknem kanał 1080p50 spadał na 25 kl./s co minutę na
+kolejną minutę; z dwoma oknami trzyma 50 kl./s (pomiar 2026-11-11, Quadro
+P400, renderer na warstwę, ok. 1% klatek z opóźnieniem).
 Stały `max_fps` nie jest więc potrzebny, a taki, który nie dzieli klatkażu
 kanału, psuje ruch: 30 na kanale 50 dało 80% równo wobec 99,7% bez limitu.
 Bezpiecznik jest ochroną, a nie celem: lepiej ustawić obszar grafiki (§1).
@@ -1943,6 +2374,9 @@ klatkażu raz na kilka (np. 50 kl./s przy `25`: równo = krok co drugą klatkę)
 | `pictures_per_s` | nowe obrazy grafiki na sekundę (animacja przy 25 fps: ok. 25) |
 | `mb_per_s` | strumień do ErsatzTV albo ffmpeg |
 | `even_percent`, `stood_percent`, `skipped_percent` | klatki wyjścia z ruchem równym (ideał 100%), stojącym i z przeskokiem (scena `animated`) |
+| `ffmpeg_cpu_percent` | z `BENCH_GPU=1`: CPU procesu ffmpeg nakładającego grafikę, % jednego rdzenia |
+| `gpu_mib`, `gpu_card_mib` | z `BENCH_GPU=1`: najwyższa pamięć GPU tego ffmpeg i całej karty w czasie pomiaru (`nvidia-smi`, co 1 s), MiB |
+| `ffmpeg_error` | z `BENCH_GPU=1`: ffmpeg zakończył się w czasie pomiaru (ostatnie linie jego błędów) |
 
 Zmienne środowiskowe (wszystkie opcjonalne):
 
@@ -1960,6 +2394,11 @@ Zmienne środowiskowe (wszystkie opcjonalne):
 | `BENCH_RENDER` | – | `render_size` sidecara, np. `720p` |
 | `BENCH_AREA` | – | `area` sidecara, np. `1920x140+0+930` (pasek z tickerem sceny) albo z logo `1920x140+0+930,160x160+1690+30`; znacznik kroku trafia w lewy górny róg pierwszego obszaru |
 | `BENCH_TAPE` | – | `1` = `tape` sidecara (§1; z `BENCH_URL` i crawlem VizRS na antenie) |
+| `BENCH_DELTA` | – | `1` = tryb `ffmpeg` czyta klatki jako deltę (`delta=1`, jak `vizrs-ffmpeg`, §1 Nakładka ffmpeg), składane z powrotem w całe klatki do oceny ruchu |
+| `BENCH_GPU` | – | `1` = tryb `ffmpeg` przekazuje klatki też do prawdziwego ffmpeg, który nakłada je tak jak `vizrs-ffmpeg` przy `VIZRS_FFMPEG_CUDA=overlay` (na każdy obszar `crop`, `hwupload`, `overlay_cuda` w jego miejscu, na obraz testowy `testsrc2` kanału; klatki wracają do RAM dla kodera), i mierzy CPU oraz pamięć GPU tego ffmpeg; tylko NVIDIA, poza Dockerem (`nvidia-smi`, ffmpeg z CUDA i NVENC) |
+| `BENCH_GPU_ENCODER` | `h264_nvenc` | koder ffmpeg z `BENCH_GPU=1` (NVENC: `-preset p1 -bf 0`) |
+| `BENCH_GPU_MIN_FREE` | `400` | z `BENCH_GPU=1`: najmniej wolnej pamięci karty [MiB] przed startem ffmpeg, inaczej pomiar się nie zaczyna (karta bywa dzielona z działającym kanałem) |
+| `BENCH_FFMPEG` | `ffmpeg` | ffmpeg dla `BENCH_GPU=1` |
 | `BENCH_WARMUP` | `10` | rozgrzewka przed pomiarem [s] |
 | `BENCH_DURATION` | `30` | pomiar [s] |
 
@@ -2034,6 +2473,17 @@ docker compose -f bench/docker-compose.yml -p virtrs-bench down --rmi local
 
   `BENCH_SCENE_FPS` ustawia tempo sceny na klatkaż, do którego zejdzie
   bezpiecznik; bez tego pomiar liczy kroki dla pełnego klatkażu.
+
+- **Delta klatek nakładki** (2026-11-11, `BENCH_MODES=ffmpeg`, 1080p50, cały
+  kanał, host z działającym lokalnym stosem – Chromium dawał tylko 11–23
+  obrazów/s): strumień 259,5 MB/s całymi klatkami, 21–28 MB/s deltą (−90%).
+  CPU sidecara podobne w obu trybach (36–49%, zależnie od liczby obrazów do
+  zamiany); zysk jest po stronie odbiorcy i jądra (pętla TCP), którego ten
+  pomiar nie obejmuje. Na lokalnym stosie (renderer natywny na warstwę,
+  `area: auto`) po wdrożeniu delty, wstrzymania i poprawionych śladów:
+  kontener `cg` 15% zamiast 30–39%, `vizrs-ffmpeg` 5% zamiast 22% – przy
+  strefach 44% kadru zamiast 57% i całego kadru, więc nie cały spadek to
+  delta.
 
 - **Obszar grafiki** (`BENCH_AREA=1920x140+0+930`, ten sam host, kanał
   1080p, render 1080p; równo / stoi / przeskok, CPU sidecara / przeglądarki,

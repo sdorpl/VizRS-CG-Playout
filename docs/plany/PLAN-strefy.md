@@ -1,6 +1,10 @@
 # PLAN-strefy – strefy grafiki liczone z tego, co jest na antenie
 
-> Stan: w toku – S0–S3a, S4, S5 (CG Playout) zrobione 2026-11-07; zostają S3b, S6 i wiersz w VizRS Live. Opis działania po wdrożeniu – `docs/DOKUMENTACJA.md` §1 („Obszar grafiki”).
+> Stan: w toku – S0–S3a, S4, S5 (CG Playout) zrobione 2026-11-07, S3b – 2026-11-11; zostają S6 i wiersz w VizRS Live. Opis działania po wdrożeniu – `docs/DOKUMENTACJA.md` §1 („Obszar grafiki”).
+>
+> Poprawki 2026-11-11 (lokalny stos: strefy zawsze „cały kanał”, sidecar 120% CPU): (1) ślady uczone z komórek siatki 16 px i czasu ich pojawienia się zamiast z widocznych prostokątów – prostokąty łączyły grafiki ułożone jedna nad drugą (QR `ipg1` miał ślad 1712x560 razem z tytułem, ticker 1920x568), a ślad nigdy się nie kurczy; `footprints.json` `version: 2`, starszy plik = nauka od nowa; (2) nakładka zdolna poszerzać strefy (S3b) mówi to w `/ffmpeg` (`follow=1`) i dostaje tylko ślady stron na antenie i z reguł – ślad raz widzianego wipe'a (`ti_pg_wipe`, 70% kadru) nie zabiera stref każdemu przebiegowi; S3a („wszystkie znane strony”) zostaje dla nakładki bez przebiegów; (3) klatki `yuva420p` budowane z poprzedniej (tylko zmienione wiersze) i liczone na liczbach całkowitych – DOKUMENTACJA §1.
+
+> Poprawki 2026-11-12 (grafika ucięta zaraz po wejściu): (1) uczenie i wykrywanie patrzyły na jeden obraz co 0,5 s, więc wjazd krótszy niż to nie trafiał do śladu i był ucinany przy każdym wejściu – teraz liczą się komórki wszystkich obrazów wysłanych przez sesje kanału; (2) strumień nakładki sprawdza każdy obraz przed wysłaniem: obraz poza strefami wstrzymuje przebieg (najwyżej 3 s, w zapasie `lead_seconds`) i od razu poszerza strefy, nakładka zamyka staremu ffmpeg rurę grafiki i pyta o strefy co 100 ms – nowy przebieg pokazuje wejście grafiki od pierwszej klatki (DOKUMENTACJA §1).
 
 ## Problem
 
@@ -95,6 +99,26 @@ Benchmark `bench/sidecar.mjs`, tryb `ffmpeg`, 1920×1080, host lokalnej produkcj
 
 Wniosek dla S2: atlas układa strefy jedna pod drugą z szerokością najszerszej, więc logo 320 px zajmuje w nim 1920 px szerokości (43% ekranu zamiast 30% pikseli stref). S2 powinno układać strefy obok siebie, gdy się mieszczą (pakowanie półkowe), albo sklejać je tylko przy zysku.
 
+## Wynik S0 – powtórka z pamięcią GPU (2026-11-12)
+
+Ten sam host (Quadro P400, 2 GB, emisja kanału i pulpit w tle), binarka sidecara z działającego kontenera `cg`, `bench/sidecar.mjs` z `BENCH_GPU=1`: klatki idą też do prawdziwego ffmpeg z grafem nakładki przy `VIZRS_FFMPEG_CUDA=overlay` (`crop` + `hwupload` + `overlay_cuda` na strefę, `h264_nvenc`), pamięć GPU z `nvidia-smi` co 1 s (najwyższa w 30 s pomiaru). Chrome rysował tym razem animację (20–30 obrazów/s).
+
+| Klatkaż | Strefy | MB/s do ffmpeg | CPU sidecara | CPU ffmpeg | Pamięć GPU ffmpeg |
+|---|---|---|---|---|---|
+| 50 | cały ekran | 206 | 43% | 55% | 111 MiB |
+| 50 | belka `1920x300+0+780` + logo `320x160+1580+30` | 110 | 49% | 53% | 111 MiB |
+| 25 | cały ekran | 130 | 31% | 28% | 107 MiB |
+| 25 | belka + logo | 55 | 28% | 23% | 101 MiB |
+
+Dla porównania sam ffmpeg tym grafem bez grafiki (`hwupload`, `hwdownload`, NVENC, 1080p50) ma 83 MiB, a z grafiką pełnoekranową z `lavfi` (bez czekania na pipe) – 123 MiB.
+
+Wnioski:
+
+- **Strefy prawie nie zmieniają pamięci GPU** (0–6 MiB z ok. 110 MiB na proces). Większość to kontekst CUDA i koder; grafika pełnoekranowa dokłada najwyżej ok. 40 MiB. Brak pamięci karty z 2026-11-07 brał się z klatek materiału czekających na muxer (poprawione 2026-11-11 w `VIZRS_FFMPEG_CUDA=overlay`), nie z rozmiaru grafiki.
+- Strefy dają to, co w pierwszym S0: **ok. 2× mniej danych przez pipe** (206 → 110 MB/s przy 50 kl./s, 130 → 55 przy 25) i trochę mniej CPU ffmpeg przy 25 kl./s (28% → 23%). CPU sidecara się nie zmienia, bo renderer przy `auto` i tak rysuje cały kanał (różnice w granicach szumu: inna liczba obrazów na sekundę).
+- Dla pozostałych prac: zawyżony ślad strony (np. po przeniesieniu strony w Artist) kosztuje pasmo pipe, a nie pamięć karty, więc unieważnianie śladu po zmianie sceny ma niski priorytet.
+- Równość ruchu (`even_percent` 3–35%) nie jest tu miarodajna: Chrome z pulpitu dzielił CPU i GPU z emisją.
+
 ## Punkty
 
 | Punkt | Zakres | Wymaga | Stan |
@@ -103,7 +127,7 @@ Wniosek dla S2: atlas układa strefy jedna pod drugą z szerokością najszersze
 | S1 | Rejestr śladów stron: uczenie z `visible_rects` przy znanych stronach na antenie, normalizacja, `footprints.json`, testy jednostkowe (przypisanie pikseli, sklejanie, unieważnienie przy zmianie show) | S0 | zrobione (2026-11-07; `src/footprint.rs`, uczenie co 0,5 s w wątku sidecara, `VIZRS_AREA=auto`) |
 | S2 | `VIZRS_AREA=auto`: zestaw stref przebiegu przy `GET /ffmpeg` (strony na antenie + reguły kawałka), sklejanie, nieznana strona → cały ekran; test kontraktu nakładki z atlasem zmiennym między przebiegami | S1 | zrobione (2026-11-07; renderer dalej rysuje cały kanał – oszczędność na strumieniu, wysyłce na GPU i nakładaniu; pakowanie atlasu obok siebie – osobno) |
 | S3a | Strefy przebiegu = ślady wszystkich znanych stron rozmiaru kanału (znana strona wzięta przez operatora nie jest ucięta); piksele poza strefami: ostrzeżenie i licznik `outside` | S2 | zrobione (2026-11-07) |
-| S3b | Poszerzenie w trakcie przebiegu: flaga z wyprzedzenia (`TAKE`, `STATE`) i z pikseli poza strefami, nowy przebieg przez ścieżkę przebiegów `takeover.rs`, limit 1/10 s. **Wymaga zmiany nakładki:** strumień klatek grafiki jest dziś jeden na kawałek ze stałym układem (`Sink::new(frame)` w `overlay::with_graphics`), więc poszerzenie potrzebuje drugiego strumienia `/ffmpeg/frames` tej samej sesji (sidecar dziś odmawia), nowego `Sink` z innym rozmiarem klatki i ogólnego wyzwalacza restartu przebiegu w `takeover::sequence` (dziś tylko live); działa tylko dla kawałków idących przez sekwencję (`VIZRS_FFMPEG_INGEST`) | S3a | do zrobienia |
+| S3b | Poszerzenie w trakcie przebiegu: flaga z wyprzedzenia (`TAKE`, `STATE`) i z pikseli poza strefami, nowy przebieg przez ścieżkę przebiegów `takeover.rs`, limit 1/10 s. **Wymaga zmiany nakładki:** strumień klatek grafiki jest dziś jeden na kawałek ze stałym układem (`Sink::new(frame)` w `overlay::with_graphics`), więc poszerzenie potrzebuje drugiego strumienia `/ffmpeg/frames` tej samej sesji (sidecar dziś odmawia), nowego `Sink` z innym rozmiarem klatki i ogólnego wyzwalacza restartu przebiegu w `takeover::sequence` (dziś tylko live); działa tylko dla kawałków idących przez sekwencję (`VIZRS_FFMPEG_INGEST`) | S3a | zrobione (2026-11-11; wyprzedzenie z `STATE` co 0,5 s – strona bez śladu albo ze śladem poza strefami, bez osobnej ścieżki dla `TAKE` sidecara; `/ffmpeg/zones` + kolejny strumień `/ffmpeg/frames?rev=…`; kawałek ze strefami `auto` idzie przez przebiegi także bez live ingestu w sidecarze; test `tests/contract/zones.test.mjs`; poprawka 2026-11-11: przy przejęciu także strony zdjęte na reklamę i strony elementów `page=`/`take=` kanału z ostatnich 10 min – ich sesja przychodzi po przejęciu, a pierwszy kawałek po reklamach poszerzał się do całego kanału) |
 | S4 | Zwężanie przy naturalnym starcie przebiegu (histereza) | S3a | zrobione z założenia (strefy liczone tylko przy starcie przebiegu, S2) |
 | S5 | `/health` i log (strefy, % ekranu, poszerzenia), DOKUMENTACJA §1 i §5 (`VIZRS_AREA=auto`); w VizRS Live – wiersz w „Stan” Diagnostyki | S2 | zrobione w CG Playout (2026-11-07, `/health` → `zones`); wiersz w VizRS Live – osobno |
 | S6 | (opcjonalnie, repo VizRS CG System) `GET /pages/<n>/bounds` – granice stron z układu szablonu; sidecar używa ich przed śladem z pikseli | S2 | do zrobienia |

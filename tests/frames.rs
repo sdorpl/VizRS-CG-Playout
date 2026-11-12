@@ -41,7 +41,7 @@ fn yuva_frames_match_node() {
                 let (width, height, rgba) = paint(source.get("picture").unwrap());
                 let rects = boxes(source)
                     .into_iter()
-                    .map(|(x, y, w, h)| Rect { x, y, w, h, pixels: vizrs_cg::packets::crop(&rgba, width, (x, y, w, h)) })
+                    .map(|(x, y, w, h)| Rect { x, y, w, h, pixels: vizrs_cg::packets::crop(&rgba, width, (x, y, w, h)).into() })
                     .collect::<Vec<_>>();
                 (rects, width, height)
             }
@@ -53,7 +53,7 @@ fn yuva_frames_match_node() {
                         y: num(r, "y"),
                         w: num(r, "w"),
                         h: num(r, "h"),
-                        pixels: base64(r.get("pixels_b64").and_then(Value::as_str).unwrap()),
+                        pixels: base64(r.get("pixels_b64").and_then(Value::as_str).unwrap()).into(),
                     })
                     .collect();
                 (rects, num(case, "width"), num(case, "height"))

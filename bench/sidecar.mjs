@@ -9,10 +9,16 @@
 // would take it: the scene's marker tells whether the motion moved by exactly
 // one step (even), stood or skipped.
 // Results: a table and one JSON line on stdout (DOKUMENTACJA §8).
+// BENCH_GPU=1 (ffmpeg mode, NVIDIA): the frames also go to a real ffmpeg that
+// overlays them as vizrs-ffmpeg does with VIZRS_FFMPEG_CUDA=overlay (one
+// hwupload + overlay_cuda per area, NVENC), and its CPU and GPU memory
+// (nvidia-smi) are measured.
 //
 //   cargo build --release && node bench/sidecar.mjs
 //   VIRTRS_CG_BIN=/usr/local/bin/vizrs-cg node bench/sidecar.mjs
 
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { readFileSync, readdirSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -43,6 +49,14 @@ const TAPE = env.BENCH_TAPE === "1";
 // corner of the first, ffmpeg asks for their frames.
 const AREA = env.BENCH_AREA || "";
 const [AX, AY] = (/^\d+x\d+\+(\d+)\+(\d+)/.exec(AREA) ?? [0, 0, 0]).slice(1).map(Number);
+// ffmpeg mode: frames as delta records (`delta=1`, as vizrs-ffmpeg asks; DOKUMENTACJA §1), put
+// back together into whole frames for the check, as vizrs-ffmpeg does for ffmpeg.
+const DELTA = env.BENCH_DELTA === "1";
+// ffmpeg mode: a real CUDA overlay with NVENC fed with the frames (NVIDIA only).
+const GPU = env.BENCH_GPU === "1";
+const GPU_ENCODER = env.BENCH_GPU_ENCODER || "h264_nvenc";
+// Free GPU memory needed before the overlay starts [MiB]: the card may be shared with a running channel.
+const GPU_MIN_FREE = Number(env.BENCH_GPU_MIN_FREE || 400);
 const CLK_TCK = 100;
 const HEADER = 11;
 
@@ -79,6 +93,79 @@ function descendantsCpu(pid) {
   }
   pids.delete(pid);
   return [...pids].reduce((sum, child) => sum + all.get(child).cpu, 0);
+}
+
+/** `nvidia-smi` query as rows of numbers (`[]` on any error). */
+function smi(query) {
+  try {
+    const out = execFileSync("nvidia-smi", [query, "--format=csv,noheader,nounits"], { encoding: "utf8", timeout: 2000 });
+    return out.trim().split("\n").map((line) => line.split(",").map((v) => Number(v.trim())));
+  } catch {
+    return [];
+  }
+}
+
+/** GPU memory [MiB]: of process `pid` (null when it has none) and of the whole card. */
+function gpuMemory(pid) {
+  const own = smi("--query-compute-apps=pid,used_memory").find(([p]) => p === pid);
+  const [card] = smi("--query-gpu=memory.used");
+  return { own: own ? own[1] : null, card: card ? card[0] : null };
+}
+
+/**
+ * ffmpeg overlaying graphics frames of the atlas `aw`x`ah` (areas stacked, the
+ * first on top: [w, h, x, y]) on a test picture of the channel, as vizrs-ffmpeg
+ * builds it (placed_areas): split, crop of each area, hwupload, overlay_cuda at
+ * its place; frames back to RAM for the encoder (VIZRS_FFMPEG_CUDA=overlay).
+ */
+function startOverlay(fps, areas, aw, ah) {
+  const [free] = smi("--query-gpu=memory.free")[0] ?? [];
+  if (free === undefined) throw new Error("BENCH_GPU=1: nvidia-smi does not answer");
+  if (free < GPU_MIN_FREE) throw new Error(`BENCH_GPU=1: ${free} MiB free on the GPU, less than BENCH_GPU_MIN_FREE=${GPU_MIN_FREE}`);
+  const n = areas.length;
+  const graph = [`[0:v]format=yuv420p,hwupload[vz_m0]`];
+  const sources = n === 1 ? ["1:v"] : areas.map((_, i) => `vz_s${i}`);
+  if (n > 1) graph.push(`[1:v]split=${n}${sources.map((s) => `[${s}]`).join("")}`);
+  let row = 0;
+  areas.forEach(([w, h, x, y], i) => {
+    graph.push(`[${sources[i]}]crop=${w}:${h}:0:${row},format=yuva420p,hwupload[vz_g${i}]`);
+    graph.push(`[vz_m${i}][vz_g${i}]overlay_cuda=x=${x}:y=${y}[vz_m${i + 1}]`);
+    row += h;
+  });
+  graph.push(`[vz_m${n}]hwdownload,format=yuv420p[vz_out]`);
+  const args = [
+    "-hide_banner", "-nostats", "-loglevel", "error",
+    "-init_hw_device", "cuda=vz:0", "-filter_hw_device", "vz",
+    "-re", "-f", "lavfi", "-i", `testsrc2=size=${WIDTH}x${HEIGHT}:rate=${fps}`,
+    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", `${aw}x${ah}`, "-framerate", String(fps), "-i", "pipe:0",
+    "-filter_complex", graph.join(";"), "-map", "[vz_out]",
+    "-c:v", GPU_ENCODER, ...(GPU_ENCODER.endsWith("_nvenc") ? ["-preset", "p1", "-bf", "0"] : []), "-f", "null", "-",
+  ];
+  const child = spawn(env.BENCH_FFMPEG || "ffmpeg", args, { stdio: ["pipe", "ignore", "pipe"] });
+  let errors = "";
+  child.stderr.on("data", (d) => (errors = (errors + d).slice(-2000)));
+  child.stdin.on("error", () => {});
+  const queue = [];
+  return {
+    pid: child.pid,
+    errors: () => errors.trim(),
+    exited: () => child.exitCode !== null || child.signalCode !== null,
+    push: (buffer) => queue.push(Buffer.from(buffer)),
+    /** Writes the queued frames bytes, waiting for ffmpeg like a pipe does. */
+    async flush() {
+      while (queue.length && !child.stdin.destroyed) {
+        if (!child.stdin.write(queue.shift())) await Promise.race([once(child.stdin, "drain"), once(child, "exit")]);
+      }
+      queue.length = 0;
+    },
+    async stop() {
+      child.stdin.destroy();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await once(child, "exit").catch(() => {});
+      }
+    },
+  };
 }
 
 /**
@@ -172,6 +259,32 @@ function yuvaSteps(points, push, [px, py, pw, ph]) {
   };
 }
 
+/** Delta records (src/delta.rs) of frames of `size` bytes -> `whole(frame)` for every record. */
+function deltaFrames(size, whole) {
+  const frame = Buffer.alloc(size);
+  let pending = Buffer.alloc(0);
+  return (chunk) => {
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+    for (;;) {
+      if (pending.length < 8) return;
+      const count = pending.readUInt32LE(4);
+      const table = 8 + count * 8;
+      if (pending.length < table) return;
+      let length = table;
+      for (let i = 0; i < count; i++) length += pending.readUInt32LE(8 + i * 8 + 4);
+      if (pending.length < length) return;
+      let at = table;
+      for (let i = 0; i < count; i++) {
+        const [offset, bytes] = [pending.readUInt32LE(8 + i * 8), pending.readUInt32LE(12 + i * 8)];
+        pending.copy(frame, offset, at, at + bytes);
+        at += bytes;
+      }
+      whole(frame);
+      pending = pending.subarray(length);
+    }
+  };
+}
+
 /**
  * Share of output frames that move as they should, stand where they should not
  * or skip: the scene steps once per `hold` output frames (1, or 2 with a 50 fps
@@ -252,18 +365,36 @@ async function run(mode) {
   // The overlay takes the session over; the script session stays open (and silent), as in ErsatzTV.
   if (mode === "ffmpeg") {
     const claim = await (await fetch(`${cg.url}/ffmpeg?channel=1&wait=5000&area=1`)).json();
-    const frames = await fetch(`${cg.url}/ffmpeg/frames?session=${claim.session}&fps=${FFMPEG_FPS}&area=1`);
+    const frames = await fetch(`${cg.url}/ffmpeg/frames?session=${claim.session}&fps=${FFMPEG_FPS}&area=1${DELTA ? "&delta=1" : ""}`);
     readers.push(frames.body.getReader());
   }
   // Steps of the stream ErsatzTV or ffmpeg reads (the last one), kept during the measurement.
   const push = (step) => probe.steps?.push(step);
-  const parse = mode === "ffmpeg" ? yuvaSteps(points, push, [ax, ay, aw, ah]) : packetSteps(points, push);
+  const yuva = mode === "ffmpeg" && yuvaSteps(points, push, [ax, ay, aw, ah]);
+  const frameBytes = aw * ah * 2 + Math.ceil(aw / 2) * Math.ceil(ah / 2) * 2;
+  const parse = !yuva ? packetSteps(points, push) : DELTA ? deltaFrames(frameBytes, yuva) : yuva;
+  // The real overlay gets whole frames (delta records put together as vizrs-ffmpeg does).
+  let gpu = null;
+  try {
+    gpu = mode === "ffmpeg" && GPU ? startOverlay(fps, areas, aw, ah) : null;
+  } catch (error) {
+    for (const reader of readers) reader.cancel().catch(() => {});
+    await cg.stop();
+    throw error;
+  }
+  const feed = gpu && (DELTA ? deltaFrames(frameBytes, gpu.push) : gpu.push);
   const drain = Promise.all(readers.map(async (reader, index) => {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       bytes += value.length;
-      if (index === readers.length - 1 && SCENE === "animated") parse(Buffer.from(value.buffer, value.byteOffset, value.length));
+      if (index !== readers.length - 1) continue;
+      const chunk = Buffer.from(value.buffer, value.byteOffset, value.length);
+      if (SCENE === "animated") parse(chunk);
+      if (gpu) {
+        feed(chunk);
+        await gpu.flush();
+      }
     }
   })).catch(() => {});
 
@@ -271,9 +402,24 @@ async function run(mode) {
   const health0 = await cg.health();
   const seq0 = health0.captures[0]?.seq ?? 0;
   const [u0, c0, b0, t0] = [usage(cg.pid), descendantsCpu(cg.pid), bytes, performance.now()];
+  const f0 = gpu && !gpu.exited() ? usage(gpu.pid).cpu : 0;
   probe.steps = [];
-  await sleep(DURATION * 1000);
+  // GPU memory sampled every second while measuring: the highest of the process and of the card.
+  const memory = { own: null, card: null };
+  for (const end = t0 + DURATION * 1000; performance.now() < end;) {
+    await sleep(Math.min(1000, end - performance.now()));
+    if (!gpu || gpu.exited()) continue;
+    const now = gpuMemory(gpu.pid);
+    for (const key of ["own", "card"]) if (now[key] !== null) memory[key] = Math.max(memory[key] ?? 0, now[key]);
+  }
   const seconds = (performance.now() - t0) / 1000;
+  const gpuResult = gpu && {
+    ffmpeg_cpu_percent: gpu.exited() ? null : Math.round(((usage(gpu.pid).cpu - f0) / seconds) * 1000) / 10,
+    gpu_mib: memory.own,
+    gpu_card_mib: memory.card,
+    ...(gpu.exited() ? { ffmpeg_error: gpu.errors() || "ffmpeg exited" } : {}),
+  };
+  await gpu?.stop();
   const [u1, c1, health1] = [usage(cg.pid), descendantsCpu(cg.pid), await cg.health()];
   const seq1 = health1.captures[0]?.seq ?? 0;
   // The crawl drawn by the sidecar at the end and the films taken while measuring.
@@ -287,7 +433,7 @@ async function run(mode) {
   const capture = health0.captures[0] ?? {};
   return {
     build: path.basename(env.VIRTRS_CG_BIN || "vizrs-cg"),
-    mode,
+    mode: mode === "ffmpeg" && DELTA ? "ffmpeg delta" : mode,
     size: `${WIDTH}x${HEIGHT}`,
     render: capture.render,
     area: capture.area ?? "",
@@ -301,6 +447,7 @@ async function run(mode) {
     rss_mb: Math.round(u1.rss_mb),
     pictures_per_s: Math.round(((seq1 - seq0) / seconds) * 10) / 10,
     mb_per_s: Math.round(((bytes - b0) / seconds / 1e6) * 10) / 10,
+    ...(gpuResult ?? {}),
     ...(SCENE === "animated" ? motion(steps, Math.max(1, Math.round(fps / sceneFps))) : {}),
   };
 }
