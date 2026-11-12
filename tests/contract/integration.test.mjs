@@ -922,6 +922,25 @@ test("VIZRS_FFMPEG_NO_SHORTEST: -shortest left out where the output ends at a -t
   assert.deepEqual((await run(open, { VIZRS_FFMPEG_NO_SHORTEST: "1" })).args, open);
 });
 
+test("VIZRS_FFMPEG_NO_DISCARDCORRUPT: the MPEG-TS channel stream keeps the frame at each join of pieces", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  // ErsatzTV's channel stream: its own HLS (a new ffmpeg per piece) copied to MPEG-TS.
+  const stream = (flags) => [
+    "-nostdin", "-threads", "1", "-hide_banner", "-fflags", flags, "-readrate", "1.0",
+    "-i", "http://localhost:8409/iptv/channel/1.m3u8?mode=segmenter&subtitles=false", "-map", "0", "-c", "copy", "-f", "mpegts", "pipe:1",
+  ];
+  const run = (args, env) => runWrapper(args, { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", ...env });
+  assert.deepEqual((await run(stream("+genpts+discardcorrupt+igndts"), { VIZRS_FFMPEG_NO_DISCARDCORRUPT: "1" })).args, stream("+genpts+igndts"));
+  assert.deepEqual((await run(stream("+genpts+discardcorrupt+igndts"), {})).args, stream("+genpts+discardcorrupt+igndts"), "off by default");
+  // A transcode of a playlist (not a copy): unchanged.
+  const transcode = ["-fflags", "+genpts+discardcorrupt", "-i", "http://h/a.m3u8", "-c:v", "libx264", "-f", "mpegts", "pipe:1"];
+  assert.deepEqual((await run(transcode, { VIZRS_FFMPEG_NO_DISCARDCORRUPT: "1" })).args, transcode);
+});
+
 test("graphics rules from the live API: validated, saved, in force from the next item, kept after a restart", async (t) => {
   const vizrs = await fakeVizrs();
   t.after(vizrs.close);

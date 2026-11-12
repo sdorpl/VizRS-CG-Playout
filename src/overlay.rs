@@ -54,6 +54,7 @@
 //     VIZRS_FFMPEG_CUDA_MIN_FREE  free GPU memory in MiB for overlay in auto (default 400)
 //     VIZRS_FFMPEG_NVENC_BF  B-frames of hardware encoders (NVENC, QSV, VAAPI), e.g. 0 (empty: ffmpeg's)
 //     VIZRS_FFMPEG_SYNC_RAM  1 = with CUDA overlay, media frames wait for the graphics in RAM, not on the card
+//     VIZRS_FFMPEG_NO_DISCARDCORRUPT  1 = a stream copy of an HLS playlist keeps the frame at each join of pieces
 //
 // The graphics of a canvas transcode with `-init_hw_device cuda` go to the
 // card through `hwupload` (that device), not `hwupload_cuda`: each
@@ -100,6 +101,13 @@
 // the graphics pace the media, and a piece no longer starts behind the
 // schedule (its burst never made up the seek's preroll), so the overlay reads
 // its frames while the history still holds their pictures – no jump.
+//
+// With VIZRS_FFMPEG_NO_DISCARDCORRUPT=1 a stream copy of an HLS playlist
+// (ErsatzTV's MPEG-TS channel stream reads its own HLS that way) loses
+// `discardcorrupt` from its `-fflags`: each piece of the channel is a new
+// ffmpeg whose MPEG-TS continuity counters start at 0, so the demuxer flags
+// the last video frame of the piece before as corrupt and the flag dropped
+// it – a 40 ms freeze at every join (44 s), though the frame decodes intact.
 //
 // With VIZRS_FFMPEG_CUDA=auto a command encoding with NVENC and CUDA asks
 // `nvidia-smi` for the free memory of the card first (at most 1 s): with at
@@ -212,6 +220,8 @@ pub struct Settings {
     pub no_shortest: bool,
     /// With `Cuda::Overlay`, media frames wait for the graphics in RAM (VIZRS_FFMPEG_SYNC_RAM).
     pub sync_ram: bool,
+    /// Stream copies of HLS playlists keep frames flagged corrupt (VIZRS_FFMPEG_NO_DISCARDCORRUPT).
+    pub no_discardcorrupt: bool,
 }
 
 /// What of a command encoding with NVENC stays on the card (`VIZRS_FFMPEG_CUDA`).
@@ -260,6 +270,7 @@ impl Settings {
             cuda_min_free: var("VIZRS_FFMPEG_CUDA_MIN_FREE").trim().parse().unwrap_or(DEFAULT_CUDA_MIN_FREE),
             no_shortest: var("VIZRS_FFMPEG_NO_SHORTEST").trim() == "1",
             sync_ram: var("VIZRS_FFMPEG_SYNC_RAM").trim() == "1",
+            no_discardcorrupt: var("VIZRS_FFMPEG_NO_DISCARDCORRUPT").trim() == "1",
         }
         .with_encoder_file(&std::env::var("VIZRS_FFMPEG_SETTINGS").unwrap_or_else(|_| encoder::DEFAULT_PATH.into()))
     }
@@ -608,6 +619,42 @@ pub fn without_shortest(args: Vec<OsString>, on: bool) -> Vec<OsString> {
     args.into_iter().enumerate().filter(|(i, a)| *i < output || a != "-shortest").map(|(_, a)| a).collect()
 }
 
+/// `VIZRS_FFMPEG_NO_DISCARDCORRUPT=1`: a stream copy (`-c copy`, `-c:v copy`…)
+/// of an HLS playlist input (`….m3u8`) loses `discardcorrupt` from the
+/// `-fflags` of that input; `-fflags` left empty goes. The joins of the
+/// pieces of a channel reset the MPEG-TS continuity counters, so the last
+/// frame of each piece was flagged corrupt and dropped. Any other command
+/// unchanged.
+pub fn keeping_corrupt(args: Vec<OsString>, on: bool) -> Vec<OsString> {
+    let copy = args.windows(2).any(|w| COPY.iter().any(|(flag, value)| w[0] == *flag && w[1] == *value));
+    let Some(input) = args
+        .windows(2)
+        .position(|w| w[0] == "-i" && w[1].to_str().is_some_and(|i| i.split('?').next().is_some_and(|p| p.ends_with(".m3u8"))))
+    else {
+        return args;
+    };
+    if !on || !copy {
+        return args;
+    }
+    // The `-fflags` of that input: after the input before it, before its `-i`.
+    let start = args[..input].iter().rposition(|a| a == "-i").map_or(0, |i| i + 2);
+    let Some(at) = (start..input).find(|&i| args[i] == "-fflags" && i + 1 < input) else { return args };
+    let Some(flags) = args[at + 1].to_str() else { return args };
+    // Only flags set with `+` (as ErsatzTV gives them): anything else unchanged.
+    let Some(set) = flags.strip_prefix('+').filter(|f| !f.contains('-')) else { return args };
+    if !set.split('+').any(|f| f == "discardcorrupt") {
+        return args;
+    }
+    let kept: String = set.split('+').filter(|f| !f.is_empty() && *f != "discardcorrupt").map(|f| format!("+{f}")).collect();
+    let mut out = args;
+    if kept.is_empty() {
+        out.drain(at..at + 2);
+    } else {
+        out[at + 1] = kept.into();
+    }
+    out
+}
+
 /// An HLS playlist input read at `-readrate` without a catch-up rate gets
 /// `-readrate_catchup <rate>` after its `-readrate`.
 pub fn with_catchup(args: Vec<OsString>, rate: &str) -> Vec<OsString> {
@@ -668,7 +715,7 @@ fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec
         &settings.qsv_preset,
     );
     let tuned = with_catchup(with_bframes(encoded, &settings.bframes), &settings.catchup);
-    without_shortest(tuned, settings.no_shortest)
+    keeping_corrupt(without_shortest(tuned, settings.no_shortest), settings.no_discardcorrupt)
 }
 
 /// A command encoding with NVENC that decodes or filters with CUDA.
@@ -2409,6 +2456,49 @@ mod tests {
         assert_eq!(media_waits_in_ram(two.clone(), true), two);
         let twice = canvas("[0:0]hwupload[m];[1:0]hwupload[g];[m][g]overlay_cuda[o];[o][1:0]overlay_cuda[v_o0]");
         assert_eq!(media_waits_in_ram(twice.clone(), true), twice);
+    }
+
+    #[test]
+    fn hls_stream_copy_keeps_frames_flagged_corrupt() {
+        // ErsatzTV's MPEG-TS channel stream: its own HLS copied.
+        let ts = |flags: &str| {
+            args(&[
+                "-nostdin",
+                "-threads",
+                "1",
+                "-fflags",
+                flags,
+                "-readrate",
+                "1.0",
+                "-i",
+                "http://localhost:8409/iptv/channel/1.m3u8?mode=segmenter&subtitles=false",
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-f",
+                "mpegts",
+                "pipe:1",
+            ])
+        };
+        assert_eq!(keeping_corrupt(ts("+genpts+discardcorrupt+igndts"), true), ts("+genpts+igndts"));
+        let only = keeping_corrupt(ts("+discardcorrupt"), true);
+        assert!(!only.contains(&OsString::from("-fflags")), "nothing left: -fflags goes");
+        // Off, no discardcorrupt, flags cleared with '-', a transcode, a file input: unchanged.
+        assert_eq!(keeping_corrupt(ts("+genpts+discardcorrupt+igndts"), false), ts("+genpts+discardcorrupt+igndts"));
+        assert_eq!(keeping_corrupt(ts("+genpts+igndts"), true), ts("+genpts+igndts"));
+        assert_eq!(keeping_corrupt(ts("+genpts-discardcorrupt"), true), ts("+genpts-discardcorrupt"));
+        let encode = args(&["-fflags", "+discardcorrupt", "-i", "a.m3u8", "-c:v", "libx264", "o.ts"]);
+        assert_eq!(keeping_corrupt(encode.clone(), true), encode);
+        let file = args(&["-fflags", "+discardcorrupt", "-i", "a.mp4", "-c", "copy", "o.ts"]);
+        assert_eq!(keeping_corrupt(file.clone(), true), file);
+        // The flags of another input stay.
+        let two =
+            args(&["-fflags", "+discardcorrupt", "-i", "a.mp4", "-fflags", "+genpts+discardcorrupt", "-i", "b.m3u8", "-c", "copy", "o"]);
+        assert_eq!(
+            keeping_corrupt(two, true),
+            args(&["-fflags", "+discardcorrupt", "-i", "a.mp4", "-fflags", "+genpts", "-i", "b.m3u8", "-c", "copy", "o"])
+        );
     }
 
     #[test]

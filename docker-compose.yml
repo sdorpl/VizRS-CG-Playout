@@ -228,6 +228,10 @@ services:
       # RAM, not on the card in front of overlay_cuda (loudnorm decodes ~3 s ahead:
       # P400, 1080p50: 359 -> 111 MiB of GPU memory, ~+430 MB RAM). Empty = off.
       VIZRS_FFMPEG_SYNC_RAM: ${VIZRS_FFMPEG_SYNC_RAM:-}
+      # 1 = the MPEG-TS channel stream (a copy of the channel's own HLS) keeps the
+      # last frame of each piece: new continuity counters per piece flagged it corrupt
+      # and -fflags +discardcorrupt dropped it (40 ms freeze every 44 s). Empty = off.
+      VIZRS_FFMPEG_NO_DISCARDCORRUPT: ${VIZRS_FFMPEG_NO_DISCARDCORRUPT:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config
