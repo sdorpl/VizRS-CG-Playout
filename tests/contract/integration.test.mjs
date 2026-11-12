@@ -475,7 +475,8 @@ process.stdout.write(JSON.stringify(result) + "\\n");
 /** Runs the wrapper like ErsatzTV runs ffmpeg; resolves with the stand-in's report. */
 function runWrapper(args, env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(WRAPPER, args, { env: { ...process.env, ...env } });
+    // No encoder.json of VizRS Live unless a test gives one (VIZRS_FFMPEG_SETTINGS).
+    const child = spawn(WRAPPER, args, { env: { ...process.env, VIZRS_FFMPEG_SETTINGS: "", ...env } });
     const out = [];
     const err = [];
     child.stdout.on("data", (chunk) => out.push(chunk));
@@ -633,6 +634,27 @@ test("ffmpeg overlay at a forced rate, blending, preset and catch-up: the media 
   assert.deepEqual(
     (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "libx264", ...hls], env)).args,
     ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-preset:v", "superfast", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
+  );
+  // Preset, profile and x264 options set in VizRS Live (encoder.json): the file
+  // as a whole instead of the environment; a value outside the lists is left out.
+  const settings = path.join(dir, "encoder.json");
+  writeFileSync(settings, JSON.stringify({ preset: "veryfast", profile: "main", x264_params: "bframes=0:subme=0" }));
+  assert.deepEqual(
+    (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "libx264", ...hls], { ...env, VIZRS_FFMPEG_SETTINGS: settings })).args,
+    ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-preset:v", "veryfast", "-profile:v", "main", "-x264-params:v", "bframes=0:subme=0", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
+  );
+  writeFileSync(settings, JSON.stringify({ preset: "", profile: "high10", x264_params: "keyint=1" }));
+  assert.deepEqual(
+    (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "libx264", ...hls], { ...env, VIZRS_FFMPEG_SETTINGS: settings, VIZRS_FFMPEG_X264_PARAMS: "subme=0" })).args,
+    ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
+    "empty values of the file are the defaults, not the environment's",
+  );
+  // NVENC: its preset and the H.264 profile from the file; B-frames from the
+  // environment while the file (of an older version) has no such key.
+  writeFileSync(settings, JSON.stringify({ preset: "veryfast", profile: "high", nvenc_preset: "p6" }));
+  assert.deepEqual(
+    (await runWrapper(["-i", "/m/Ad.mp4", "-vcodec", "h264_nvenc", "-b:v", "6000k", ...hls], { ...env, VIZRS_FFMPEG_SETTINGS: settings, VIZRS_FFMPEG_NVENC_BF: "0" })).args,
+    ["-i", "/m/Ad.mp4", "-vcodec", "h264_nvenc", "-bf:v", "0", "-preset:v", "p6", "-profile:v", "high", "-b:v", "6000k", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8"],
   );
   // A preset of ErsatzTV's own stays.
   const own = ["-i", "/m/Ad.mp4", "-vcodec", "libx264", "-preset:v", "veryfast", "-f", "null", "-"];
@@ -870,6 +892,22 @@ test("ffmpeg overlay VIZRS_FFMPEG_CUDA=auto: overlay with free GPU memory, encod
   assert.deepEqual((await run({ FREE: "250" })).args, full.args, "default threshold 300 MiB");
   const x264 = ["-i", "/m/News.mp4", "-c:v", "libx264", "/t/o.ts"];
   assert.deepEqual((await runWrapper(x264, { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", VIZRS_FFMPEG_CUDA: "auto", FREE: "1" })).args, x264);
+});
+
+test("VIZRS_FFMPEG_NO_SHORTEST: -shortest left out where the output ends at a -t anyway", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  const audio = "[0:1]loudnorm=I=-23:TP=-1.5:LRA=11,aresample=48000,apad[a]";
+  const piece = ["-i", "/m/News.mp4", "-filter_complex", audio, "-map", "0:0", "-map", "[a]", "-c:v", "libx264", "-t", "44000ms", "-shortest", "-f", "hls", "/t/o.m3u8"];
+  const run = (args, env) => runWrapper(args, { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: "", ...env });
+  assert.deepEqual((await run(piece, { VIZRS_FFMPEG_NO_SHORTEST: "1" })).args, piece.filter((arg) => arg !== "-shortest"));
+  assert.deepEqual((await run(piece, {})).args, piece, "off by default");
+  // No -t of the output: -shortest is what ends it.
+  const open = ["-i", "/m/News.mp4", "-filter_complex", audio, "-map", "0:0", "-map", "[a]", "-shortest", "-f", "hls", "/t/o.m3u8"];
+  assert.deepEqual((await run(open, { VIZRS_FFMPEG_NO_SHORTEST: "1" })).args, open);
 });
 
 test("graphics rules from the live API: validated, saved, in force from the next item, kept after a restart", async (t) => {

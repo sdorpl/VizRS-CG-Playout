@@ -134,7 +134,8 @@ fn chromium_capture_pauses_without_sessions_and_resumes_with_a_fresh_frame() {
     let seq = capture.current().seq;
     capture.acquire(25.0);
     assert_eq!(capture.status(), "capturing");
-    until("a fresh frame", || capture.current().seq > seq);
+    // the pictures from before the pause are gone; the first new one replaces them
+    until("a fresh frame", || capture.ready() && capture.current().seq > seq);
     assert_eq!(capture.current().picture().rects.len(), 1);
     capture.stop();
 }
@@ -194,7 +195,8 @@ fn chromium_frames_capture_shows_the_page_pauses_and_resumes() {
 
     let seq = capture.current().seq;
     capture.acquire(25.0);
-    until("a fresh frame", || capture.current().seq > seq);
+    // the pictures from before the pause are gone; the first new one replaces them
+    until("a fresh frame", || capture.ready() && capture.current().seq > seq);
     assert_eq!(boxes(&capture), [(40, 300, 400, 60)]);
     capture.stop();
 }

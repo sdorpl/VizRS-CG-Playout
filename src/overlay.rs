@@ -39,6 +39,11 @@
 //     VIZRS_FFMPEG       real ffmpeg (default /usr/local/bin/ffmpeg)
 //     VIZRS_FFMPEG_FPS   channel frame rate, e.g. 50 (empty: the media's rate)
 //     VIZRS_FFMPEG_PRESET  x264/x265 preset, e.g. veryfast (empty: ErsatzTV's)
+//     VIZRS_FFMPEG_X264_PARAMS  libx264 options, e.g. bframes=0:subme=0 (empty: none)
+//     VIZRS_FFMPEG_SETTINGS  encoder settings set in VizRS Live (x264 preset, H.264 profile,
+//                        x264 options, NVENC and QSV presets, hardware B-frames); each key
+//                        the file has instead of the variables
+//                        (default /config/vizrs-live/encoder.json, src/encoder.rs)
 //     VIZRS_FFMPEG_READRATE_CATCHUP  catch-up rate of HLS inputs, e.g. 2 (empty: none)
 //     VIZRS_FFMPEG_FPS_BLEND  1 = blend frames when converting the media's rate
 //     VIZRS_FFMPEG_INGEST  1 = live ingest of the sidecar takes the channel over
@@ -47,7 +52,7 @@
 //                        overlay = decoding on the CPU, filters and overlay on the card;
 //                        auto = overlay while the card has VIZRS_FFMPEG_CUDA_MIN_FREE MiB free, encode below
 //     VIZRS_FFMPEG_CUDA_MIN_FREE  free GPU memory in MiB for overlay in auto (default 400)
-//     VIZRS_FFMPEG_NVENC_BF  B-frames of NVENC encoders, e.g. 0 (empty: ffmpeg's)
+//     VIZRS_FFMPEG_NVENC_BF  B-frames of hardware encoders (NVENC, QSV, VAAPI), e.g. 0 (empty: ffmpeg's)
 //
 // The graphics of a canvas transcode with `-init_hw_device cuda` go to the
 // card through `hwupload` (that device), not `hwupload_cuda`: each
@@ -114,6 +119,7 @@ use std::time::Duration;
 use regex::Regex;
 
 use crate::area::Area;
+use crate::encoder::{self, Encoder};
 use crate::http::percent_decode;
 use crate::json::{self, Value};
 use crate::net::{Url, connect, error, read_head, read_head_text, status_of};
@@ -165,6 +171,10 @@ pub struct Settings {
     pub fps: String,
     /// Preset of software encoders without one; empty = ErsatzTV's.
     pub preset: String,
+    /// H.264 profile of libx264 without one (`-profile:v`); only from VizRS Live, empty = x264's.
+    pub profile: String,
+    /// Options of libx264 (`-x264-params`); empty = none.
+    pub x264_params: String,
     /// Catch-up rate of HLS playlist inputs read at `-readrate`; empty = ffmpeg's.
     pub catchup: String,
     /// Blend frames in the media's frame rate conversion.
@@ -175,10 +185,16 @@ pub struct Settings {
     pub standby: String,
     /// What of an NVENC command stays on the card (VIZRS_FFMPEG_CUDA).
     pub cuda: Cuda,
-    /// B-frames of NVENC encoders without `-bf`; empty = ffmpeg's.
-    pub nvenc_bf: String,
+    /// Preset of NVENC encoders without one (p1–p7); only from VizRS Live, empty = ffmpeg's (p4).
+    pub nvenc_preset: String,
+    /// Preset of QSV encoders without one; only from VizRS Live, empty = the driver's.
+    pub qsv_preset: String,
+    /// B-frames of hardware encoders (NVENC, QSV, VAAPI) without `-bf`; empty = ffmpeg's.
+    pub bframes: String,
     /// Free GPU memory (MiB) `Cuda::Auto` needs for `overlay` (VIZRS_FFMPEG_CUDA_MIN_FREE).
     pub cuda_min_free: u64,
+    /// `-shortest` left out of commands whose output has a `-t` (VIZRS_FFMPEG_NO_SHORTEST).
+    pub no_shortest: bool,
 }
 
 /// What of a command encoding with NVENC stays on the card (`VIZRS_FFMPEG_CUDA`).
@@ -214,14 +230,36 @@ impl Settings {
             sidecar: var("VIZRS_CG_URL").trim_end_matches('/').to_owned(),
             fps: var("VIZRS_FFMPEG_FPS").trim().to_owned(),
             preset: var("VIZRS_FFMPEG_PRESET").trim().to_owned(),
+            profile: String::new(),
+            x264_params: var("VIZRS_FFMPEG_X264_PARAMS").trim().to_owned(),
             catchup: var("VIZRS_FFMPEG_READRATE_CATCHUP").trim().to_owned(),
             blend: var("VIZRS_FFMPEG_FPS_BLEND").trim() == "1",
             ingest: var("VIZRS_FFMPEG_INGEST").trim() == "1",
             standby: var("VIZRS_FFMPEG_STANDBY").trim().to_owned(),
             cuda: Cuda::parse(&var("VIZRS_FFMPEG_CUDA")),
-            nvenc_bf: var("VIZRS_FFMPEG_NVENC_BF").trim().to_owned(),
+            nvenc_preset: String::new(),
+            qsv_preset: String::new(),
+            bframes: var("VIZRS_FFMPEG_NVENC_BF").trim().to_owned(),
             cuda_min_free: var("VIZRS_FFMPEG_CUDA_MIN_FREE").trim().parse().unwrap_or(DEFAULT_CUDA_MIN_FREE),
+            no_shortest: var("VIZRS_FFMPEG_NO_SHORTEST").trim() == "1",
         }
+        .with_encoder_file(&std::env::var("VIZRS_FFMPEG_SETTINGS").unwrap_or_else(|_| encoder::DEFAULT_PATH.into()))
+    }
+
+    /// The encoder settings of VizRS Live (`encoder.json`, src/encoder.rs) over
+    /// those of the environment, key by key; `path` empty or no file = the environment's.
+    pub fn with_encoder_file(self, path: &str) -> Settings {
+        let env = Encoder {
+            preset: self.preset.clone(),
+            profile: self.profile.clone(),
+            x264_params: self.x264_params.clone(),
+            nvenc_preset: self.nvenc_preset.clone(),
+            qsv_preset: self.qsv_preset.clone(),
+            bframes: self.bframes.clone(),
+        };
+        let (Encoder { preset, profile, x264_params, nvenc_preset, qsv_preset, bframes }, _) =
+            Encoder::in_force((!path.is_empty()).then(|| Path::new(path)), &env);
+        Settings { preset, profile, x264_params, nvenc_preset, qsv_preset, bframes, ..self }
     }
 }
 
@@ -447,40 +485,109 @@ fn source_rate(settings: &Settings, input: &str) -> Option<f64> {
     None
 }
 
-/// A software video encoder without a preset gets `-preset:v <preset>`.
-pub fn with_preset(args: Vec<OsString>, preset: &str) -> Vec<OsString> {
-    let has_preset = args.iter().any(|a| a.to_str().is_some_and(|a| a == "-preset" || a.starts_with("-preset:")));
-    if preset.is_empty() || has_preset {
+/// `<flag> <value>` right after the video encoder (`-c:v <name>`) when
+/// `value(name)` gives one and the command has no `<flag>` of its own (`-preset`
+/// or `-preset:v`; `flag` without the stream specifier).
+fn after_encoder(args: Vec<OsString>, flag: &str, value: impl Fn(&str) -> Option<String>) -> Vec<OsString> {
+    let own = args.iter().any(|a| a.to_str().is_some_and(|a| a == flag || a.strip_prefix(flag).is_some_and(|rest| rest.starts_with(':'))));
+    if own {
         return args;
     }
     let mut out = Vec::with_capacity(args.len() + 2);
     let mut previous: Option<&OsString> = None;
     for arg in &args {
         out.push(arg.clone());
-        if previous.is_some_and(|p| CODEC.iter().any(|c| p == c)) && PRESET_ENCODERS.iter().any(|e| arg == e) {
-            out.extend(["-preset:v".into(), preset.into()]);
+        let encoder = previous.is_some_and(|p| CODEC.iter().any(|c| p == c)).then(|| arg.to_str()).flatten();
+        if let Some(v) = encoder.and_then(&value).filter(|v| !v.is_empty()) {
+            out.extend([format!("{flag}:v").into(), v.into()]);
         }
         previous = Some(arg);
     }
     out
 }
 
-/// An NVENC video encoder without `-bf` gets `-bf:v <frames>` (a number).
-pub fn with_bframes(args: Vec<OsString>, frames: &str) -> Vec<OsString> {
-    let has_bf = args.iter().any(|a| a.to_str().is_some_and(|a| a == "-bf" || a.starts_with("-bf:")));
-    if frames.is_empty() || !frames.bytes().all(|b| b.is_ascii_digit()) || has_bf {
+/// A software video encoder without a preset gets `-preset:v <preset>`.
+pub fn with_preset(args: Vec<OsString>, preset: &str) -> Vec<OsString> {
+    with_presets(args, preset, "", "")
+}
+
+/// The preset of the encoder in the command: x264/x265 (`software`), NVENC
+/// (`nvenc`: p1–p7) or QSV (`qsv`); a command with its own `-preset` keeps it.
+/// VAAPI has no preset.
+pub fn with_presets(args: Vec<OsString>, software: &str, nvenc: &str, qsv: &str) -> Vec<OsString> {
+    after_encoder(args, "-preset", |encoder| {
+        let preset = if PRESET_ENCODERS.contains(&encoder) {
+            software
+        } else if encoder.ends_with("_nvenc") {
+            nvenc
+        } else if encoder.ends_with("_qsv") {
+            qsv
+        } else {
+            ""
+        };
+        Some(preset.to_owned())
+    })
+}
+
+/// An H.264 encoder without a profile (libx264, NVENC, QSV, VAAPI) gets
+/// `-profile:v <profile>` (baseline, main, high; VAAPI: `constrained_baseline`
+/// for baseline). HEVC and other encoders keep theirs: their profiles differ.
+pub fn with_profile(args: Vec<OsString>, profile: &str) -> Vec<OsString> {
+    if profile.is_empty() {
         return args;
+    }
+    after_encoder(args, "-profile", |encoder| encoder::profile_for(encoder, profile))
+}
+
+/// A libx264 encoder gets `-x264-params:v <params>`; options it already has
+/// (ErsatzTV's `-x264-params`) come first, so ours win where both set one.
+pub fn with_x264_params(args: Vec<OsString>, params: &str) -> Vec<OsString> {
+    if params.is_empty() {
+        return args;
+    }
+    let existing = args.iter().position(|a| a.to_str().is_some_and(|a| a == "-x264-params" || a.starts_with("-x264-params:")));
+    if let Some(i) = existing.filter(|i| i + 1 < args.len()) {
+        let mut out = args;
+        let joined = match out[i + 1].to_str() {
+            Some(old) if !old.is_empty() => format!("{old}:{params}"),
+            _ => params.to_owned(),
+        };
+        out[i + 1] = joined.into();
+        return out;
     }
     let mut out = Vec::with_capacity(args.len() + 2);
     let mut previous: Option<&OsString> = None;
     for arg in &args {
         out.push(arg.clone());
-        if previous.is_some_and(|p| CODEC.iter().any(|c| p == c)) && arg.to_str().is_some_and(|a| a.ends_with("_nvenc")) {
-            out.extend(["-bf:v".into(), frames.into()]);
+        if previous.is_some_and(|p| CODEC.iter().any(|c| p == c)) && arg == "libx264" {
+            out.extend(["-x264-params:v".into(), params.into()]);
         }
         previous = Some(arg);
     }
     out
+}
+
+/// A hardware video encoder (NVENC, QSV, VAAPI) without `-bf` gets `-bf:v <frames>` (a number).
+pub fn with_bframes(args: Vec<OsString>, frames: &str) -> Vec<OsString> {
+    if frames.is_empty() || !frames.bytes().all(|b| b.is_ascii_digit()) {
+        return args;
+    }
+    after_encoder(args, "-bf", |encoder| encoder::is_hardware(encoder).then(|| frames.to_owned()))
+}
+
+/// The command without `-shortest` when its output ends at a `-t` anyway.
+/// With `apad` and `loudnorm` (ErsatzTV: about 3 s ahead), `-shortest` holds the
+/// raw video frames until the audio of the same time comes: 150 frames of
+/// 1080p50, 657 MB of ffmpeg's memory instead of 268 MB, twice at a change of
+/// item (VIZRS_FFMPEG_NO_SHORTEST). The output is as long either way.
+pub fn without_shortest(args: Vec<OsString>, on: bool) -> Vec<OsString> {
+    let Some(last) = (0..args.len().saturating_sub(1)).rev().find(|&i| args[i] == "-i") else { return args };
+    let output = last + 2;
+    let ends = args.iter().skip(output).any(|a| a == "-t");
+    if !on || !ends {
+        return args;
+    }
+    args.into_iter().enumerate().filter(|(i, a)| *i < output || a != "-shortest").map(|(_, a)| a).collect()
 }
 
 /// An HLS playlist input read at `-readrate` without a catch-up rate gets
@@ -519,7 +626,7 @@ pub fn with_catchup(args: Vec<OsString>, rate: &str) -> Vec<OsString> {
     out
 }
 
-/// The command with the forced rate, blending, preset, B-frames and catch-up
+/// The command with the forced rate, blending, preset, profile, x264 options, B-frames and catch-up
 /// rate, when set; `burst` = seconds of graphics ready at once (`paced_media`).
 fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec<OsString> {
     let cuda = match settings.cuda {
@@ -535,7 +642,15 @@ fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
     let blended = with_blend(rated, settings.blend, source);
-    with_catchup(with_bframes(with_preset(blended, &settings.preset), &settings.nvenc_bf), &settings.catchup)
+    // Each goes right after the encoder: the last inserted comes first (preset, profile, options).
+    let encoded = with_presets(
+        with_profile(with_x264_params(blended, &settings.x264_params), &settings.profile),
+        &settings.preset,
+        &settings.nvenc_preset,
+        &settings.qsv_preset,
+    );
+    let tuned = with_catchup(with_bframes(encoded, &settings.bframes), &settings.catchup);
+    without_shortest(tuned, settings.no_shortest)
 }
 
 /// A command encoding with NVENC that decodes or filters with CUDA.
@@ -2065,7 +2180,7 @@ mod tests {
     }
 
     #[test]
-    fn bframes_only_for_nvenc_encoders_without_them() {
+    fn bframes_only_for_hardware_encoders_without_them() {
         let nvenc = args(&["-i", "a", "-vcodec", "h264_nvenc", "-b:v", "6000k", "o"]);
         assert_eq!(with_bframes(nvenc.clone(), "0"), args(&["-i", "a", "-vcodec", "h264_nvenc", "-bf:v", "0", "-b:v", "6000k", "o"]));
         assert_eq!(with_bframes(nvenc.clone(), ""), nvenc);
@@ -2074,6 +2189,33 @@ mod tests {
         assert_eq!(with_bframes(own.clone(), "0"), own);
         let x264 = args(&["-i", "a", "-vcodec", "libx264", "o"]);
         assert_eq!(with_bframes(x264.clone(), "0"), x264);
+        for hardware in ["h264_qsv", "h264_vaapi", "hevc_vaapi"] {
+            assert_eq!(with_bframes(args(&["-c:v", hardware, "o"]), "1"), args(&["-c:v", hardware, "-bf:v", "1", "o"]));
+        }
+    }
+
+    #[test]
+    fn presets_of_each_encoder() {
+        let run = |encoder: &str| with_presets(args(&["-i", "a", "-c:v", encoder, "o"]), "veryfast", "p5", "slow");
+        assert_eq!(run("libx264"), args(&["-i", "a", "-c:v", "libx264", "-preset:v", "veryfast", "o"]));
+        assert_eq!(run("hevc_nvenc"), args(&["-i", "a", "-c:v", "hevc_nvenc", "-preset:v", "p5", "o"]));
+        assert_eq!(run("h264_qsv"), args(&["-i", "a", "-c:v", "h264_qsv", "-preset:v", "slow", "o"]));
+        assert_eq!(run("h264_vaapi"), args(&["-i", "a", "-c:v", "h264_vaapi", "o"]));
+        let nvenc = args(&["-i", "a", "-c:v", "h264_nvenc", "o"]);
+        assert_eq!(with_presets(nvenc.clone(), "veryfast", "", "slow"), nvenc);
+        let own = args(&["-i", "a", "-c:v", "h264_nvenc", "-preset", "p7", "o"]);
+        assert_eq!(with_presets(own.clone(), "", "p1", ""), own);
+    }
+
+    #[test]
+    fn shortest_goes_only_with_an_output_duration() {
+        let full = args(&["-t", "44000ms", "-i", "m.mp4", "-i", "pipe:6", "-map", "[v]", "-t", "44000ms", "-shortest", "-f", "hls", "o"]);
+        let without = args(&["-t", "44000ms", "-i", "m.mp4", "-i", "pipe:6", "-map", "[v]", "-t", "44000ms", "-f", "hls", "o"]);
+        assert_eq!(without_shortest(full.clone(), true), without);
+        assert_eq!(without_shortest(full.clone(), false), full);
+        // No -t of the output (only of an input): -shortest ends it, it stays.
+        let open = args(&["-t", "44000ms", "-i", "m.mp4", "-map", "[v]", "-shortest", "-f", "hls", "o"]);
+        assert_eq!(without_shortest(open.clone(), true), open);
     }
 
     #[test]
@@ -2140,6 +2282,51 @@ mod tests {
         assert_eq!(with_preset(nvenc.clone(), "superfast"), nvenc);
         let canvas = args(&["-f", "rawvideo", "-i", "pipe:0", "-c:v", "ffv1", "-f", "nut", "pipe:1"]);
         assert_eq!(with_preset(canvas.clone(), "superfast"), canvas);
+    }
+
+    #[test]
+    fn x264_params_only_for_libx264() {
+        let x264 = args(&["-i", "a", "-vcodec", "libx264", "-b:v", "1500k", "-f", "hls", "o"]);
+        assert_eq!(
+            with_x264_params(x264.clone(), "bframes=0:subme=0"),
+            args(&["-i", "a", "-vcodec", "libx264", "-x264-params:v", "bframes=0:subme=0", "-b:v", "1500k", "-f", "hls", "o"])
+        );
+        assert_eq!(with_x264_params(x264.clone(), ""), x264);
+        let own = args(&["-i", "a", "-c:v", "libx264", "-x264-params", "keyint=50", "o"]);
+        assert_eq!(with_x264_params(own, "subme=0"), args(&["-i", "a", "-c:v", "libx264", "-x264-params", "keyint=50:subme=0", "o"]));
+        for other in ["libx265", "h264_nvenc", "h264_vaapi"] {
+            let command = args(&["-i", "a", "-c:v", other, "o"]);
+            assert_eq!(with_x264_params(command.clone(), "subme=0"), command);
+        }
+    }
+
+    #[test]
+    fn profile_for_h264_encoders_without_one() {
+        let x264 = args(&["-i", "a", "-c:v", "libx264", "o"]);
+        assert_eq!(with_profile(x264.clone(), "main"), args(&["-i", "a", "-c:v", "libx264", "-profile:v", "main", "o"]));
+        assert_eq!(with_profile(x264.clone(), ""), x264);
+        let own = args(&["-i", "a", "-c:v", "libx264", "-profile:v", "high", "o"]);
+        assert_eq!(with_profile(own.clone(), "main"), own);
+        let nvenc = args(&["-i", "a", "-c:v", "h264_nvenc", "o"]);
+        assert_eq!(with_profile(nvenc, "high"), args(&["-i", "a", "-c:v", "h264_nvenc", "-profile:v", "high", "o"]));
+        let vaapi = args(&["-c:v", "h264_vaapi", "o"]);
+        assert_eq!(with_profile(vaapi, "baseline"), args(&["-c:v", "h264_vaapi", "-profile:v", "constrained_baseline", "o"]));
+        let hevc = args(&["-c:v", "hevc_nvenc", "o"]);
+        assert_eq!(with_profile(hevc.clone(), "main"), hevc);
+    }
+
+    #[test]
+    fn encoder_file_over_environment() {
+        let dir = std::env::temp_dir().join(format!("vizrs-overlay-encoder-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(encoder::FILE);
+        let env = || Settings { preset: "veryfast".into(), x264_params: "subme=0".into(), ..Settings::from_env().with_encoder_file("") };
+        let missing = env().with_encoder_file(path.to_str().unwrap());
+        assert_eq!((missing.preset.as_str(), missing.x264_params.as_str()), ("veryfast", "subme=0"));
+        std::fs::write(&path, r#"{"preset":"superfast","profile":"main","x264_params":"keyint=1"}"#).unwrap();
+        let set = env().with_encoder_file(path.to_str().unwrap());
+        assert_eq!((set.preset.as_str(), set.profile.as_str(), set.x264_params.as_str()), ("superfast", "main", ""), "the file as a whole");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

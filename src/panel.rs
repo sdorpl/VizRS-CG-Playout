@@ -23,6 +23,12 @@
 //   POST   /api/live/channels/<n>/take    {"page": "101"} one page on the channel's antenna (K13)
 //   POST   /api/live/channels/<n>/continue {"layer": …} · /out {"layer": …} one layer
 //   GET    /api/live/asrun?channel=&day=  the as-run log of a day (K14, src/asrun.rs)
+//   GET    /api/live/encoder              encoder settings of the ffmpeg overlay in force (x264
+//                                         preset, H.264 profile, x264 options, NVENC/QSV presets,
+//                                         hardware B-frames), and where from
+//   PUT    /api/live/encoder              {"preset", "profile", "x264_params", "nvenc_preset",
+//                                         "qsv_preset", "bframes"} ("" or null = default):
+//                                         encoder.json, from the next ffmpeg (src/encoder.rs)
 //
 // `features` of `/api/live/state` says what this build can do, so an older
 // sidecar never breaks a newer VizRS Live: it shows only what is listed.
@@ -306,6 +312,7 @@ impl Panel {
                 Err(e) => crate::warn!("{}: {e}", path.display()),
             }
         }
+        panel.fill_encoder();
         if let Some(path) = panel.inputs_path() {
             match fs::read_to_string(&path).map(|text| inputs_from_json(&text)) {
                 Ok(Ok(list)) => *lock(&panel.listeners) = (list, true),
@@ -357,6 +364,92 @@ impl Panel {
 
     fn control_path(&self) -> Option<PathBuf> {
         (!self.etv_config.is_empty()).then(|| live_shows::folder(&self.etv_config).join("control.json"))
+    }
+
+    fn encoder_path(&self) -> Option<PathBuf> {
+        (!self.etv_config.is_empty()).then(|| live_shows::folder(&self.etv_config).join(crate::encoder::FILE))
+    }
+
+    /// `GET /api/live/encoder`: what the overlay uses from the next ffmpeg and
+    /// where it comes from: `panel` (`encoder.json`, as a whole), `env` (no file
+    /// yet: the environment) or `default` (neither: ffmpeg as ErsatzTV calls it).
+    fn encoder_json(&self) -> Value {
+        use crate::encoder::{Encoder, MAX_BFRAMES, NVENC_PRESETS, PRESETS, PROFILES, QSV_PRESETS, X264_KEYS};
+        let env = &self.config.ffmpeg_encoder;
+        let (used, from_file) = Encoder::in_force(self.encoder_path().as_deref(), env);
+        let from = if from_file {
+            "panel"
+        } else if !env.is_empty() {
+            "env"
+        } else {
+            "default"
+        };
+        let list = |items: &[&str]| Value::Array(items.iter().map(|&i| i.into()).collect());
+        json::object([
+            ("used", used.to_value()),
+            ("from", from.into()),
+            ("store", (!self.etv_config.is_empty()).into()),
+            ("presets", list(&PRESETS)),
+            ("profiles", list(&PROFILES)),
+            ("x264_keys", list(&X264_KEYS)),
+            ("nvenc_presets", list(&NVENC_PRESETS)),
+            ("qsv_presets", list(&QSV_PRESETS)),
+            ("max_bframes", f64::from(MAX_BFRAMES).into()),
+        ])
+    }
+
+    /// First filling of `encoder.json` from the environment (`VIZRS_FFMPEG_PRESET`,
+    /// `VIZRS_FFMPEG_X264_PARAMS`, `VIZRS_FFMPEG_NVENC_BF`), once: from then on VizRS
+    /// Live sets the encoder.
+    fn fill_encoder(&self) {
+        let env = &self.config.ffmpeg_encoder;
+        let Some(path) = self.encoder_path() else { return };
+        if env.is_empty() || path.exists() {
+            return;
+        }
+        let env = crate::encoder::Encoder::from_value(&env.to_value()).unwrap_or_else(|e| {
+            crate::warn!("VIZRS_FFMPEG_PRESET / _X264_PARAMS / _NVENC_BF: {e}; encoder.json not filled");
+            crate::encoder::Encoder::default()
+        });
+        if env.is_empty() {
+            return;
+        }
+        match fs::create_dir_all(live_shows::folder(&self.etv_config)).and_then(|()| crate::sync::write_atomic(&path, &env.to_json())) {
+            Ok(()) => crate::info!("{}: filled from the environment; VizRS Live sets the encoder from now on", path.display()),
+            Err(e) => crate::warn!("{}: {e}", path.display()),
+        }
+    }
+
+    /// `PUT /api/live/encoder`: every value (src/encoder.rs `KEYS`); empty, `null` or missing = the default.
+    fn put_encoder(&self, body: &Value, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        let encoder = match crate::encoder::Encoder::from_value(body) {
+            Ok(encoder) => encoder,
+            Err(e) => return fail(stream, 400, &format!("koder: {e}")),
+        };
+        let Some(path) = self.encoder_path() else {
+            return fail(stream, 409, "brak etv_config – ustawień kodera nie ma gdzie zapisać");
+        };
+        let written =
+            fs::create_dir_all(live_shows::folder(&self.etv_config)).and_then(|()| crate::sync::write_atomic(&path, &encoder.to_json()));
+        if let Err(e) = written {
+            return fail(stream, 500, &format!("zapis {}: {e}", crate::encoder::FILE));
+        }
+        let shown = |v: &str, default: &str| if v.is_empty() { default.to_owned() } else { v.to_owned() };
+        self.record(
+            ingest,
+            who,
+            "",
+            &format!(
+                "koder zmieniony (od następnego ffmpeg): preset {}, profil {}, opcje x264 {}, preset NVENC {}, preset QSV {}, klatki B sprzętowe {}",
+                shown(&encoder.preset, "domyślny"),
+                shown(&encoder.profile, "domyślny"),
+                shown(&encoder.x264_params, "brak"),
+                shown(&encoder.nvenc_preset, "domyślny"),
+                shown(&encoder.qsv_preset, "domyślny"),
+                shown(&encoder.bframes, "domyślne")
+            ),
+        );
+        reply(stream, 200, &self.encoder_json())
     }
 
     fn inputs_path(&self) -> Option<PathBuf> {
@@ -718,6 +811,8 @@ impl Panel {
             ("PUT", ["graphics"]) => self.put_graphics(&body, &mut stream, ingest, &who),
             ("GET", ["inputs"]) => reply(&mut stream, 200, &self.inputs_json(ingest)),
             ("PUT", ["inputs"]) => self.put_inputs(&body, &mut stream, ingest, &who),
+            ("GET", ["encoder"]) => reply(&mut stream, 200, &self.encoder_json()),
+            ("PUT", ["encoder"]) => self.put_encoder(&body, &mut stream, ingest, &who),
             ("GET", ["shows"]) => reply(&mut stream, 200, &self.shows_state()),
             ("POST", ["shows", "scan"]) => self.scan(&mut stream, ingest, &who),
             ("POST", ["shows"]) => self.create(&body, &mut stream, ingest, &who),
@@ -780,7 +875,7 @@ impl Panel {
 
     /// What this build can do, for VizRS Live (an older sidecar simply lists less).
     fn features(&self) -> Vec<Value> {
-        let mut features = vec![Value::from("layers"), Value::from("take"), Value::from("asrun")];
+        let mut features = vec![Value::from("layers"), Value::from("take"), Value::from("asrun"), Value::from("encoder")];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
         }

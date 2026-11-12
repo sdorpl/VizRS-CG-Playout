@@ -93,6 +93,10 @@ pub struct Config {
     pub etv_config: String,
     /// ErsatzTV's address, e.g. `http://ersatztv:8409`.
     pub etv_url: String,
+    /// The overlay's encoder settings from the environment (`VIZRS_FFMPEG_PRESET`,
+    /// `VIZRS_FFMPEG_X264_PARAMS`, `VIZRS_FFMPEG_NVENC_BF`, the same `.env` as the
+    /// ErsatzTV service): only the first filling of `encoder.json`, which VizRS Live edits.
+    pub ffmpeg_encoder: crate::encoder::Encoder,
     /// The ErsatzTV programs in the image, and the volume they go to; "" = not installed.
     pub client_source: String,
     pub client_dir: String,
@@ -181,6 +185,7 @@ impl Default for Config {
             channels: Vec::new(),
             channel_buses: false,
             etv_config: String::new(),
+            ffmpeg_encoder: crate::encoder::Encoder::default(),
             etv_url: String::new(),
             client_source: String::new(),
             client_dir: String::new(),
@@ -469,6 +474,15 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_ETV_CONFIG") {
             config.etv_config = v;
+        }
+        if let Some(v) = env("VIZRS_FFMPEG_PRESET") {
+            config.ffmpeg_encoder.preset = v.trim().to_owned();
+        }
+        if let Some(v) = env("VIZRS_FFMPEG_X264_PARAMS") {
+            config.ffmpeg_encoder.x264_params = v.trim().to_owned();
+        }
+        if let Some(v) = env("VIZRS_FFMPEG_NVENC_BF") {
+            config.ffmpeg_encoder.bframes = v.trim().to_owned();
         }
         if let Some(v) = env("VIZRS_ETV_URL") {
             config.etv_url = v.trim_end_matches('/').to_owned();

@@ -203,6 +203,8 @@ pub struct Server {
     pub footprints: Mutex<Footprints>,
     /// The layers of the show per /output URL, one native renderer each (`native_layers`).
     layers: Mutex<HashMap<String, ShowLayers>>,
+    /// The graphics timeline of each channel's overlay, carried from one run to the next.
+    carries: Mutex<HashMap<String, Arc<stream::Carry>>>,
 }
 
 /// The layers of a show for the native renderers of its /output URL.
@@ -244,6 +246,7 @@ impl Server {
         Arc::new(Server {
             footprints,
             layers: Mutex::new(HashMap::new()),
+            carries: Mutex::new(HashMap::new()),
             ingest,
             panel,
             config: Arc::new(config),
@@ -825,7 +828,13 @@ impl Server {
             *script.zones.lock().unwrap_or_else(|e| e.into_inner()) = zones;
         }
         let layout = frame_layout(&script, placed);
-        let ahead = crate::stream::graphics_ahead(script.ctx.air_ms(), crate::time::now_ms() as f64, self.config.lead_seconds);
+        let now_ms = crate::time::now_ms() as f64;
+        // Going on with the channel's timeline: all it has drawn since is ready at once.
+        let carried = script.ctx.air_ms().and_then(|air| {
+            let carry = self.carries.lock().unwrap_or_else(|e| e.into_inner()).get(&channel).cloned()?;
+            crate::stream::carried_ahead(&carry, air, now_ms, self.config.lead_seconds)
+        });
+        let ahead = carried.unwrap_or_else(|| crate::stream::graphics_ahead(script.ctx.air_ms(), now_ms, self.config.lead_seconds));
         let mut reply = json::object([
             ("session", script.id.into()),
             ("ahead", ((ahead * 1000.0).round() / 1000.0).into()),
@@ -927,22 +936,30 @@ impl Server {
             let mut held = false;
             let format = Format::Yuva { layout, hd: script.ctx.height >= 720, delta };
             let options = Options { fps, lead_seconds: self.config.lead_seconds, format, air };
-            stream::stream_watched(&*capture, &mut out, &options, &control, &mut |picture| {
-                let Some(cells) = self.draws(&script, picture, size) else { return false };
-                // A picture leaving the zones of this run (PLAN-strefy S3b): the run
-                // stops before it, so no frame is cut off, and the next one shows it.
-                if held
-                    || zones.is_empty()
-                    || cells.within(&zones)
-                    || !script.follows.load(Ordering::Relaxed)
-                    || script.streams.load(Ordering::Relaxed) != number
-                {
-                    return false;
-                }
-                held = true;
-                self.widen_for(&script, rev, &cells);
-                true
-            });
+            let carry = Arc::clone(self.carries.lock().unwrap_or_else(|e| e.into_inner()).entry(script.channel.clone()).or_default());
+            stream::stream_carried(
+                &*capture,
+                &mut out,
+                &options,
+                &control,
+                &mut |picture| {
+                    let Some(cells) = self.draws(&script, picture, size) else { return false };
+                    // A picture leaving the zones of this run (PLAN-strefy S3b): the run
+                    // stops before it, so no frame is cut off, and the next one shows it.
+                    if held
+                        || zones.is_empty()
+                        || cells.within(&zones)
+                        || !script.follows.load(Ordering::Relaxed)
+                        || script.streams.load(Ordering::Relaxed) != number
+                    {
+                        return false;
+                    }
+                    held = true;
+                    self.widen_for(&script, rev, &cells);
+                    true
+                },
+                Some(&carry),
+            );
         }
         capture.release(reader);
         // The transcode is over: the script ends with it, as without the overlay

@@ -54,9 +54,15 @@ const SETTLE: Duration = Duration::from_millis(150);
 const CHECK_MS: f64 = 1000.0;
 // Frames mode: missed slots are counted over this long; above a tenth, a warning.
 const MISSED_WINDOW: Duration = Duration::from_secs(60);
-// The rate guard: a window with over a tenth of the slots missed halves the
-// drawing rate (an even cadence, unlike any other limit), not below MIN_HALVED_FPS.
+// Frames mode: one frame drawn this slowly is logged – the channel shows the picture before it that long.
+const SLOW_SLOT: Duration = Duration::from_millis(250);
+// The rate guard: GUARD_STRAINED windows in a row with over a tenth of the slots
+// missed halve the drawing rate (an even cadence, unlike any other limit), not
+// below MIN_HALVED_FPS. One such window is a burst (a large board coming in: a few
+// frames of 50–200 ms from the native renderer), which half the rate does not
+// help and which would hold the channel at half the rate for a minute.
 const GUARD_WINDOW: Duration = Duration::from_secs(5);
+const GUARD_STRAINED: u32 = 2;
 const MIN_HALVED_FPS: f64 = 24.0;
 // Back to the full rate after this long of drawing taking under CALM_SHARE of the
 // time (at half the rate: fits the full one). Longer after a return that failed.
@@ -118,6 +124,8 @@ struct RateGuard {
     drawn: u64,
     missed: u64,
     busy: Duration,
+    /// Windows in a row with over a tenth of the slots missed.
+    strained: u32,
     calm_since: Option<Instant>,
     restored_at: Option<Instant>,
     restore_after: Duration,
@@ -130,6 +138,7 @@ impl RateGuard {
             drawn: 0,
             missed: 0,
             busy: Duration::ZERO,
+            strained: 0,
             calm_since: None,
             restored_at: None,
             restore_after: RESTORE_AFTER,
@@ -157,8 +166,14 @@ impl RateGuard {
         self.restart(now);
         if !halved {
             if !can_halve || missed * 10 <= drawn + missed || drawn == 0 {
+                self.strained = 0;
                 return None;
             }
+            self.strained += 1;
+            if self.strained < GUARD_STRAINED {
+                return None;
+            }
+            self.strained = 0;
             let failed = self.restored_at.is_some_and(|at| now.saturating_duration_since(at) < RESTORE_AFTER);
             self.restore_after = if failed { (self.restore_after * 2).min(MAX_RESTORE_AFTER) } else { RESTORE_AFTER };
             return Some(true);
@@ -477,6 +492,10 @@ impl Capture {
     }
 
     fn set_active(&self, state: &mut State, active: bool) {
+        if active && !state.active {
+            // Pictures from before the pause must not go out as the lead of a new stream.
+            self.history.restart();
+        }
         state.active = active;
         crate::info!("burn-in {}: {}", self.key(), if active { "resumed" } else { "paused, no sessions" });
         if let Some(control) = &state.control {
@@ -683,6 +702,11 @@ impl Capture {
         Ok(true)
     }
 
+    /// Asks the native renderers for the frame of the next slot (`start`), so they draw it while the capture waits.
+    fn native_ask(&self, native: &mut Layered, start: f64, complete_only: bool, force: bool) -> Result<(), String> {
+        native.ask(start, native::wall_ms(start, self.options.clock_offset), complete_only, force)
+    }
+
     /// `renderer: native`: the VizRS native renderer instead of Chromium, one frame per frame of the channel.
     fn run_native(self: &Arc<Self>) -> Result<(), String> {
         let (control, incoming) = mpsc::channel();
@@ -722,12 +746,15 @@ impl Capture {
                     slot = (sys::monotonic_ms() / frame_ms).ceil();
                     force = true;
                 }
+                // Paused: the long wait ran out, nothing to draw (not an hour of missed slots).
+                Err(RecvTimeoutError::Timeout) if !active => {}
                 Err(RecvTimeoutError::Timeout) => {
                     let start = slot * frame_ms;
                     self.native_slot(&mut native, start, instant(start), false, force)?;
                     self.native_drawing.store(true, Ordering::Relaxed);
                     force = false;
                     slot = (slot + 1.0).max((sys::monotonic_ms() / frame_ms).floor());
+                    self.native_ask(&mut native, slot * frame_ms, false, false)?;
                 }
             }
         }
@@ -979,6 +1006,11 @@ impl Capture {
             match incoming.recv_timeout(wait) {
                 Err(RecvTimeoutError::Disconnected) | Ok(Control::DevTools(Incoming::Closed)) => return Err("browser exited".into()),
                 Ok(Control::Active(on)) => {
+                    if on && !active {
+                        // After a pause: the full rate again; the guard halves it anew if the host cannot keep up.
+                        self.halved.store(false, Ordering::Relaxed);
+                        guard = RateGuard::new(Instant::now());
+                    }
                     active = on;
                     (window, drawn, missed) = (Instant::now(), 0, 0);
                     guard.restart(Instant::now());
@@ -993,6 +1025,9 @@ impl Capture {
                         return Err(format!("page closed ({method})"));
                     }
                 }
+                // Paused: the long wait ran out. Drawing now would count the hour as missed
+                // slots and halve the rate for the next viewer (`RateGuard`).
+                Err(RecvTimeoutError::Timeout) if !active => {}
                 Err(RecvTimeoutError::Timeout) => {
                     let started = Instant::now();
                     let start = slot * frame_ms;
@@ -1028,6 +1063,12 @@ impl Capture {
                         // Back to Chromium: a fresh picture of every area at the first slot.
                         (moving, last_shot, last_png) = fresh();
                         pngs = vec![None; parts.len()];
+                    }
+                    // The next slot asked of the native renderers now: they draw it while this one is made.
+                    if let Some(Err(error)) = native.as_mut().map(|n| self.native_ask(n, start + frame_ms, true, !from_native)) {
+                        crate::warn!("burn-in {}: {error}; Chromium draws", self.key());
+                        native = None;
+                        native_retry = Instant::now() + RESTART_DELAY;
                     }
                     for (i, (&(clip, _), session)) in parts.iter().zip(sessions).enumerate().filter(|_| !drawn_natively) {
                         let time = start;
@@ -1074,6 +1115,16 @@ impl Capture {
                     }
                     // Behind the grid: on with the slot of now; the missed ones repeat the picture.
                     let next = (slot + 1.0).max((sys::monotonic_ms() / frame_ms).floor());
+                    let took = started.elapsed();
+                    if took >= SLOW_SLOT {
+                        crate::warn!(
+                            "burn-in {}: a frame took {} ms ({}); the channel holds the picture before it for {} frames",
+                            self.key(),
+                            took.as_millis(),
+                            if drawn_natively { "native renderer" } else { "Chromium" },
+                            (next - slot - 1.0).max(0.0)
+                        );
+                    }
                     (drawn, missed) = (drawn + 1, missed + (next - slot - 1.0) as u64);
                     guard.slot((next - slot - 1.0) as u64, started.elapsed());
                     slot = next;
@@ -1356,6 +1407,10 @@ fn decoder(regions: Vec<(Area, Area)>, cut: Vec<Area>) -> Arc<Decode> {
 }
 
 impl Source for Capture {
+    fn ready(&self) -> bool {
+        self.history.ready()
+    }
+
     fn frame_at(&self, time: Instant) -> Arc<Frame> {
         self.history.frame_at(time)
     }
@@ -1384,8 +1439,12 @@ mod tests {
         assert_eq!(guard.verdict(at(5), false, true), None);
         guard.slot(5, Duration::ZERO);
         assert_eq!(guard.verdict(at(10), false, false), None);
+        // One window behind is a burst; a second one in a row halves.
         guard.slot(5, Duration::ZERO);
-        assert_eq!(guard.verdict(at(15), false, true), Some(true));
+        assert_eq!(guard.verdict(at(15), false, true), None, "a burst");
+        guard.slot(5, Duration::ZERO);
+        assert_eq!(guard.verdict(at(20), false, true), Some(true));
+        let at = |seconds: u64| start + Duration::from_secs(seconds + 5);
 
         // Half the rate still takes most of the time: it stays.
         guard.slot(0, Duration::from_secs(4));
@@ -1398,10 +1457,25 @@ mod tests {
 
         // That failed at once: the next return waits twice as long.
         guard.slot(9, Duration::ZERO);
-        assert_eq!(guard.verdict(at(90), false, true), Some(true));
-        assert_eq!(guard.verdict(at(95), true, true), None);
-        assert_eq!(guard.verdict(at(155), true, true), None);
-        assert_eq!(guard.verdict(at(215), true, true), Some(false));
+        assert_eq!(guard.verdict(at(90), false, true), None);
+        guard.slot(9, Duration::ZERO);
+        assert_eq!(guard.verdict(at(95), false, true), Some(true));
+        assert_eq!(guard.verdict(at(100), true, true), None);
+        assert_eq!(guard.verdict(at(160), true, true), None);
+        assert_eq!(guard.verdict(at(220), true, true), Some(false));
+    }
+
+    #[test]
+    fn the_rate_guard_lets_bursts_pass() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut guard = RateGuard::new(start);
+        // A board coming in every 10 s: a window behind, then one keeping up.
+        for window in 1..=12 {
+            guard.slot(if window % 2 == 1 { 30 } else { 0 }, Duration::ZERO);
+            (0..200).for_each(|_| guard.slot(0, Duration::ZERO));
+            assert_eq!(guard.verdict(at(window * 5), false, true), None, "window {window}");
+        }
     }
 
     #[test]

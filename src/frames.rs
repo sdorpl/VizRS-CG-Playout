@@ -7,6 +7,7 @@
 // crawl tape drawn by the sidecar holds its pixels instead (`tape`).
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -112,6 +113,13 @@ impl Frame {
 /// Pictures for the sessions: the one shown at a moment.
 pub trait Source: Send + Sync {
     fn frame_at(&self, time: Instant) -> Arc<Frame>;
+
+    /// The pictures show the graphics on air. `false` between the resume of a
+    /// paused capture and its first new picture: a stream waits for it before
+    /// its lead (`History::restart`).
+    fn ready(&self) -> bool {
+        true
+    }
 }
 
 /// All graphics off the air (`POST /api/live/graphics/off`): every stream sends
@@ -157,6 +165,8 @@ impl Source for Empty {
 pub struct History {
     keep: Duration,
     frames: Mutex<VecDeque<Arc<Frame>>>,
+    /// Restarted after a pause: the next picture replaces the whole history.
+    stale: AtomicBool,
 }
 
 impl History {
@@ -164,7 +174,26 @@ impl History {
         // Nothing before: pictures of the window may be dated before the start.
         let now = Instant::now();
         let empty = Frame::new(0, Vec::new(), now.checked_sub(keep).unwrap_or(now));
-        History { keep, frames: Mutex::new(VecDeque::from([Arc::new(empty)])) }
+        History { keep, frames: Mutex::new(VecDeque::from([Arc::new(empty)])), stale: AtomicBool::new(false) }
+    }
+
+    /// The capture resumes after a pause: its pictures are minutes old and the
+    /// graphics on air may have changed since (another board, the clock). A
+    /// stream starting now sends `lead_seconds` of the past at once, so those
+    /// would go out for seconds. Until the first new picture the history shows
+    /// nothing; that picture then stands for the whole window, the lead included.
+    pub fn restart(&self) {
+        let mut frames = self.lock();
+        let seq = frames.back().map_or(0, |f| f.seq) + 1;
+        let now = Instant::now();
+        frames.clear();
+        frames.push_back(Arc::new(Frame::new(seq, Vec::new(), now.checked_sub(self.keep).unwrap_or(now))));
+        self.stale.store(true, Ordering::Relaxed);
+    }
+
+    /// No picture since `restart`.
+    pub fn ready(&self) -> bool {
+        !self.stale.load(Ordering::Relaxed)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<Arc<Frame>>> {
@@ -181,7 +210,7 @@ impl History {
     /// a second would otherwise keep seconds of identical copies.
     pub fn set(&self, rects: Vec<Rect>, at: Instant) {
         let current = self.current();
-        if rects.is_empty() && current.is_empty() {
+        if rects.is_empty() && current.is_empty() && self.ready() {
             return;
         }
         match &current.content {
@@ -213,6 +242,13 @@ impl History {
     fn push(&self, at: Instant, frame: impl FnOnce(u64, Instant) -> Frame) {
         let mut frames = self.lock();
         let current = frames.back().expect("history is never empty");
+        if self.stale.swap(false, Ordering::Relaxed) {
+            // The first picture after a restart: shown for every moment before it too.
+            let frame = Arc::new(frame(current.seq + 1, at));
+            frames.clear();
+            frames.push_back(frame);
+            return;
+        }
         let at = at.max(current.at);
         let frame = Arc::new(frame(current.seq + 1, at));
         frames.push_back(frame);
@@ -230,6 +266,10 @@ impl Source for History {
         let found = frames.iter().skip(1).rev().find(|f| f.at <= time).unwrap_or(&frames[0]);
         Arc::clone(found)
     }
+
+    fn ready(&self) -> bool {
+        History::ready(self)
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +278,40 @@ mod tests {
 
     fn pixel(value: u8) -> Vec<Rect> {
         vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![value; 4].into() }]
+    }
+
+    #[test]
+    fn a_restarted_history_forgets_the_pictures_before_the_pause() {
+        let history = History::new(Duration::from_secs(5));
+        let t0 = Instant::now();
+        history.set(pixel(1), t0);
+        assert!(history.ready());
+        history.restart();
+        // Until a new picture: nothing, not the picture from before the pause.
+        assert!(!history.ready());
+        assert!(history.frame_at(t0).is_empty());
+        assert!(history.frame_at(Instant::now()).is_empty());
+        // The first new picture stands for every moment of the window, the lead too.
+        let later = t0 + Duration::from_millis(200);
+        history.set(pixel(2), later);
+        assert!(history.ready());
+        for at in [t0, later, later + Duration::from_secs(1)] {
+            assert_eq!(history.frame_at(at).picture().rects, pixel(2));
+        }
+        // After it, the history goes on as usual.
+        history.set(pixel(3), later + Duration::from_millis(40));
+        assert_eq!(history.frame_at(later).picture().rects, pixel(2));
+        assert_eq!(history.frame_at(later + Duration::from_millis(50)).picture().rects, pixel(3));
+    }
+
+    #[test]
+    fn an_empty_picture_after_a_restart_still_counts_as_new() {
+        let history = History::new(Duration::from_secs(5));
+        history.set(pixel(1), Instant::now());
+        history.restart();
+        history.set(Vec::new(), Instant::now());
+        assert!(history.ready());
+        assert!(history.current().is_empty());
     }
 
     #[test]

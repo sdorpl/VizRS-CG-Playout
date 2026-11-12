@@ -151,6 +151,12 @@ services:
       VIZRS_LIVE_SHOWS: ${VIZRS_LIVE_SHOWS:-}
       # Live API on :7700/api/live for VizRS Live (studio on/off air, live programmes in ErsatzTV); empty = off.
       VIZRS_PANEL_TOKEN: ${VIZRS_PANEL_TOKEN:-}
+      # Only the first filling of the overlay's encoder (vizrs-live/encoder.json): from then
+      # on VizRS Live sets the x264 preset, H.264 profile, x264 options, NVENC/QSV presets
+      # and hardware B-frames (Profile kodowania).
+      VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-}
+      VIZRS_FFMPEG_X264_PARAMS: ${VIZRS_FFMPEG_X264_PARAMS:-}
+      VIZRS_FFMPEG_NVENC_BF: ${VIZRS_FFMPEG_NVENC_BF:-}
       # Where alarms of the as-run log go (signal lost, studio held, graphics off); empty = nowhere.
       VIZRS_ALERT_WEBHOOK: ${VIZRS_ALERT_WEBHOOK:-}
     volumes:
@@ -180,8 +186,13 @@ services:
       # Normalize Framerate); empty = the media's rate.
       VIZRS_FFMPEG_FPS: ${VIZRS_FFMPEG_FPS:-}
       # x264/x265 preset added by the overlay, e.g. veryfast; empty = ErsatzTV's
-      # (the next streaming engine passes none: x264 runs at medium).
+      # (the next streaming engine passes none: x264 runs at medium). Only while there is
+      # no /config/vizrs-live/encoder.json: VizRS Live sets the encoder there.
       VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-}
+      # libx264 options added by the overlay, e.g. bframes=0:subme=0 (Ampere, 900p25:
+      # -20% CPU, -1.4 dB SSIM; DOKUMENTACJA §1). Empty = none. Like the preset: only
+      # while there is no encoder.json of VizRS Live.
+      VIZRS_FFMPEG_X264_PARAMS: ${VIZRS_FFMPEG_X264_PARAMS:-}
       # Catch-up rate of the MPEG-TS channel stream (ErsatzTV reads its own HLS at
       # -readrate 1): without it each stall is lost and the stream lags. Empty = none.
       VIZRS_FFMPEG_READRATE_CATCHUP: ${VIZRS_FFMPEG_READRATE_CATCHUP-2}
@@ -205,10 +216,14 @@ services:
       VIZRS_FFMPEG_CUDA: ${VIZRS_FFMPEG_CUDA:-}
       # Free GPU memory in MiB that VIZRS_FFMPEG_CUDA=auto needs for overlay (default 400).
       VIZRS_FFMPEG_CUDA_MIN_FREE: ${VIZRS_FFMPEG_CUDA_MIN_FREE:-}
-      # B-frames of NVENC encoders without their own, e.g. 0: each B-frame keeps
-      # reference frames on the card (1080p50 encoder: 139 MiB by default, 79 MiB
-      # with 0). Empty = ffmpeg's.
+      # B-frames of hardware encoders (NVENC, QSV, VAAPI) without their own, e.g. 0: each
+      # B-frame keeps reference frames on the card (1080p50 NVENC: 139 MiB by default,
+      # 79 MiB with 0). Empty = ffmpeg's. Only while encoder.json of VizRS Live has no
+      # B-frames: they are set there.
       VIZRS_FFMPEG_NVENC_BF: ${VIZRS_FFMPEG_NVENC_BF:-}
+      # 1 = without -shortest where the output ends at -t anyway: with loudnorm it
+      # holds ~3 s of raw video frames (1080p50 ffmpeg 657 MB -> 268 MB). Empty = off.
+      VIZRS_FFMPEG_NO_SHORTEST: ${VIZRS_FFMPEG_NO_SHORTEST:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config

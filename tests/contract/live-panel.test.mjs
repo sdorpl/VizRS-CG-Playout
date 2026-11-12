@@ -215,6 +215,52 @@ test("holding a channel keeps its studio off and survives a restart", async (t) 
   assert.equal((await ingestState(cg.url, "4")).hold, false);
 });
 
+test("the overlay's encoder: filled once from the environment, then set in the panel, checked, logged", async (t) => {
+  const env = { VIZRS_FFMPEG_PRESET: "superfast", VIZRS_FFMPEG_X264_PARAMS: "", VIZRS_FFMPEG_NVENC_BF: "0" };
+  const { api, folder } = await setup(t, env);
+  const empty = { preset: "", profile: "", x264_params: "", nvenc_preset: "", qsv_preset: "", bframes: "" };
+
+  const file = () => JSON.parse(readFileSync(path.join(folder, "vizrs-live", "encoder.json"), "utf8"));
+  assert.deepEqual(file(), { ...empty, preset: "superfast", bframes: "0" }, "first filling from VIZRS_FFMPEG_PRESET and VIZRS_FFMPEG_NVENC_BF");
+  const first = (await api("GET", "encoder")).body;
+  assert.deepEqual(first.used, { ...empty, preset: "superfast", bframes: "0" });
+  assert.equal(first.from, "panel");
+  assert.ok(first.presets.includes("ultrafast") && first.x264_keys.includes("subme"));
+  assert.deepEqual(first.profiles, ["baseline", "main", "high"]);
+  assert.deepEqual(first.nvenc_presets, ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]);
+  assert.ok(first.qsv_presets.includes("veryslow") && first.max_bframes === 4);
+
+  const want = { preset: "veryfast", profile: "high", x264_params: "bframes=0:subme=0", nvenc_preset: "p5", qsv_preset: "slow", bframes: "1" };
+  const put = await api("PUT", "encoder", { ...want, profile: "High", x264_params: "bframes=0 : subme=0", bframes: 1 });
+  assert.equal(put.status, 200);
+  assert.deepEqual(put.body.used, want);
+  assert.deepEqual(file(), want);
+
+  assert.equal((await api("PUT", "encoder", { preset: "turbo" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { profile: "high10" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { x264_params: "keyint=1" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { x264_params: "stats=/tmp/x" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { nvenc_preset: "hq" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { qsv_preset: "ultrafast" })).status, 400);
+  assert.equal((await api("PUT", "encoder", { bframes: "7" })).status, 400);
+  assert.deepEqual(file(), want, "a refused change keeps the file");
+
+  // Empty = the default, not the environment's; a restart does not fill the file again.
+  assert.deepEqual((await api("PUT", "encoder", { preset: null, profile: "" })).body.used, empty);
+  const again = await startSidecar({ output_url: "", panel_token: TOKEN, etv_config: folder, sync_seconds: 3600 }, env);
+  t.after(again.stop);
+  assert.deepEqual(file(), empty);
+  const log = readFileSync(path.join(folder, "vizrs-live", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.ok(log.some((l) => l.operator === "MCR 1" && l.action.includes("preset veryfast, profil high, opcje x264 bframes=0:subme=0, preset NVENC p5, preset QSV slow, klatki B sprzętowe 1")));
+});
+
+test("the overlay's encoder without a file: the environment, or the defaults", async (t) => {
+  const { api } = await setup(t);
+  const body = (await api("GET", "encoder")).body;
+  assert.equal(body.from, "default");
+  assert.deepEqual(body.used, { preset: "", profile: "", x264_params: "", nvenc_preset: "", qsv_preset: "", bframes: "" });
+});
+
 test("VIZRS_LIVE_SHOWS fills shows.json once", async (t) => {
   const env = { VIZRS_LIVE_SHOWS: JSON.stringify([{ channel: "1", title: "Wiadomości", duration: "00:30:00" }]) };
   const { folder, api } = await setup(t, env);
@@ -278,7 +324,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -345,7 +391,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

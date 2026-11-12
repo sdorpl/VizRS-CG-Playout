@@ -363,6 +363,72 @@ struct Layer {
     rects: Vec<Rect>,
     /// Started now: its first frame is asked for in full.
     fresh: bool,
+    /// The frame asked for last, not read yet, and how many replies wait to be read.
+    asked: Option<Asked>,
+    unread: u32,
+}
+
+/// A frame asked of a renderer (`Layered::ask`).
+#[derive(Clone, Copy, Debug)]
+struct Asked {
+    ms: f64,
+    complete_only: bool,
+    force: bool,
+}
+
+impl Asked {
+    /// The reply to this ask is the frame at `ms` with these flags (a forced picture serves an unforced ask).
+    fn serves(self, ms: f64, complete_only: bool, force: bool) -> bool {
+        (self.ms - ms).abs() < 0.001 && self.complete_only == complete_only && (self.force || !force)
+    }
+}
+
+/// What one reply did to the picture of a layer.
+enum Taken {
+    Skipped,
+    Unchanged,
+    Changed,
+}
+
+impl Layer {
+    /// The reply as the layer's picture: its visible rectangles (in channel pixels) and the base of the next patch.
+    fn take(&mut self, reply: Reply, part: Area, areas: &[Area]) -> Result<Taken, String> {
+        if matches!(reply.kind, Kind::Picture(_) | Kind::Region(..) | Kind::Patch(_)) && (reply.width, reply.height) != (part.w, part.h) {
+            return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
+        }
+        let in_channel = |r: Area| Area { x: part.x + r.x, y: part.y + r.y, w: r.w, h: r.h };
+        // The picture (Picture, Region) stays as the base of the next patch: with a patch only the
+        // changed rectangles cross the pipe (a crawl under a large board: 0.6 MB a frame, not 4 MB).
+        match reply.kind {
+            Kind::Skipped => return Ok(Taken::Skipped),
+            Kind::Unchanged => {
+                self.fresh = false;
+                return Ok(Taken::Unchanged);
+            }
+            Kind::Empty => {
+                self.native.forget();
+                self.rects.clear();
+            }
+            Kind::Picture(rgba) => {
+                self.rects = picture_rects(&rgba, part, areas);
+                self.native.keep(Area { x: 0, y: 0, w: part.w, h: part.h }, rgba);
+            }
+            Kind::Regions(regions) => {
+                self.native.forget();
+                self.rects = regions.iter().flat_map(|(region, rgba)| picture_rects(rgba, *region, areas)).collect();
+            }
+            Kind::Region(r, rgba) => {
+                self.rects = picture_rects(&rgba, in_channel(r), areas);
+                self.native.keep(r, rgba);
+            }
+            Kind::Patch(patches) => {
+                let (r, rgba) = self.native.patch(&patches)?;
+                self.rects = picture_rects(rgba, in_channel(r), areas);
+            }
+        }
+        self.fresh = false;
+        Ok(Taken::Changed)
+    }
 }
 
 /// The native renderers of a capture: one per layer of the show (`layers`,
@@ -384,9 +450,8 @@ pub struct Layered {
 
 impl Layered {
     /// The renderers of the /output page `url`; `names` = the layers of the show
-    /// (none, empty or several `areas`: one renderer for all).
+    /// (none or empty: one renderer for all, with the `areas` as they are; a renderer per layer draws their union).
     pub fn start(bin: &str, url: &str, size: (u32, u32), areas: &[Area], part: Area, names: Option<LayerList>) -> Result<Layered, String> {
-        let names = names.filter(|_| areas.len() <= 1);
         let mut layered = Layered {
             bin: bin.to_owned(),
             url: url.to_owned(),
@@ -421,8 +486,22 @@ impl Layered {
             let layer = match old.iter().position(|l| l.name == name) {
                 Some(i) => old.remove(i),
                 None => {
-                    let url = if name.is_empty() { self.url.clone() } else { layer_url(&self.url, &name) };
-                    Layer { native: Native::start(&self.bin, &url, self.size, &self.areas)?, name, rects: Vec::new(), fresh: true }
+                    // A renderer of one layer draws the part (the union of the areas) as one region,
+                    // patched from frame to frame; the sidecar cuts its rectangles to the areas. With an
+                    // area each, a crawl in one area made it draw and send all the areas every frame.
+                    let (url, areas) = if name.is_empty() {
+                        (self.url.clone(), self.areas.clone())
+                    } else {
+                        (layer_url(&self.url, &name), if self.areas.is_empty() { Vec::new() } else { vec![self.part] })
+                    };
+                    Layer {
+                        native: Native::start(&self.bin, &url, self.size, &areas)?,
+                        name,
+                        rects: Vec::new(),
+                        fresh: true,
+                        asked: None,
+                        unread: 0,
+                    }
                 }
             };
             self.layers.push(layer);
@@ -433,57 +512,44 @@ impl Layered {
         Ok(())
     }
 
-    /// The frame at monotonic time `ms` from all the renderers (see `Native::frame`).
-    pub fn frame(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<Drawn, String> {
+    /// Asks all the renderers for the frame at `ms` (see `Native::frame`) without waiting: asked
+    /// right after a frame for the next slot, they draw it while the capture waits for that slot,
+    /// so one renderer late for a moment no longer makes the frame late (seven layers asked and
+    /// waited for each frame: 7.6% of 50 fps frames late, asked ahead: 0.1%).
+    pub fn ask(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<(), String> {
         self.follow()?;
         for layer in &mut self.layers {
-            layer.native.request(ms, wall, complete_only, force || layer.fresh)?;
+            if layer.asked.is_some_and(|a| a.serves(ms, complete_only, force || layer.fresh)) {
+                continue;
+            }
+            let force = force || layer.fresh;
+            layer.native.request(ms, wall, complete_only, force)?;
+            layer.unread += 1;
+            layer.asked = Some(Asked { ms, complete_only, force });
         }
+        Ok(())
+    }
+
+    /// The frame at monotonic time `ms` from all the renderers: the one asked ahead (`ask`) when it
+    /// is that frame, else asked now; replies asked for another frame are read first and kept as
+    /// the picture (a patch needs its base).
+    pub fn frame(&mut self, ms: f64, wall: f64, complete_only: bool, force: bool) -> Result<Drawn, String> {
+        self.ask(ms, wall, complete_only, force)?;
         let deadline = Instant::now() + FRAME_TIMEOUT;
         let (mut skipped, mut changed) = (false, false);
         let (part, areas) = (self.part, self.areas.clone());
         for layer in &mut self.layers {
-            let reply = layer.native.receive(deadline)?;
-            if matches!(reply.kind, Kind::Picture(_) | Kind::Region(..) | Kind::Patch(_)) && (reply.width, reply.height) != (part.w, part.h)
-            {
-                return Err(format!("native renderer: frame {}x{} for {}x{}", reply.width, reply.height, part.w, part.h));
-            }
-            let in_channel = |r: Area| Area { x: part.x + r.x, y: part.y + r.y, w: r.w, h: r.h };
-            // The picture (Picture, Region) stays as the base of the next patch: with a patch only the
-            // changed rectangles cross the pipe (a crawl under a large board: 0.6 MB a frame, not 4 MB).
-            match reply.kind {
-                Kind::Skipped => {
-                    skipped = true;
-                    continue;
-                }
-                Kind::Unchanged => {}
-                Kind::Empty => {
-                    layer.native.forget();
-                    layer.rects.clear();
-                    changed = true;
-                }
-                Kind::Picture(rgba) => {
-                    layer.rects = picture_rects(&rgba, part, &areas);
-                    layer.native.keep(Area { x: 0, y: 0, w: part.w, h: part.h }, rgba);
-                    changed = true;
-                }
-                Kind::Regions(regions) => {
-                    layer.native.forget();
-                    layer.rects = regions.iter().flat_map(|(region, rgba)| picture_rects(rgba, *region, &areas)).collect();
-                    changed = true;
-                }
-                Kind::Region(r, rgba) => {
-                    layer.rects = picture_rects(&rgba, in_channel(r), &areas);
-                    layer.native.keep(r, rgba);
-                    changed = true;
-                }
-                Kind::Patch(patches) => {
-                    let (r, rgba) = layer.native.patch(&patches)?;
-                    layer.rects = picture_rects(rgba, in_channel(r), &areas);
-                    changed = true;
+            while layer.unread > 0 {
+                let reply = layer.native.receive(deadline)?;
+                layer.unread -= 1;
+                let last = layer.unread == 0;
+                match layer.take(reply, part, &areas)? {
+                    Taken::Skipped => skipped |= last,
+                    Taken::Unchanged => {}
+                    Taken::Changed => changed = true,
                 }
             }
-            layer.fresh = false;
+            layer.asked = None;
         }
         if skipped {
             return Ok(Drawn::Skipped);

@@ -36,6 +36,8 @@ process.stdin.on("data", (d) => {
     if (line === "Q") process.exit(0);
     if (!line.startsWith("F ")) continue;
     n++;
+    // how far ahead of its time a frame is asked for (wall clock of the frame minus now)
+    if (process.env.FAKE_AHEAD) fs.appendFileSync(dir + "/ahead", (Number(line.split(" ")[2]) - Date.now()).toFixed(1) + "\\n");
     if (first && n > 5) process.exit(3);
     const force = (line.split(" ")[3] || "").includes("f");
     if (areas.length > 1 && (n === 1 || force)) {
@@ -108,6 +110,27 @@ test("renderer native: the VizRS native renderer draws the burn-in, restarted wh
   // Script element path: the same picture as ETV packets (the restart sent it again).
   const last = readFrames(await runClient(`${cg.url}/etv?channel=2`, data, 1500), width, height).at(-1);
   assert.deepEqual([...last.subarray(center * 4, center * 4 + 4)], [255, 0, 0, 255]);
+});
+
+test("renderer native: the next frame is asked for ahead of its slot", { timeout: 60000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "virtrs-native-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "vizrs-render");
+  writeFileSync(bin, FAKE);
+  chmodSync(bin, 0o755);
+  writeFileSync(join(dir, "started"), "1"); // no exit in this test
+  const cg = await startSidecar(
+    { vizrs: { address: "127.0.0.1:9", token: "" }, output_url: "http://127.0.0.1:9/output", lead_seconds: 0, renderer: "native", renderer_bin: bin },
+    { FAKE_DIR: dir, FAKE_AHEAD: "1" },
+  );
+  t.after(cg.stop);
+  const data = { Resolution: { Width: 320, Height: 180 }, FrameRate: 25, MediaItem_Path: "/m/News.mp4" };
+  await runClient(`${cg.url}/etv?channel=1`, data, 2500);
+  const ahead = readFileSync(join(dir, "ahead"), "utf8").trim().split("\n").map(Number).sort((a, b) => a - b);
+  assert.ok(ahead.length >= 20, `frames asked: ${ahead.length}`);
+  // 25 fps: asked right after the frame before, about 40 ms before its slot (waited for: about 0)
+  const median = ahead[Math.floor(ahead.length / 2)];
+  assert.ok(median > 20, `median ${median} ms ahead`);
 });
 
 test("renderer native with a graphics area: the renderer draws only the area", { timeout: 60000 }, async (t) => {
