@@ -56,7 +56,7 @@ Wnioski:
 | E5 NVDEC | zmierzony, **odrzucony** (niżej) |
 | E6 drugi kanał | nie zrobiony |
 | E7, E8 | pominięte (decyzja użytkownika) |
-| E9 kolejka materiału na karcie | **zmierzony** 2026-11-12 (niżej, „Skąd pamięć karty”): rozbicie pamięci procesu i przyczyna wzrostu; poprawka – synchronizacja z grafiką na CPU przed `hwupload` – do zrobienia |
+| E9 kolejka materiału na karcie | **zrobiony i wdrożony lokalnie** 2026-11-12: `VIZRS_FFMPEG_SYNC_RAM=1` (`media_waits_in_ram` w `src/overlay.rs`); na antenie ffmpeg kawałka stale 139 MiB zamiast 79–535, karta najwyżej 991 zamiast 1361 MiB (niżej) |
 | Lagi 1080p50 | **naprawione**: nie karta (SM 30–40%, głównie pulpit; NVENC 12%), tylko `-readrate 1` trybu `overlay` bez zrywu – HLS 0,93×. Zryw = grafika gotowa w sidecarze (`ahead` w `/ffmpeg`): HLS 1,04× do dogonienia ramówki, ffmpeg 167 → 277 MiB, `VIZRS_FFMPEG_CUDA_MIN_FREE` 300 → 400 (DOKUMENTACJA, „Pamięć karty przy NVENC”) |
 
 ## Etapy
@@ -293,7 +293,7 @@ grafikę z wyprzedzeniem do `lead_seconds` (domyślnie 4 s) i kolejka obejmuje
 tylko różnicę między wyprzedzeniem materiału a grafiką gotową w sidecarze –
 najwięcej na starcie kawałka i po zrywie.
 
-**Poprawka (E9, do zrobienia): klatki materiału czekają na grafikę w RAM, a
+**Poprawka (E9, zrobiona 2026-11-12): klatki materiału czekają na grafikę w RAM, a
 nie na karcie.** Przed `hwupload` materiał synchronizuje się z grafiką
 filtrem CPU, który nic nie rysuje: z grafiki wycięty obszar 2×2 px nałożony
 poza kadrem (`overlay=x=main_w:y=main_h`). Dopiero zsynchronizowana klatka
@@ -320,18 +320,31 @@ zmianie pozycji mieszczą się z zapasem. Koszt: te same klatki czekają w RAM
 (ok. +430 MB RSS przy 3 s wyprzedzenia, host ma 16 GB) i ok. 0,09 rdzenia
 (CPU `overlay` robi kopię zapisywalnej klatki).
 
-Do zrobienia przy wdrożeniu:
+Wdrożenie: `VIZRS_FFMPEG_SYNC_RAM=1` (jawna opcja nakładki), tylko w trybie
+`overlay` (także z `auto`) i przy materiale idącym przez `hwupload` (przy
+dekodowaniu NVDEC klatki są na karcie od dekodera – tam nie działa). Za
+synchronizacją format bez alfy: `overlay` z `format=auto` wybierał
+`yuva420p`, którego `scale_cuda` ffmpeg 8.1 z ErsatzTV nie przyjmuje (błąd
+złapany na ffmpeg z obrazu ErsatzTV, nie na ffmpeg hosta).
 
-- w nakładce (`placed_areas` w `src/overlay.rs`) jako jawna opcja
-  `VIZRS_FFMPEG_*` (zasada repozytorium), tylko w trybie `overlay`
-  i przy materiale idącym przez `hwupload` (przy dekodowaniu NVDEC klatki
-  są na karcie od dekodera – tam poprawka nie działa);
-- sprawdzić na prawdziwej komendzie z anteny: `scale_cuda` przed nakładką
-  (synchronizacja przed `hwupload`, a nie w środku łańcucha CUDA), 25 → 50
-  kl./s (`VIZRS_FFMPEG_FPS_BLEND`), HLS, przejęcie przez live
-  (`takeover.rs`);
-- test jednostkowy grafu i test kontraktu nakładki; DOKUMENTACJA §5 i „Pamięć
-  karty przy NVENC”.
+**Wynik na lokalnym stosie (2026-11-12).** Kanał 1 (materiał 720p25 →
+1080p50, `loudnorm`, strefy `auto`, NVENC `-bf 0`, `VIZRS_FFMPEG_CUDA=auto`
+→ `overlay`), widz HLS na hoście, 5 min (8 kawałków) na wariant, ten sam
+obraz `virtrs-cg`, różni się tylko zmienna w ErsatzTV:
+
+| Wariant | vRAM ffmpeg na kawałek | RSS ffmpeg | karta najwyżej |
+|---|---|---|---|
+| przed wdrożeniem (obraz `przed-e9`) | 79–535 MiB | do 396 MB | 1361 MiB |
+| E9 wyłączone (A/B) | 259–463 MiB | do 524 MB | 1289 MiB |
+| **E9 włączone** | **139 MiB (każdy kawałek)** | 429–566 MB | **991 MiB** |
+
+Obraz z grafiką poprawny (klatka HLS z belką, tickerem, „Za chwilę”),
+bez błędów ffmpeg w logu ErsatzTV. Ostrzeżenia sidecara `graphics stream:
+frame … read 16–21 s late; the graphics jump … ahead` są w obu wariantach
+(z E9 4 w 6 min, bez – 2 w 5 min), więc nie wynikają z E9 – osobny temat
+(nakładka czyta klatki grafiki na starcie kawałka później, niż sięga
+historia sidecara). Stały vRAM pozwala obniżyć `VIZRS_FFMPEG_CUDA_MIN_FREE`
+(dziś 400 MiB) – do decyzji po dłuższej obserwacji.
 
 ## Poza zakresem
 

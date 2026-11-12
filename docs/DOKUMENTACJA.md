@@ -717,8 +717,11 @@ się z grafiką na CPU przed wysyłką na kartę. Pomiar 2026-11-12, ffmpeg 8.1
 z obrazu ErsatzTV, Quadro P400, materiał 720p25 do 1080p50 z dźwiękiem
 (`loudnorm`), dwie strefy grafiki z pipe w czasie rzeczywistym, `-readrate 1
 -readrate_initial_burst 2`: 359 MiB karty bez opcji, **111 MiB** z nią; ten
-sam obraz na wyjściu. Koszt: klatki czekają w RAM (ok. +430 MB RSS przy 3 s
-wyprzedzenia 1080p) i ok. 0,09 rdzenia (CPU `overlay` kopiuje klatkę).
+sam obraz na wyjściu. Na antenie lokalnego stosu (5 min, 8 kawałków):
+ffmpeg kawałka stale 139 MiB zamiast 259–463 MiB, karta najwyżej 991 zamiast
+1289 MiB. Koszt: klatki czekają w RAM (na antenie RSS ffmpeg 429–566 MB
+zamiast do 524 MB; w próbie z samym 1080p do +430 MB) i ok. 0,09 rdzenia
+(CPU `overlay` kopiuje klatkę).
 
 Każdy `hwupload_cuda` otwiera własny kontekst CUDA (ok. 28 MiB), a nakładka
 wstawia go dla każdej strefy grafiki (`area: auto`). W transkodowaniu z płótnem
