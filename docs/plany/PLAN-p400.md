@@ -56,6 +56,7 @@ Wnioski:
 | E5 NVDEC | zmierzony, **odrzucony** (niżej) |
 | E6 drugi kanał | nie zrobiony |
 | E7, E8 | pominięte (decyzja użytkownika) |
+| E9 kolejka materiału na karcie | **zmierzony** 2026-11-12 (niżej, „Skąd pamięć karty”): rozbicie pamięci procesu i przyczyna wzrostu; poprawka – synchronizacja z grafiką na CPU przed `hwupload` – do zrobienia |
 | Lagi 1080p50 | **naprawione**: nie karta (SM 30–40%, głównie pulpit; NVENC 12%), tylko `-readrate 1` trybu `overlay` bez zrywu – HLS 0,93×. Zryw = grafika gotowa w sidecarze (`ahead` w `/ffmpeg`): HLS 1,04× do dogonienia ramówki, ffmpeg 167 → 277 MiB, `VIZRS_FFMPEG_CUDA_MIN_FREE` 300 → 400 (DOKUMENTACJA, „Pamięć karty przy NVENC”) |
 
 ## Etapy
@@ -245,6 +246,92 @@ pozycji i jednym przejęciem live. Oczekiwanie: NVENC ≤ 40%, vRAM stosu
 [NVIDIA – wsparcie architektur w CUDA](https://developer.nvidia.com/blog/navigating-gpu-architecture-support-a-guide-for-nvidia-cuda-developers),
 [HandBrake – NVENC](https://handbrake.fr/docs/en/1.7.0/technical/video-nvenc.html),
 [NVENC – generacje (TU117)](https://en.wikipedia.com/wiki/NVENC).
+
+## Skąd pamięć karty – rozbicie (pomiar 2026-11-12)
+
+Pytanie: dlaczego ffmpeg kanału bierze 120–280 MiB karty, skoro grafika to
+belka i logo bez ciężkich animacji. Odpowiedź: **złożoność grafiki nie ma
+znaczenia** – pule klatek CUDA mają stały rozmiar zależny od rozdzielczości,
+nie od treści. Zmienna część to klatki materiału czekające na karcie na
+grafikę.
+
+Ten host, ffmpeg 8 z CUDA, 1080p50, `h264_nvenc -preset p1 -bf 0`, `-re`,
+pamięć procesu z `nvidia-smi` (najwyższa):
+
+| Składnik | vRAM procesu | Przyrost |
+|---|---|---|
+| sam kontekst CUDA (`hwupload` + `hwdownload`, bez kodera) | 32 MiB | – |
+| sam NVENC z RAM (własny kontekst) | 79 MiB | – |
+| kontekst + NVENC (jeden wspólny) | 83 MiB | baza |
+| + `overlay_cuda` logo 320×160 | 101 MiB | +18 (moduł filtra, pule) |
+| + `overlay_cuda` grafika na cały ekran | 123 MiB | +40 |
+
+Stała część procesu to więc ok. 100 MiB i nie da się jej zmniejszyć
+strefami (por. PLAN-strefy, S0 z 2026-11-12: 0–6 MiB różnicy).
+
+**Zmienna część – kolejka przed `overlay_cuda`.** Materiał (plik 1080p50
+z dźwiękiem, dekodowany na CPU), grafika 1920×300 z pipe w tempie zegara,
+jak z sidecara, dźwięk jak w ErsatzTV (`loudnorm`, `apad`), wyjście MPEG-TS:
+
+| Wariant | vRAM procesu | RSS |
+|---|---|---|
+| `-readrate 1`, bez `loudnorm` | 103 MiB | 319 MB |
+| `-readrate 1`, z `loudnorm` | **667 MiB** (rośnie przez ok. 1,5 s, potem stoi) | 350 MB |
+| bez `-readrate`, z `loudnorm` | 679 MiB | 339 MB |
+| `-readrate 1 -readrate_initial_burst 2`, z `loudnorm` | `CUDA_ERROR_OUT_OF_MEMORY` (karta pełna) | – |
+
+Mechanizm: `loudnorm` oddaje dźwięk z ok. 3 s opóźnieniem, więc żeby
+wyprodukować pierwsze próbki dźwięku, ffmpeg demultipleksuje i dekoduje
+ok. 3 s materiału naprzód. Każda klatka obrazu przechodzi od razu przez
+`hwupload` i staje w kolejce `overlay_cuda`, bo grafika tej samej chwili
+przyjdzie z pipe dopiero w czasie rzeczywistym. Kolejka siedzi na karcie:
+klatka 1080p `yuv420p` to ok. 3 MiB, czyli ok. 150 MiB na każdą sekundę
+wyprzedzenia przy 50 kl./s (tu ok. 560 MiB ≈ 3,7 s). `-readrate 1` tego nie
+ogranicza – wyprzedzenie wymusza dźwięk, nie tempo wejścia – a zryw dokłada
+kolejne sekundy. Na antenie jest mniej (121–277 MiB), bo sidecar wysyła
+grafikę z wyprzedzeniem do `lead_seconds` (domyślnie 4 s) i kolejka obejmuje
+tylko różnicę między wyprzedzeniem materiału a grafiką gotową w sidecarze –
+najwięcej na starcie kawałka i po zrywie.
+
+**Poprawka (E9, do zrobienia): klatki materiału czekają na grafikę w RAM, a
+nie na karcie.** Przed `hwupload` materiał synchronizuje się z grafiką
+filtrem CPU, który nic nie rysuje: z grafiki wycięty obszar 2×2 px nałożony
+poza kadrem (`overlay=x=main_w:y=main_h`). Dopiero zsynchronizowana klatka
+idzie na kartę, a druga gałąź grafiki – jak dziś – przez `hwupload` do
+`overlay_cuda`:
+
+```
+[1:0]split[gs][gt];[gs]crop=2:2:0:0[tiny];[0:0][tiny]overlay=x=main_w:y=main_h[ms];
+[ms]format=yuv420p,hwupload[m];[gt]format=yuva420p,hwupload[g];[m][g]overlay_cuda=…
+```
+
+| Wariant (z `loudnorm`) | vRAM procesu | RSS | CPU |
+|---|---|---|---|
+| dziś, `-readrate 1` | 667 MiB | 350 MB | – |
+| synchronizacja na CPU, `-readrate 1` | **91 MiB** | 776 MB | – |
+| synchronizacja na CPU, bez `-readrate` | 91 MiB | 755 MB | – |
+| synchronizacja na CPU, zryw 2 s | 91 MiB | 772 MB | – |
+| bez `loudnorm`, 15 s: dziś / z synchronizacją | – | – | 62% / 71% jednego rdzenia |
+
+Zysk: pamięć karty stała (ok. 90–100 MiB na kawałek) niezależnie od
+`-readrate`, zrywu i `lead_seconds`; zryw przestaje kosztować kartę, więc
+`VIZRS_FFMPEG_CUDA_MIN_FREE` może zejść z 400 MiB, a dwa kawałki przy
+zmianie pozycji mieszczą się z zapasem. Koszt: te same klatki czekają w RAM
+(ok. +430 MB RSS przy 3 s wyprzedzenia, host ma 16 GB) i ok. 0,09 rdzenia
+(CPU `overlay` robi kopię zapisywalnej klatki).
+
+Do zrobienia przy wdrożeniu:
+
+- w nakładce (`placed_areas` w `src/overlay.rs`) jako jawna opcja
+  `VIZRS_FFMPEG_*` (zasada repozytorium), tylko w trybie `overlay`
+  i przy materiale idącym przez `hwupload` (przy dekodowaniu NVDEC klatki
+  są na karcie od dekodera – tam poprawka nie działa);
+- sprawdzić na prawdziwej komendzie z anteny: `scale_cuda` przed nakładką
+  (synchronizacja przed `hwupload`, a nie w środku łańcucha CUDA), 25 → 50
+  kl./s (`VIZRS_FFMPEG_FPS_BLEND`), HLS, przejęcie przez live
+  (`takeover.rs`);
+- test jednostkowy grafu i test kontraktu nakładki; DOKUMENTACJA §5 i „Pamięć
+  karty przy NVENC”.
 
 ## Poza zakresem
 
