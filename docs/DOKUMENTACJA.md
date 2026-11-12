@@ -2252,6 +2252,9 @@ klatkażu raz na kilka (np. 50 kl./s przy `25`: równo = krok co drugą klatkę)
 | `pictures_per_s` | nowe obrazy grafiki na sekundę (animacja przy 25 fps: ok. 25) |
 | `mb_per_s` | strumień do ErsatzTV albo ffmpeg |
 | `even_percent`, `stood_percent`, `skipped_percent` | klatki wyjścia z ruchem równym (ideał 100%), stojącym i z przeskokiem (scena `animated`) |
+| `ffmpeg_cpu_percent` | z `BENCH_GPU=1`: CPU procesu ffmpeg nakładającego grafikę, % jednego rdzenia |
+| `gpu_mib`, `gpu_card_mib` | z `BENCH_GPU=1`: najwyższa pamięć GPU tego ffmpeg i całej karty w czasie pomiaru (`nvidia-smi`, co 1 s), MiB |
+| `ffmpeg_error` | z `BENCH_GPU=1`: ffmpeg zakończył się w czasie pomiaru (ostatnie linie jego błędów) |
 
 Zmienne środowiskowe (wszystkie opcjonalne):
 
@@ -2270,6 +2273,10 @@ Zmienne środowiskowe (wszystkie opcjonalne):
 | `BENCH_AREA` | – | `area` sidecara, np. `1920x140+0+930` (pasek z tickerem sceny) albo z logo `1920x140+0+930,160x160+1690+30`; znacznik kroku trafia w lewy górny róg pierwszego obszaru |
 | `BENCH_TAPE` | – | `1` = `tape` sidecara (§1; z `BENCH_URL` i crawlem VizRS na antenie) |
 | `BENCH_DELTA` | – | `1` = tryb `ffmpeg` czyta klatki jako deltę (`delta=1`, jak `vizrs-ffmpeg`, §1 Nakładka ffmpeg), składane z powrotem w całe klatki do oceny ruchu |
+| `BENCH_GPU` | – | `1` = tryb `ffmpeg` przekazuje klatki też do prawdziwego ffmpeg, który nakłada je tak jak `vizrs-ffmpeg` przy `VIZRS_FFMPEG_CUDA=overlay` (na każdy obszar `crop`, `hwupload`, `overlay_cuda` w jego miejscu, na obraz testowy `testsrc2` kanału; klatki wracają do RAM dla kodera), i mierzy CPU oraz pamięć GPU tego ffmpeg; tylko NVIDIA, poza Dockerem (`nvidia-smi`, ffmpeg z CUDA i NVENC) |
+| `BENCH_GPU_ENCODER` | `h264_nvenc` | koder ffmpeg z `BENCH_GPU=1` (NVENC: `-preset p1 -bf 0`) |
+| `BENCH_GPU_MIN_FREE` | `400` | z `BENCH_GPU=1`: najmniej wolnej pamięci karty [MiB] przed startem ffmpeg, inaczej pomiar się nie zaczyna (karta bywa dzielona z działającym kanałem) |
+| `BENCH_FFMPEG` | `ffmpeg` | ffmpeg dla `BENCH_GPU=1` |
 | `BENCH_WARMUP` | `10` | rozgrzewka przed pomiarem [s] |
 | `BENCH_DURATION` | `30` | pomiar [s] |
 

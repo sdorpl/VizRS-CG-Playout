@@ -99,6 +99,26 @@ Benchmark `bench/sidecar.mjs`, tryb `ffmpeg`, 1920×1080, host lokalnej produkcj
 
 Wniosek dla S2: atlas układa strefy jedna pod drugą z szerokością najszerszej, więc logo 320 px zajmuje w nim 1920 px szerokości (43% ekranu zamiast 30% pikseli stref). S2 powinno układać strefy obok siebie, gdy się mieszczą (pakowanie półkowe), albo sklejać je tylko przy zysku.
 
+## Wynik S0 – powtórka z pamięcią GPU (2026-11-12)
+
+Ten sam host (Quadro P400, 2 GB, emisja kanału i pulpit w tle), binarka sidecara z działającego kontenera `cg`, `bench/sidecar.mjs` z `BENCH_GPU=1`: klatki idą też do prawdziwego ffmpeg z grafem nakładki przy `VIZRS_FFMPEG_CUDA=overlay` (`crop` + `hwupload` + `overlay_cuda` na strefę, `h264_nvenc`), pamięć GPU z `nvidia-smi` co 1 s (najwyższa w 30 s pomiaru). Chrome rysował tym razem animację (20–30 obrazów/s).
+
+| Klatkaż | Strefy | MB/s do ffmpeg | CPU sidecara | CPU ffmpeg | Pamięć GPU ffmpeg |
+|---|---|---|---|---|---|
+| 50 | cały ekran | 206 | 43% | 55% | 111 MiB |
+| 50 | belka `1920x300+0+780` + logo `320x160+1580+30` | 110 | 49% | 53% | 111 MiB |
+| 25 | cały ekran | 130 | 31% | 28% | 107 MiB |
+| 25 | belka + logo | 55 | 28% | 23% | 101 MiB |
+
+Dla porównania sam ffmpeg tym grafem bez grafiki (`hwupload`, `hwdownload`, NVENC, 1080p50) ma 83 MiB, a z grafiką pełnoekranową z `lavfi` (bez czekania na pipe) – 123 MiB.
+
+Wnioski:
+
+- **Strefy prawie nie zmieniają pamięci GPU** (0–6 MiB z ok. 110 MiB na proces). Większość to kontekst CUDA i koder; grafika pełnoekranowa dokłada najwyżej ok. 40 MiB. Brak pamięci karty z 2026-11-07 brał się z klatek materiału czekających na muxer (poprawione 2026-11-11 w `VIZRS_FFMPEG_CUDA=overlay`), nie z rozmiaru grafiki.
+- Strefy dają to, co w pierwszym S0: **ok. 2× mniej danych przez pipe** (206 → 110 MB/s przy 50 kl./s, 130 → 55 przy 25) i trochę mniej CPU ffmpeg przy 25 kl./s (28% → 23%). CPU sidecara się nie zmienia, bo renderer przy `auto` i tak rysuje cały kanał (różnice w granicach szumu: inna liczba obrazów na sekundę).
+- Dla pozostałych prac: zawyżony ślad strony (np. po przeniesieniu strony w Artist) kosztuje pasmo pipe, a nie pamięć karty, więc unieważnianie śladu po zmianie sceny ma niski priorytet.
+- Równość ruchu (`even_percent` 3–35%) nie jest tu miarodajna: Chrome z pulpitu dzielił CPU i GPU z emisją.
+
 ## Punkty
 
 | Punkt | Zakres | Wymaga | Stan |
