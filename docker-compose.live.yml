@@ -18,7 +18,7 @@
 # Kopię, środowisko usługi live i nakładkę VAAPI porównuje z VizRS Live jego scripts/check-cg-overlay.sh (przed każdym wdrożeniem).
 services:
   ersatztv:
-    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:26.11.1}
+    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:1.2.7}
     environment:
       VIZRS_BRIDGE_TOKEN: ${VIZRS_BRIDGE_TOKEN:?ustaw VIZRS_BRIDGE_TOKEN}
     ports: !reset []
