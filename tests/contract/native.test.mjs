@@ -286,6 +286,108 @@ test("area auto: rules count only where a general element runs; elements of sing
   await general.catch(() => {});
 });
 
+test("area auto: page bounds from VizRS (vizrs-render bounds) make pages taken together known at once", { timeout: 60000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "virtrs-native-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "stream.js"), FAKE);
+  const bin = join(dir, "vizrs-render");
+  // bounds: per page; 5001 is not drawn natively (issues) – no bounds
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require("fs");
+const args = process.argv.slice(2);
+if (args[0] === "bounds") {
+  fs.appendFileSync(process.env.FAKE_DIR + "/bounds-args", args.join(" ") + "\\n");
+  const show = JSON.parse(fs.readFileSync(args[args.indexOf("--show") + 1], "utf8"));
+  const rects = { 4001: [[200, 20, 64, 32]], 7001: [[16, 150, 48, 16]], 5001: [[0, 0, 320, 180]] };
+  for (const p of show.pages) {
+    if (!args.includes(String(p.number))) continue;
+    const issues = p.number === 5001 ? ["ticker"] : [];
+    console.log(JSON.stringify({ id: p.id, number: String(p.number), size: args[args.indexOf("--size") + 1], cell: 16, rects: rects[p.number], issues }));
+  }
+  process.exit(0);
+}
+require(process.env.FAKE_DIR + "/stream.js");
+`,
+  );
+  chmodSync(bin, 0o755);
+  writeFileSync(join(dir, "started"), "1"); // no exit in this test
+  // A fake VizRS: 4001 and 7001 taken in the same instant (nothing is learnt from that), show rev 7.
+  const { createServer } = await import("node:net");
+  const vizrs = createServer((socket) => {
+    let rest = "";
+    socket.on("data", (d) => {
+      rest += d;
+      let i;
+      while ((i = rest.indexOf("\n")) >= 0) {
+        const line = rest.slice(0, i);
+        rest = rest.slice(i + 1);
+        const layers = [
+          { layer: "main", page: { id: "p9", number: 4001 }, since: 1 },
+          { layer: "logo", page: { id: "p7", number: 7001 }, since: 1 },
+        ];
+        socket.write(line.endsWith("STATE") ? `OK ${JSON.stringify({ layers, rev: 7 })}\n` : "OK\n");
+      }
+    });
+  });
+  await new Promise((resolve) => vizrs.listen(0, "127.0.0.1", resolve));
+  t.after(() => vizrs.close());
+  const show = {
+    rev: 7,
+    scenes: [{ id: "s1", rev: 1 }, { id: "s2", rev: 1 }],
+    pages: [
+      { id: "p9", number: 4001, scene: "s1" },
+      { id: "p7", number: 7001, scene: "s2" },
+      { id: "p5", number: 5001, scene: "s2" },
+    ],
+  };
+  const { createServer: createHttp } = await import("node:http");
+  const asked = [];
+  const http = createHttp((req, res) => {
+    asked.push(`${req.url} ${req.headers.authorization || ""}`);
+    if (req.url === "/api/show" && req.headers.authorization === "Bearer operator-token") return res.end(JSON.stringify(show));
+    res.statusCode = req.url === "/api/show" ? 401 : 404;
+    res.end();
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(() => http.close());
+  const cg = await startSidecar(
+    {
+      vizrs: { address: `127.0.0.1:${vizrs.address().port}`, token: "operator-token" },
+      output_url: `http://127.0.0.1:${http.address().port}/output?token=out`,
+      lead_seconds: 0,
+      renderer: "native",
+      renderer_bin: bin,
+      area: "auto",
+    },
+    { FAKE_DIR: dir },
+  );
+  t.after(cg.stop);
+  const [width, height] = [320, 180];
+  const data = { Resolution: { Width: width, Height: height }, FrameRate: 25, MediaItem_Path: "/m/News.mp4" };
+  const script = runClient(`${cg.url}/etv?channel=1&page=4001`, data, 20000);
+  let health;
+  for (let i = 0; i < 60; i++) {
+    health = await (await fetch(`${cg.url}/health`)).json();
+    if (health.zones?.bounds >= 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(health.zones.bounds, 2, `bounds of 4001 and 7001, none of 5001 (not native)\n${cg.logs()}`);
+  assert.ok(asked.includes("/api/show Bearer operator-token"), asked.join("; "));
+  const argv = readFileSync(join(dir, "bounds-args"), "utf8").trim().split("\n");
+  assert.equal(argv.length, 1, "one run for the show at the channel's size");
+  assert.match(argv[0], /^bounds --show \S+ --url http:\/\/127\.0\.0\.1:\d+\/output\?token=out --size 320x180 --page 4001 --page 7001 --page 5001$/);
+  const claim = await (await fetch(`${cg.url}/ffmpeg?channel=1&wait=5000&area=1`)).json();
+  // the bounds snapped out to 16 px with a 16 px margin, apart: two zones
+  assert.deepEqual(claim.areas, [{ x: 176, y: 0, w: 112, h: 80 }, { x: 0, y: 128, w: 80, h: 52 }], cg.logs());
+  assert.match(cg.logs(), /graphics zones: bounds of 3 pages from VizRS at 320x180 in [\d.]+ s \(2 drawn natively\)/);
+  // the show unchanged (rev 7): nothing computed again
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  assert.equal(readFileSync(join(dir, "bounds-args"), "utf8").trim().split("\n").length, 1);
+  await script.catch(() => {});
+});
+
 test("area auto: zones widen in the middle of the piece, a further frame stream of the session carries the new ones", { timeout: 60000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "virtrs-native-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

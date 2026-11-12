@@ -279,6 +279,9 @@ pub struct Footprints {
     path: Option<PathBuf>,
     /// `page@WxH` → rectangles.
     pages: BTreeMap<String, Vec<Area>>,
+    /// `page@WxH` → the bounds VizRS gives for the page (`vizrs-render bounds`,
+    /// PLAN-strefy S6): known without learning; not kept in the file.
+    bounds: BTreeMap<String, Vec<Area>>,
     dirty: bool,
     /// Per channel: when its cells came up (not kept in the file).
     seen: HashMap<String, Seen>,
@@ -331,9 +334,46 @@ impl Footprints {
         self.pages.is_empty()
     }
 
-    /// The footprint of `page` on a channel of `size`, if learnt.
-    pub fn get(&self, page: &str, size: (u32, u32)) -> Option<&[Area]> {
-        self.pages.get(&key(page, size)).map(Vec::as_slice)
+    /// The footprint of `page` on a channel of `size`: its bounds from VizRS
+    /// and what was learnt, together; `None` if neither is known.
+    pub fn get(&self, page: &str, size: (u32, u32)) -> Option<Vec<Area>> {
+        self.get_key(&key(page, size))
+    }
+
+    fn get_key(&self, key: &str) -> Option<Vec<Area>> {
+        match (self.bounds.get(key), self.pages.get(key)) {
+            (None, None) => None,
+            (Some(a), None) | (None, Some(a)) => Some(a.clone()),
+            (Some(a), Some(b)) => Some(merge(a.iter().chain(b).copied().collect(), (0, 0))),
+        }
+    }
+
+    /// The footprints of all the pages known on a channel of `size` whose key
+    /// (`id:number`) ends with `tail` (`""` = all of them).
+    fn known(&self, tail: &str, size: (u32, u32)) -> Vec<Vec<Area>> {
+        let end = format!("{tail}@{}x{}", size.0, size.1);
+        let keys: std::collections::BTreeSet<&String> = self.pages.keys().chain(self.bounds.keys()).filter(|k| k.ends_with(&end)).collect();
+        keys.into_iter().filter_map(|k| self.get_key(k)).collect()
+    }
+
+    /// Bounds of `page` on a channel of `size` from VizRS: rectangles (x, y, w, h)
+    /// in channel pixels, snapped like learnt footprints; `None` forgets them
+    /// (the page is not drawn natively, so they would be incomplete).
+    pub fn set_bounds(&mut self, page: &str, size: (u32, u32), rects: Option<&[(u32, u32, u32, u32)]>) {
+        match rects {
+            Some(rects) => {
+                let areas = merge(rects.iter().map(|r| snap(*r, size)).collect(), size);
+                self.bounds.insert(key(page, size), areas);
+            }
+            None => {
+                self.bounds.remove(&key(page, size));
+            }
+        }
+    }
+
+    /// How many page bounds from VizRS are known (all sizes).
+    pub fn bounds_len(&self) -> usize {
+        self.bounds.len()
     }
 
     /// Learns from one picture of `channel` at `now` (ms, the clock of
@@ -366,7 +406,7 @@ impl Footprints {
         }
         let size = cells.size;
         let n = pages.len();
-        let known: Vec<Option<Vec<Area>>> = pages.iter().map(|p| self.get(&p.page, size).map(<[Area]>::to_vec)).collect();
+        let known: Vec<Option<Vec<Area>>> = pages.iter().map(|p| self.get(&p.page, size)).collect();
         let unknown: Vec<usize> = (0..n).filter(|&p| known[p].is_none()).collect();
         let areas = |p: usize| known[p].as_deref().unwrap_or(&[]);
         let seen = &self.seen[channel];
@@ -530,28 +570,23 @@ pub fn zones(
     size: (u32, u32),
     follows: bool,
 ) -> Option<Vec<Area>> {
-    let suffix = format!("@{}x{}", size.0, size.1);
     let mut areas: Vec<Area> = Vec::new();
     for page in on_air {
-        areas.extend_from_slice(footprints.get(&page.page, size)?);
+        areas.extend(footprints.get(&page.page, size)?);
     }
     // Pages just gone off the air (their out animation still drawn): with a footprint only.
     for page in leaving {
-        areas.extend_from_slice(footprints.get(page, size).unwrap_or(&[]));
+        areas.extend(footprints.get(page, size).unwrap_or_default());
     }
     for number in numbers {
-        let rule = format!(":{number}{suffix}");
-        let mut found = false;
-        for (_, list) in footprints.pages.iter().filter(|(key, _)| key.ends_with(&rule)) {
-            areas.extend_from_slice(list);
-            found = true;
-        }
-        if !found {
+        let found = footprints.known(&format!(":{number}"), size);
+        if found.is_empty() {
             return None;
         }
+        areas.extend(found.into_iter().flatten());
     }
     if !follows {
-        areas.extend(footprints.pages.iter().filter(|(key, _)| key.ends_with(&suffix)).flat_map(|(_, list)| list.iter().copied()));
+        areas.extend(footprints.known("", size).into_iter().flatten());
     }
     if areas.is_empty() {
         return None;
@@ -689,6 +724,29 @@ mod tests {
 
     fn page(p: &str, since: u64) -> OnAir {
         OnAir { page: p.into(), since }
+    }
+
+    #[test]
+    fn bounds_from_vizrs_make_a_page_known_without_learning() {
+        let mut f = Footprints::default();
+        let logo = page("logo:7507", 1);
+        assert_eq!(zones(&f, std::slice::from_ref(&logo), &[], &[], HD, true), None, "unknown: the whole channel");
+        f.set_bounds("logo:7507", HD, Some(&[(1600, 32, 160, 96)]));
+        assert_eq!(f.bounds_len(), 1);
+        let got = zones(&f, std::slice::from_ref(&logo), &[], &[], HD, true).unwrap();
+        assert_eq!(got, vec![Area { x: 1584, y: 16, w: 192, h: 128 }], "snapped out with the margin");
+        // a rule page known only from its bounds
+        f.set_bounds("t:4001", HD, Some(&[(0, 900, 1920, 120)]));
+        assert_eq!(zones(&f, &[], &[], &["4001".into()], HD, true).unwrap().len(), 1);
+        // what is learnt beyond the bounds adds to them
+        assert!(f.add("logo:7507", Area { x: 1584, y: 160, w: 192, h: 32 }, HD));
+        let both = f.get("logo:7507", HD).unwrap();
+        assert_eq!(both, vec![Area { x: 1584, y: 16, w: 192, h: 176 }]);
+        // not native any more: the bounds go, the learnt part stays
+        f.set_bounds("logo:7507", HD, None);
+        assert_eq!(f.get("logo:7507", HD).unwrap(), vec![Area { x: 1584, y: 160, w: 192, h: 32 }]);
+        assert!(!f.dirty || f.pages.contains_key(&key("logo:7507", HD)), "bounds are not kept in the file");
+        assert!(!f.pages.contains_key(&key("t:4001", HD)));
     }
 
     #[test]
@@ -841,7 +899,7 @@ mod tests {
         assert!(w.get("wipe:3003", HD).is_none());
         learn(&mut w, &both, &[title, bar], 71_000);
         assert!(learn(&mut w, &both, &[title, bar], 75_500));
-        assert_eq!(w.get("wipe:3003", HD), Some(&[][..]));
+        assert_eq!(w.get("wipe:3003", HD), Some(vec![]));
         // ...taken alone, its bar over the title's footprint is its own
         let mut v = Footprints::default();
         learn(&mut v, &[page("p9:4001", 1_000)], &[title, bar], 1_000);
@@ -905,7 +963,7 @@ mod tests {
         let mut between = last.clone();
         between.add(&Cells::of_boxes(&[slid], HD));
         assert!(f.learn_between("1", &on, &between, &last, 10_200));
-        assert!(covered(f.get("qr:1401", HD).unwrap(), &[stands, slid]), "the slide-in is the QR code's");
+        assert!(covered(&f.get("qr:1401", HD).unwrap(), &[stands, slid]), "the slide-in is the QR code's");
         // a moment of something next to the title, not in the last picture: nobody's
         let mut flash = Cells::of_boxes(&[(100, 820, 64, 16)], HD);
         let still = Cells::of_boxes(&[(0, 976, 1920, 104)], HD);
@@ -964,7 +1022,7 @@ mod tests {
         f.save();
         let back = Footprints::load(Some(path.clone()));
         assert_eq!(back.get("p9:4001", HD), f.get("p9:4001", HD));
-        assert_eq!(back.get("wipe:3003", HD), Some(&[][..]), "an empty footprint stays one");
+        assert_eq!(back.get("wipe:3003", HD), Some(vec![]), "an empty footprint stays one");
         std::fs::write(&path, "not json").unwrap();
         assert!(Footprints::load(Some(path)).get("p9:4001", HD).is_none(), "broken file: no footprints");
         let _ = std::fs::remove_dir_all(dir);

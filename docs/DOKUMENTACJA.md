@@ -144,6 +144,24 @@ i numer strony VizRS oraz rozmiar kanału (inne show = inne `id` = puste
 (`version: 2`); brak, uszkodzony plik albo plik starszej wersji (ślady
 z widocznych prostokątów, często zawyżone) oznacza brak śladów i naukę od nowa.
 
+**Granice stron z VizRS** (PLAN-strefy S6): przy `area: auto` sidecar w tle
+(wątek co 5 s) pyta VizRS o `rev` show (`STATE`); przy nowej rewizji albo nowym
+rozmiarze kanału z przechwytywaniem pobiera show (`GET /api/show` na serwerze
+z adresu `output_url`, token operatora `vizrs.token`) i uruchamia
+`vizrs-render bounds --show <plik tymczasowy> --url <output_url> --size <rozmiar kanału> --page N …`
+dla stron, których `rev` strony albo jej sceny się zmieniły (VizRS
+DOKUMENTACJA §10.1); granice (komórki 16 px, przyciągnięte do siatki
+z marginesem 16 px jak ślady) czynią stronę znaną bez uczenia – także strony
+wzięte w tej samej chwili, z których ślad się nie uczy (na s2 trzy strony
+kanału 4 wchodziły razem i kanał zostawał na całym ekranie); wyuczony ślad
+dokłada się do nich (np. dłuższy tekst niż w wartościach strony), poszerzanie
+stref działa jak dotąd; strona, której renderer natywny nie rysuje w całości
+(`issues`), nie dostaje granic; granice nie trafiają do `footprints.json`
+(liczone od nowa po starcie); brak `vizrs-render` z podkomendą `bounds` (VizRS
+starszy niż 26.11.2), błąd HTTP albo brak tokenu: jedno
+ostrzeżenie w logu, ponowna próba co 60 s, strefy tylko ze śladów; log udanego
+przebiegu: `graphics zones: bounds of N pages from VizRS at WxH in S s (M drawn natively)`.
+
 Przy przejęciu sesji przez nakładkę (`GET /ffmpeg?…&area=1`, start przebiegu)
 strefy przebiegu to sklejone ślady stron na antenie kanału (`STATE`), stron,
 które zeszły z niej w ostatnich 5 s (ich animacja wyjścia jeszcze się rysuje,
@@ -224,7 +242,7 @@ Tylko wtedy nakładka wysyła `follow=1`. W innym przypadku (oraz ze starszą na
 zostaje dawne zachowanie: grafika poza strefami jest ucięta do następnego
 przebiegu i sidecar ostrzega `graphics outside the zones of this run`.
 
-`/health` ma przy `area: auto` pole `zones`: `pages` (liczba śladów) i `runs` –
+`/health` ma przy `area: auto` pole `zones`: `pages` (liczba śladów), `bounds` (liczba granic stron z VizRS) i `runs` –
 dla każdego przebiegu nakładki `channel`, `zones` (strefy albo `null` = cały
 kanał), `share_percent`, `outside` (obrazy z grafiką poza strefami),
 `widenings` (poszerzenia w tym kawałku).

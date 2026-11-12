@@ -42,6 +42,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::area::{Area, Layout, geometries};
+use crate::bounds;
 use crate::capture::{Capture, CaptureMode, CaptureOptions, IDLE, find_browser};
 use crate::config::Config;
 use crate::footprint::{self, Footprints};
@@ -231,6 +232,11 @@ const SHOW_EVERY: Duration = Duration::from_secs(30);
 const LEARN_EVERY: Duration = Duration::from_millis(500);
 /// How often learnt footprints are written to their file.
 const SAVE_EVERY: Duration = Duration::from_secs(10);
+/// How often the show's revision is checked for new page bounds (PLAN-strefy S6), and after a failure.
+const BOUNDS_EVERY: Duration = Duration::from_secs(5);
+const BOUNDS_RETRY: Duration = Duration::from_secs(60);
+/// A channel size (width, height).
+type Size = (u32, u32);
 
 impl Server {
     pub fn new(config: Config) -> Arc<Server> {
@@ -373,7 +379,91 @@ impl Server {
                 }
             }
         });
+        let server = Arc::clone(self);
+        let _ = thread::Builder::new().name("bounds".into()).spawn(move || server.bounds_loop());
         crate::info!("graphics zones: auto (footprints of the pages on air)");
+    }
+
+    /// PLAN-strefy S6: the bounds of the show's pages from the native renderer
+    /// (`vizrs-render bounds`) at every channel size with a capture, computed
+    /// again for a page whose revision or scene changed (`rev` of the show in `STATE`).
+    fn bounds_loop(&self) {
+        let bin = native::find_renderer(&self.config.renderer_bin);
+        let mut done = bounds::Done::new();
+        // the show's revision and the sizes the last update covered
+        let mut last: Option<(Option<f64>, Vec<Size>)> = None;
+        let mut failing = false;
+        loop {
+            thread::sleep(if failing { BOUNDS_RETRY } else { BOUNDS_EVERY });
+            let mut sizes: Vec<(u32, u32)> = lock(&self.sessions)
+                .scripts
+                .values()
+                .filter_map(|s| s.capture.as_ref().filter(|c| c.areas().is_empty()).map(|c| c.out_size()))
+                .collect();
+            sizes.sort_unstable();
+            sizes.dedup();
+            if sizes.is_empty() {
+                continue;
+            }
+            let rev = vizrs::state(&self.config.vizrs.address, &self.config.vizrs.token, "").ok().as_deref().and_then(bounds::state_rev);
+            let now = (rev, sizes.clone());
+            if rev.is_some() && last.as_ref() == Some(&now) {
+                continue;
+            }
+            match self.update_bounds(&bin, &sizes, &mut done) {
+                Ok(()) => {
+                    failing = false;
+                    last = Some(now);
+                }
+                Err(e) => {
+                    if !failing {
+                        crate::warn!("graphics zones: no page bounds from VizRS ({e}); footprints are learnt from the pictures only");
+                    }
+                    failing = true;
+                }
+            }
+        }
+    }
+
+    /// Bounds of the pages not computed yet (or changed since) at each of `sizes`.
+    fn update_bounds(&self, bin: &str, sizes: &[(u32, u32)], done: &mut bounds::Done) -> Result<(), String> {
+        let text = bounds::fetch_show(&self.config.output_url, &self.config.vizrs.token)?;
+        let show = json::parse(&text).map_err(|_| "the show from VizRS is not JSON".to_owned())?;
+        let pages = bounds::pages(&show);
+        let file = std::env::temp_dir().join(format!("vizrs-cg-show-{}.json", std::process::id()));
+        let file_name = file.to_string_lossy().into_owned();
+        for &size in sizes {
+            let todo: Vec<&bounds::Page> =
+                pages.iter().filter(|p| done.get(&bounds::done_key(&p.key, size)) != Some(&p.signature)).collect();
+            if todo.is_empty() {
+                continue;
+            }
+            std::fs::write(&file, &text).map_err(|e| format!("{file_name}: {e}"))?;
+            let numbers: Vec<String> = todo.iter().map(|p| p.number.clone()).collect();
+            let started = std::time::Instant::now();
+            let out = bounds::run(bin, &file_name, &self.config.output_url, size, &numbers);
+            let _ = std::fs::remove_file(&file);
+            let out = out?;
+            let mut native = 0;
+            {
+                let mut footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
+                for (key, rects) in out.lines().filter_map(bounds::parse_line) {
+                    native += usize::from(rects.is_some());
+                    footprints.set_bounds(&key, size, rects.as_deref());
+                }
+            }
+            for page in todo {
+                done.insert(bounds::done_key(&page.key, size), page.signature.clone());
+            }
+            crate::info!(
+                "graphics zones: bounds of {} pages from VizRS at {}x{} in {:.1} s ({native} drawn natively)",
+                numbers.len(),
+                size.0,
+                size.1,
+                started.elapsed().as_secs_f64()
+            );
+        }
+        Ok(())
     }
 
     /// The zones of a run of `channel` (PLAN-strefy S2): footprints of the pages
@@ -690,8 +780,10 @@ impl Server {
                     ])
                 })
                 .collect();
-            let pages = self.footprints.lock().unwrap_or_else(|e| e.into_inner()).len();
-            json::object([("runs", Value::Array(runs)), ("pages", (pages as u64).into())])
+            let footprints = self.footprints.lock().unwrap_or_else(|e| e.into_inner());
+            let (pages, bounds) = (footprints.len(), footprints.bounds_len());
+            drop(footprints);
+            json::object([("runs", Value::Array(runs)), ("pages", (pages as u64).into()), ("bounds", (bounds as u64).into())])
         });
         json::object([
             ("sessions", (self.count.load(Ordering::Relaxed) as u64).into()),

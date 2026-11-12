@@ -7,6 +7,7 @@ pub mod log;
 pub mod area;
 pub mod asrun;
 pub mod base64;
+pub mod bounds;
 pub mod capture;
 pub mod config;
 pub mod delta;
