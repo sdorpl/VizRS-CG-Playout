@@ -31,7 +31,8 @@
 // goes back to the live edge, as every other reader starts.
 //
 // The channel is live from the first video keyframe of the source until its
-// connection ends or sends nothing for `IDLE`. One source per channel: a
+// connection ends or sends nothing for its idle time (`ingest_idle_seconds`,
+// `DEFAULT_IDLE`). One source per channel: a
 // second one while the first is live is refused (an active takeover is not
 // pre-empted, as in VizRS ffPlayout System).
 //
@@ -49,8 +50,10 @@ use crate::http::{self, Request};
 use crate::json::{self, Value};
 
 pub const PACKET: usize = 188;
-/// A source that sends nothing this long has ended.
-pub const IDLE: Duration = Duration::from_secs(5);
+/// A source that sends nothing this long has ended (`ingest_idle_seconds`).
+/// Above the 4 s a relay that reads HLS can go without a byte (datarhei
+/// Restreamer: two 2 s segments at once), so such gaps leave the live on air.
+pub const DEFAULT_IDLE: Duration = Duration::from_secs(8);
 /// Most bytes kept of the source for readers that join or go on.
 const MAX_BUFFER: usize = 32 * 1024 * 1024;
 /// How much of the source is kept (by its timestamps), whole groups of pictures.
@@ -496,6 +499,8 @@ pub struct Ingest {
     token: String,
     /// A source takes any piece over, not only live programmes.
     anytime: bool,
+    /// A source silent this long has ended.
+    idle: Duration,
     /// ErsatzTV's config folder: where the as-run log lives ("" = no log).
     etv_config: String,
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
@@ -513,11 +518,22 @@ impl Ingest {
         Ingest {
             token: token.to_owned(),
             anytime,
+            idle: DEFAULT_IDLE,
             etv_config,
             feeds: Mutex::new(HashMap::new()),
             control: Mutex::new(HashMap::new()),
             events: Mutex::new(VecDeque::new()),
         }
+    }
+
+    /// A source that sends nothing for `idle` has ended (at least 1 s).
+    pub fn with_idle(mut self, idle: Duration) -> Ingest {
+        self.idle = idle.max(Duration::from_secs(1));
+        self
+    }
+
+    pub fn idle(&self) -> Duration {
+        self.idle
     }
 
     pub fn control(&self, channel: &str) -> ChannelControl {
@@ -668,7 +684,7 @@ impl Ingest {
             return http::respond(&mut stream, 409, None, b"");
         };
         stream.write_all(b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n")?;
-        stream.set_read_timeout(Some(IDLE))?;
+        stream.set_read_timeout(Some(self.idle))?;
         crate::info!("ingest: channel {channel}: source connected");
         self.event(&channel, "nadawca połączony");
         crate::asrun::log(&self.etv_config, &channel, &crate::asrun::Entry::of(crate::asrun::LIVE_ON).detail("nadawca połączony"));
@@ -971,6 +987,13 @@ mod tests {
         assert_eq!(first_second(&feed, From::Edge), 134);
         // A start gone from the buffer: the live edge.
         assert_eq!(first_second(&feed, From::Start(0)), 134);
+    }
+
+    #[test]
+    fn idle_time_of_a_source() {
+        assert_eq!(Ingest::new("t", true).idle(), DEFAULT_IDLE);
+        assert_eq!(Ingest::new("t", true).with_idle(Duration::from_secs(12)).idle(), Duration::from_secs(12));
+        assert_eq!(Ingest::new("t", true).with_idle(Duration::from_millis(200)).idle(), Duration::from_secs(1));
     }
 
     #[test]

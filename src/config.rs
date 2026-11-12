@@ -148,6 +148,8 @@ pub struct Config {
     pub ingest_token: String,
     /// A live source takes any piece over; false = only live programmes (`live_shows`).
     pub ingest_anytime: bool,
+    /// A live source silent this long has ended (seconds, at least 1).
+    pub ingest_idle_seconds: f64,
     /// The listeners' `VIZRS_INGEST` (`kanał=URL; …`), for VizRS Live to show
     /// publishers where to send; the listener service reads its own copy.
     pub ingest_listeners: String,
@@ -211,6 +213,7 @@ impl Default for Config {
             native_layers: true,
             ingest_token: String::new(),
             ingest_anytime: true,
+            ingest_idle_seconds: crate::ingest::DEFAULT_IDLE.as_secs_f64(),
             ingest_listeners: String::new(),
             ingest_public: String::new(),
             ingest_rtmp_port: None,
@@ -425,6 +428,7 @@ impl Config {
                     "native_layers" => config.native_layers = boolean(value, key)?,
                     "ingest_token" => config.ingest_token = string(value, key)?,
                     "ingest_anytime" => config.ingest_anytime = boolean(value, key)?,
+                    "ingest_idle_seconds" => config.ingest_idle_seconds = number(value, key)?,
                     "ingest" => config.ingest_listeners = string(value, key)?,
                     "ingest_public" => config.ingest_public = string(value, key)?.trim().to_owned(),
                     "live_shows" => config.live_shows = live_shows(value)?,
@@ -588,6 +592,15 @@ impl Config {
         }
         if let Some(v) = env("VIZRS_INGEST_ANYTIME").filter(|v| !v.trim().is_empty()) {
             config.ingest_anytime = v.trim() != "0";
+        }
+        if let Some(v) = env("VIZRS_INGEST_IDLE_SECONDS").filter(|v| !v.trim().is_empty()) {
+            match v.trim().parse::<f64>() {
+                Ok(seconds) if seconds.is_finite() && seconds > 0.0 => config.ingest_idle_seconds = seconds,
+                _ => warnings.push(format!(
+                    "VIZRS_INGEST_IDLE_SECONDS=\"{v}\" is not a number of seconds > 0; using {}",
+                    config.ingest_idle_seconds
+                )),
+            }
         }
         if let Some(v) = env("VIZRS_LIVE_SHOWS").filter(|v| !v.trim().is_empty()) {
             match json::parse(&v).map_err(|e| e.to_string()).and_then(|value| live_shows(&value)) {
@@ -910,6 +923,18 @@ mod tests {
         })
         .unwrap();
         assert_eq!((config.etv_url.as_str(), config.sync_seconds), ("http://ersatztv:8409", 30.0));
+    }
+
+    #[test]
+    fn ingest_idle_seconds() {
+        assert_eq!(Config::default().ingest_idle_seconds, 8.0);
+        let file = json::parse(r#"{"ingest_idle_seconds": 12}"#).unwrap();
+        assert_eq!(Config::from_values(Some(&file), &|_| None).unwrap().0.ingest_idle_seconds, 12.0);
+        let env = |value: &'static str| move |name: &str| if name == "VIZRS_INGEST_IDLE_SECONDS" { Some(value.into()) } else { None };
+        assert_eq!(Config::from_values(Some(&file), &env("6.5")).unwrap().0.ingest_idle_seconds, 6.5);
+        let (config, warnings) = Config::from_values(None, &env("soon")).unwrap();
+        assert_eq!(config.ingest_idle_seconds, 8.0);
+        assert!(warnings.iter().any(|w| w.contains("VIZRS_INGEST_IDLE_SECONDS")));
     }
 
     #[test]

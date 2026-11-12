@@ -965,14 +965,14 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    bez transkodowania (`-c copy`; pierwszy obraz i pierwszy dźwięk) i wysyła
    go do sidecara (`POST /ingest?channel=N`, `Authorization: Bearer
    <VIZRS_INGEST_TOKEN>`). Nadawca, który przez `VIZRS_INGEST_IDLE_MS`
-   (domyślnie 10000 ms) nic nie wyśle, jest rozłączany, a ffmpeg czeka na
-   następnego. Próg jest celowo dłuższy niż 5 s ciszy, po których sidecar
-   kończy live (`IDLE`, niżej): krótsza przerwa zdejmuje tylko sygnał z anteny,
+   (domyślnie 15000 ms) nic nie wyśle, jest rozłączany, a ffmpeg czeka na
+   następnego. Próg jest celowo dłuższy niż cisza, po której sidecar
+   kończy live (`ingest_idle_seconds`, domyślnie 8 s, niżej): krótsza przerwa zdejmuje tylko sygnał z anteny,
    nadawca zostaje połączony, a gdy dane wrócą, odbiornik w ciągu ok. sekundy
    łączy się z sidecarem ponownie i live wraca od klatki kluczowej. Rozłączony nadawca musi połączyć się od nowa – przekaźnik
    czytający HLS (np. datarhei Restreamer: segmenty po 2 s wysyłane paczkami)
    robi to dopiero po kilkunastu sekundach. Dlatego próg nie powinien być
-   krótszy niż 5000 ms (przy 2000 ms przekaźnik HLS był rozłączany co godzinę
+   krótszy niż `ingest_idle_seconds` sidecara (przy 2000 ms przekaźnik HLS był rozłączany co godzinę
    z ok. 19 s przerwy). Sidecar nieosiągalny = dane przepadają, a odbiornik łączy się
    ponownie co sekundę (nadawca zostaje). W RTMP ostatni człon ścieżki to
    klucz strumienia: ffmpeg przyjmuje każdą nazwę i tylko ostrzega, więc
@@ -993,7 +993,12 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    1936–1943, SRT 9000–9007 (UDP), po jednym odbiorniku na port.
 2. **Stan w sidecarze** ([src/ingest.rs](../src/ingest.rs)): kanał jest „live”
    od pierwszej klatki kluczowej obrazu (flaga *random access* w MPEG-TS albo
-   IDR/SPS H.264, IRAP/VPS/SPS HEVC) do końca połączenia albo 5 s ciszy.
+   IDR/SPS H.264, IRAP/VPS/SPS HEVC) do końca połączenia albo ciszy dłuższej
+   niż `ingest_idle_seconds` (env `VIZRS_INGEST_IDLE_SECONDS`, domyślnie 8 s,
+   co najmniej 1 s). Do 26.11.1 było to stałe 5 s: przekaźnik czytający HLS
+   (datarhei Restreamer, segmenty 2 s z kawałków 4 s ErsatzTV) potrafi milczeć
+   ok. 4 s, a skok znaczników czasu w źródle z `-re` nawet dłużej, więc przy
+   5 s sygnał co chwilę spadał z anteny i wracał.
    Sidecar trzyma ostatnie PAT i PMT oraz strumień od ostatniej klatki
    kluczowej (do 32 MB), więc czytelnik dołącza od razu od obrazu. Jeden sygnał
    na kanał: drugi, gdy pierwszy trwa, dostaje 409 (aktywne przejęcie nie jest
@@ -1370,7 +1375,7 @@ szablony komend; nowe funkcje VizRS CG Playout nie mają już odpowiednika tam.
 | `{next_*}` z playlisty | z wpisów EPG ErsatzTV (`epg_entries: 3`) |
 | przechwytywanie co n-tą klatkę Chromium, wtapianie aktualnej grafiki w każdą klatkę | to samo (§1, płynność animacji), plus zrzut stanu końcowego |
 | brak – grafika zawsze w rozmiarze kanału | `render_size` / `&render=` (rozmiar renderowania grafiki, §1) |
-| live ingest: odbiorniki RTMP/SRT kanału, przejęcie od pierwszej klatki obrazu, `idle_timeout_ms` (2 s) | `VIZRS_INGEST` (`kanał=URL`) usługi `ingest`, `VIZRS_INGEST_IDLE_MS` (10 s; live kończy się po 5 s ciszy w sidecarze); przejęcie w nakładce ffmpeg (`VIZRS_FFMPEG_INGEST`, §1, Live ingest) |
+| live ingest: odbiorniki RTMP/SRT kanału, przejęcie od pierwszej klatki obrazu, `idle_timeout_ms` (2 s) | `VIZRS_INGEST` (`kanał=URL`) usługi `ingest`, `VIZRS_INGEST_IDLE_MS` (15 s; live kończy się po `ingest_idle_seconds`, domyślnie 8 s ciszy w sidecarze); przejęcie w nakładce ffmpeg (`VIZRS_FFMPEG_INGEST`, §1, Live ingest) |
 | program wstrzymany na czas live | program idzie dalej według zegara (harmonogram ErsatzTV), część zastąpiona przez live przepada |
 | priorytety odbiorników kanału | brak: pierwszy sygnał kanału trzyma antenę do końca |
 | live tylko poza playlistą (przejęcie w dowolnej chwili) | także audycje na żywo w ramówce i EPG (`live_shows`, Remote Stream ErsatzTV), `ingest_anytime: false` = live tylko w nich |
@@ -2089,7 +2094,11 @@ vizrs-cg config.json      # albo CONFIG=config.json vizrs-cg
 
 `ingest_token` (env `VIZRS_INGEST_TOKEN`; ustawiona pusta zmienna wyłącza
 token z pliku): wspólny sekret odbiorników live ingest; puste = live ingest
-wyłączony (§1, Live ingest). `ingest_anytime` (env `VIZRS_INGEST_ANYTIME`,
+wyłączony (§1, Live ingest). `ingest_idle_seconds` (env
+`VIZRS_INGEST_IDLE_SECONDS`, domyślnie 8, co najmniej 1; błędna wartość w env
+trafia do logu i zostaje domyślna): po tylu sekundach ciszy źródło kończy live
+(§1, Live ingest); `VIZRS_INGEST_IDLE_MS` usługi `ingest` musi być dłuższe.
+`ingest_anytime` (env `VIZRS_INGEST_ANYTIME`,
 `0`/`1`, domyślnie `true`) i `live_shows` (tablica, env `VIZRS_LIVE_SHOWS` z tym
 samym JSON-em; błędny JSON w env trafia do logu i jest pomijany, błędny wpis
 w pliku zatrzymuje start z nazwą pola): §1, Audycje na żywo w ramówce.
@@ -2145,7 +2154,7 @@ błędna wartość = `chromium` z ostrzeżeniem), `VIZRS_RENDERER_BIN` (program
 `vizrs-render`; puste = obok sidecara albo w `PATH`), `VIZRS_NATIVE_LAYERS`
 (`0` = jeden proces renderera natywnego na całą antenę; domyślnie proces na
 warstwę show, §1 „Renderer natywny VizRS”),
-`VIZRS_INGEST_TOKEN`, `VIZRS_INGEST_ANYTIME`, `VIZRS_LIVE_SHOWS` (live ingest, §1),
+`VIZRS_INGEST_TOKEN`, `VIZRS_INGEST_ANYTIME`, `VIZRS_INGEST_IDLE_SECONDS`, `VIZRS_LIVE_SHOWS` (live ingest, §1),
 `VIZRS_PANEL_TOKEN` (live API dla VizRS Live, §1),
 `VIZRS_BROWSER`, `VIZRS_BROWSER_NO_SANDBOX=1` (root / kontenery),
 `VIZRS_BROWSER_ARGS` (dodatkowe flagi Chromium, rozdzielone spacją),

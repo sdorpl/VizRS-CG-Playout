@@ -154,6 +154,24 @@ test("ingest API: token, live from the first keyframe, readers join there, one s
   none.socket.destroy();
 });
 
+test("ingest_idle_seconds: a silent source ends the live after that time, not before", async (t) => {
+  const cg = await sidecar(t, { ingest_token: TOKEN, ingest_idle_seconds: 1.5 });
+  const source = await postSource(cg, "1", TOKEN);
+  assert.equal(source.status, 200);
+  const closed = new Promise((resolve) => source.socket.on("close", resolve));
+  source.socket.write(Buffer.concat([pat(), pmt(), video(true, 1)]));
+  for (let i = 0; i < 40 && !(await state(cg, "1")).live; i++) await sleep(50);
+  assert.equal((await state(cg, "1")).live, true);
+  const silentFrom = Date.now();
+  await sleep(700);
+  assert.equal((await state(cg, "1")).live, true, "a short silence is not the end");
+  await closed;
+  const silent = Date.now() - silentFrom;
+  assert.ok(silent >= 1400 && silent < 4000, `the sidecar closed the source after ${silent} ms`);
+  for (let i = 0; i < 40 && (await state(cg, "1")).live; i++) await sleep(50);
+  assert.equal((await state(cg, "1")).live, false);
+});
+
 /** Colour of the pixel at x, y of the first frame of a segment. */
 function pixel(file, x, y) {
   const raw = execFileSync(FFMPEG, ["-v", "error", "-i", file, "-frames:v", "1", "-vf", `crop=2:2:${x}:${y}`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]);

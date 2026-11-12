@@ -41,6 +41,7 @@
   "panel_token": "",
   "alert_webhook": "",
   "ingest_anytime": true,
+  "ingest_idle_seconds": 8,
   "ingest": "",
   "ingest_public": "",
   "live_shows": [

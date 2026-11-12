@@ -141,6 +141,9 @@ services:
       VIZRS_INGEST_TOKEN: ${VIZRS_INGEST_TOKEN:-}
       # 1 = a live source takes any piece over; 0 = only live programmes of the schedule.
       VIZRS_INGEST_ANYTIME: ${VIZRS_INGEST_ANYTIME:-1}
+      # A live source silent this long ends the live on air (seconds; the ingest
+      # service's VIZRS_INGEST_IDLE_MS must stay longer).
+      VIZRS_INGEST_IDLE_SECONDS: ${VIZRS_INGEST_IDLE_SECONDS:-8}
       # The same listeners as the ingest service and the host publishers reach them
       # at: VizRS Live shows them (live API) where to send.
       VIZRS_INGEST: ${VIZRS_INGEST:-1=rtmp://0.0.0.0:1936/live/change-me}
@@ -271,9 +274,10 @@ services:
       # Only the first filling: once inputs are set in VizRS Live, the sidecar's
       # list (/config/vizrs-live/inputs.json) is in force, taken over without a restart.
       VIZRS_INGEST: ${VIZRS_INGEST:-1=rtmp://0.0.0.0:1936/live/change-me}
-      # A publisher silent this long has ended (ms). Keep it above the sidecar's 5 s:
-      # a shorter silence then only ends the live on air, the publisher stays.
-      VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-10000}
+      # A publisher silent this long has ended (ms). Keep it above the sidecar's
+      # VIZRS_INGEST_IDLE_SECONDS (8 s): a shorter silence then only ends the live
+      # on air, the publisher stays.
+      VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-15000}
     volumes:
       - vizrs-client:/vizrs:ro
     ports:

@@ -245,7 +245,8 @@ impl Server {
             crate::warn!("{warning}");
         }
         let browser = if config.browser.is_empty() { find_browser() } else { Some(config.browser.clone()) };
-        let ingest = Ingest::with_config(&config.ingest_token, config.ingest_anytime, config.etv_config.clone());
+        let ingest = Ingest::with_config(&config.ingest_token, config.ingest_anytime, config.etv_config.clone())
+            .with_idle(Duration::from_secs_f64(config.ingest_idle_seconds.clamp(1.0, 3600.0)));
         let panel = Panel::new(&config, &ingest, Arc::clone(&graphics));
         let footprints = Mutex::new(Footprints::load(Footprints::default_path(&config.etv_config)));
         Arc::new(Server {

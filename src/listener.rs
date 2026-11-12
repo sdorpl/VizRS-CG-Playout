@@ -10,7 +10,7 @@
 //     VIZRS_INGEST         channel=URL, separated by ";" or white space:
 //                          "1=rtmp://0.0.0.0:1936/live/KEY; 2=srt://0.0.0.0:9000?passphrase=…"
 //     VIZRS_INGEST_TOKEN   shared secret with the sidecar (its ingest_token)
-//     VIZRS_INGEST_IDLE_MS a publisher silent this long has ended (default 10000)
+//     VIZRS_INGEST_IDLE_MS a publisher silent this long has ended (default 15000)
 //     VIZRS_CG_URL         sidecar, e.g. http://cg:7700
 //     VIZRS_FFMPEG         ffmpeg (default /usr/local/bin/ffmpeg)
 //
@@ -30,13 +30,13 @@ use crate::net::{Url, connect, error, read_head, status_of};
 use crate::overlay::quote_plus;
 
 const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
-/// Longer than the sidecar's `ingest::IDLE`: a short silence (a relay that
-/// reads HLS sends 2 s segments in bursts) only ends the live on air there,
-/// and the publisher stays connected, so the next bytes bring it back at once.
-/// Dropping the publisher makes it reconnect, which a relay like datarhei
-/// Restreamer does only 15 s later.
-const DEFAULT_IDLE_MS: u64 = 10_000;
-const _: () = assert!(DEFAULT_IDLE_MS > crate::ingest::IDLE.as_millis() as u64);
+/// Longer than the sidecar's `ingest::DEFAULT_IDLE`: a short silence (a relay
+/// that reads HLS sends 2 s segments in bursts) only ends the live on air
+/// there, and the publisher stays connected, so the next bytes bring it back
+/// at once. Dropping the publisher makes it reconnect, which a relay like
+/// datarhei Restreamer does only 15 s later.
+const DEFAULT_IDLE_MS: u64 = 15_000;
+const _: () = assert!(DEFAULT_IDLE_MS > crate::ingest::DEFAULT_IDLE.as_millis() as u64);
 const AGAIN: Duration = Duration::from_secs(1);
 const MAX_LISTENERS: usize = 16;
 /// How often the list is asked for from the sidecar.
