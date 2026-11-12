@@ -177,6 +177,11 @@ struct Sessions {
     /// channel, and when (epoch ms): their session may come just after the
     /// overlay took over the piece, so the zones count them beforehand.
     element_pages: HashMap<String, Vec<(String, u64)>>,
+    /// Channels where a general VizRS element (no `page=` / `take=` / `cmd=`)
+    /// started a session since the sidecar started: only those elements send
+    /// the rules' commands (`on_clip`, `on_end`), so only these channels count
+    /// the rules' pages in their zones.
+    general: HashSet<String>,
     next_id: u64,
     next_waiter: u64,
 }
@@ -377,12 +382,17 @@ impl Server {
         let config = self.graphics.applied(&self.config.for_channel(channel));
         let on_air = footprint::on_air(&vizrs::state(&config.vizrs.address, &config.vizrs.token, &config.command_prefix).ok()?)?;
         let mut lines: Vec<String> = Vec::new();
-        let mut add = |text: &str| lines.extend(text.lines().map(str::to_owned));
-        add(&config.on_clip);
-        add(&config.on_end);
-        for show in &config.shows {
-            add(show.on_clip.as_deref().unwrap_or(""));
-            add(show.on_end.as_deref().unwrap_or(""));
+        // The rules go out only through general elements: a channel with
+        // elements of single pages alone never takes their pages, and a page
+        // that never comes on air would cost every run the whole channel.
+        if lock(&self.sessions).general.contains(channel) {
+            let mut add = |text: &str| lines.extend(text.lines().map(str::to_owned));
+            add(&config.on_clip);
+            add(&config.on_end);
+            for show in &config.shows {
+                add(show.on_clip.as_deref().unwrap_or(""));
+                add(show.on_end.as_deref().unwrap_or(""));
+            }
         }
         let mut numbers = vizrs::taken_pages(&lines);
         // Pages this piece may take besides its rules: back from a break, or by
@@ -1046,6 +1056,9 @@ impl Server {
             crate::warn!("channel {channel}: {warning}");
         }
         events.session(&ctx, custom_commands.as_deref(), timing);
+        if custom_commands.is_none() {
+            lock(&self.sessions).general.insert(channel.clone());
+        }
         if let Some(commands) = &custom_commands {
             let now = crate::time::now_ms() as u64;
             let mut sessions = lock(&self.sessions);

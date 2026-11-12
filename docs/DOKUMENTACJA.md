@@ -84,6 +84,16 @@ ma pierwszeństwo) podaje obszar grafiki w pikselach kanału, w zapisie
 Obszarów może być kilka, rozdzielonych przecinkami, np. pasek i logo:
 `area=1920x140+0+930,160x160+1690+30`.
 
+**Domyślnie `auto`** (od 2026-11-12, w `config.json` i w compose:
+`${VIZRS_AREA:-auto}`). Cały kanał daje `full` (`VIZRS_AREA=full`), a poza
+compose także puste `VIZRS_AREA` albo `"area": ""`. W compose puste
+`VIZRS_AREA` oznacza `auto`, więc tam strefy wyłącza tylko `full`. Pomiar
+(s2, A1, materiał 1600×900 25 kl./s, x264 `ultrafast` 3000 kb/s, sam ffmpeg
+kawałka): bez grafiki 0,38 rdzenia, nałożenie pełnej klatki 1600×900 0,71,
+pasek 1600×160 i logo 256×128 0,46 – nałożenie pełnej klatki kosztowało tyle
+co samo kodowanie. Dopóki strony na antenie nie mają śladów, przebieg dostaje
+cały kanał, czyli tyle co bez stref.
+
 **`area: auto`** (`VIZRS_AREA=auto`, PLAN-strefy) – strefy mają wynikać
 z grafiki na antenie zamiast ze stałego ustawienia. Renderer rysuje cały
 kanał, a sidecar uczy się **śladów stron** i z nich składa strefy każdego
@@ -139,7 +149,14 @@ strefy przebiegu to sklejone ślady stron na antenie kanału (`STATE`), stron,
 które zeszły z niej w ostatnich 5 s (ich animacja wyjścia jeszcze się rysuje,
 np. na starcie nowej audycji; strona bez śladu niczego tu nie dodaje), i stron,
 które mogą wziąć reguły (`TAKE` z `on_clip`, `on_end` i reguł audycji, po
-zastosowaniu reguł z live API). Do tego strony, które pozycja może wziąć
+zastosowaniu reguł z live API) – tylko na kanale, na którym od startu sidecara
+ruszyła sesja ogólnego elementu **VizRS** (bez `page=`/`take=`/`cmd=`), bo
+tylko taki element wysyła reguły. Kanał z samymi elementami pojedynczych
+stron nie czeka na stronę z `on_clip`, która nigdy nie wejdzie na antenę (na
+s1 i s2 domyślne `TAKE 4001` z compose przez cały czas dawało każdemu
+przebiegowi cały kanał; poprawione 2026-11-12). Pierwsza pozycja po starcie
+sidecara może zacząć się przed sesją ogólnego elementu; strona reguły wzięta
+wtedy poza strefy poszerza je (niżej). Do tego strony, które pozycja może wziąć
 poza regułami: zdjęte na czas reklamy (wracają z pierwszym zwykłym klipem;
 liczone do 10 s po powrocie, bo ich `TAKE` może jeszcze nie być w `STATE`)
 i strony brane w ostatnich 10 min na tym kanale przez elementy pojedynczych
@@ -2118,7 +2135,7 @@ Zmienne środowiskowe (nadpisują plik): `LISTEN`, `VIZRS_ADDRESS`,
 `VIZRS_END_REF` (grafika przed końcem audycji, §3), `LEAD_SECONDS`, `VIZRS_RENDER_SIZE`
 (`720p`, `1280x720`, puste = rozmiar kanału; §1), `VIZRS_AREA` (obszary
 grafiki `SZERxWYS+X+Y` po przecinku, np. `1920x140+0+930,160x160+1690+30`,
-puste = cały kanał, `auto` = ślady stron na antenie; §1), `VIZRS_MAX_FPS`
+domyślnie `auto` = ślady stron na antenie, `full` albo puste = cały kanał; §1), `VIZRS_MAX_FPS`
 (górna granica tempa przechwytywania, np. `25`; puste albo `0` = klatkaż
 kanału), `VIZRS_CAPTURE_MODE` (`frames` albo `screencast`, niżej),
 `VIZRS_CLOCK_OFFSET` (sekundy dodane do zegara strony grafiki, niżej),

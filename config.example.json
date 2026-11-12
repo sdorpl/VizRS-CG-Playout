@@ -29,7 +29,7 @@
   "end_ref": "programme",
   "lead_seconds": 6,
   "render_size": "",
-  "area": "",
+  "area": "auto",
   "max_fps": 0,
   "capture_mode": "frames",
   "clock_offset_seconds": 0,

@@ -232,6 +232,60 @@ test("area auto: footprints of the page on air become the zones of the overlay's
   await script.catch(() => {});
 });
 
+test("area auto: rules count only where a general element runs; elements of single pages alone get the zones of their pages", { timeout: 60000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "virtrs-native-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "vizrs-render");
+  writeFileSync(bin, FAKE);
+  chmodSync(bin, 0o755);
+  writeFileSync(join(dir, "started"), "1"); // no exit in this test
+  // A fake VizRS: page 4001 on air (STATE), every other command OK.
+  const { createServer } = await import("node:net");
+  const vizrs = createServer((socket) => {
+    let rest = "";
+    socket.on("data", (d) => {
+      rest += d;
+      let i;
+      while ((i = rest.indexOf("\n")) >= 0) {
+        const line = rest.slice(0, i);
+        rest = rest.slice(i + 1);
+        socket.write(line.endsWith("STATE") ? 'OK {"layers":[{"layer":"main","page":{"id":"p9","number":4001},"since":1}]}\n' : "OK\n");
+      }
+    });
+  });
+  await new Promise((resolve) => vizrs.listen(0, "127.0.0.1", resolve));
+  t.after(() => vizrs.close());
+  const cg = await startSidecar(
+    {
+      vizrs: { address: `127.0.0.1:${vizrs.address().port}`, token: "" },
+      output_url: "http://127.0.0.1:9/output",
+      lead_seconds: 0,
+      renderer: "native",
+      renderer_bin: bin,
+      area: "auto",
+      // A rule page that never comes on air: the channel has no general element.
+      on_clip: "TAKE 5001 headline={title}",
+    },
+    { FAKE_DIR: dir },
+  );
+  t.after(cg.stop);
+  const [width, height] = [320, 180];
+  const data = { Resolution: { Width: width, Height: height }, FrameRate: 25, MediaItem_Path: "/m/News.mp4" };
+  const script = runClient(`${cg.url}/etv?channel=1&page=4001`, data, 8000);
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  const claim = await (await fetch(`${cg.url}/ffmpeg?channel=1&wait=5000&area=1`)).json();
+  assert.deepEqual(claim.areas, [{ x: 16, y: 80, w: 160, h: 64 }], `page 5001 of on_clip does not count\n${cg.logs()}`);
+  await script.catch(() => {});
+
+  // A general element on the channel sends on_clip: page 5001 counts, no footprint = the whole channel.
+  const general = runClient(`${cg.url}/etv?channel=1`, { ...data, MediaItem_Path: "/m/Next.mp4" }, 6000);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const whole = await (await fetch(`${cg.url}/ffmpeg?channel=1&wait=5000&area=1`)).json();
+  assert.deepEqual(whole.areas, [{ x: 0, y: 0, w: width, h: height }], `the whole channel\n${cg.logs()}`);
+  assert.match(cg.logs(), /graphics of Next\n.*graphics zones: the whole channel/);
+  await general.catch(() => {});
+});
+
 test("area auto: zones widen in the middle of the piece, a further frame stream of the session carries the new ones", { timeout: 60000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "virtrs-native-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

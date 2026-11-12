@@ -105,10 +105,12 @@ services:
       # scaling, the smoothest and cheapest), 720p, 1280x720, 1080p.
       # Per channel: &render=1080p in the element URL (vizrs.yml).
       VIZRS_RENDER_SIZE: ${VIZRS_RENDER_SIZE:-}
-      # Graphics areas of the channel, e.g. 1920x140+0+930 for a ticker strip (several
-      # comma-separated): Chromium draws and ffmpeg overlays only them; empty = the whole channel.
-      # Per channel: &area=1920x140+0+930 in the element URL (vizrs.yml).
-      VIZRS_AREA: ${VIZRS_AREA:-}
+      # Graphics areas of the channel. auto (default): the ffmpeg overlay of each run
+      # gets only the zones learned from the pages on air (whole channel until they
+      # are known); full = the whole channel; or fixed areas, e.g. 1920x140+0+930
+      # for a ticker strip (several comma-separated): Chromium draws and ffmpeg
+      # overlays only them. Per channel: &area=1920x140+0+930 in the element URL (vizrs.yml).
+      VIZRS_AREA: ${VIZRS_AREA:-auto}
       # Capture rate limit; empty = the rate of ErsatzTV (Normalize Framerate included).
       # A host too slow for it draws half the rate by itself. A limit that does not
       # divide the channel's rate (30 on 50) makes the motion uneven.

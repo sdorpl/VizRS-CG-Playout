@@ -124,7 +124,8 @@ pub struct Config {
     pub lead_seconds: f64,
     /// Size Chromium renders /output at: "" = channel size, "720p", "1280x720".
     pub render_size: String,
-    /// Graphics area of the channel: "" = all of it, "1920x140+0+940" = only that part.
+    /// Graphics area of the channel: "auto" (default) = zones from the footprints of
+    /// the pages on air, "" or "full" = all of it, "1920x140+0+940" = only that part.
     pub area: String,
     /// Upper limit of the capture rate, e.g. 25 on small ARM hosts; 0 = the channel rate.
     pub max_fps: f64,
@@ -200,7 +201,7 @@ impl Default for Config {
             end_ref: "programme".into(),
             lead_seconds: 4.0,
             render_size: String::new(),
-            area: String::new(),
+            area: "auto".to_owned(),
             max_fps: 0.0,
             capture_mode: "frames".into(),
             clock_offset_seconds: 0.0,
