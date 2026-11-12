@@ -56,6 +56,9 @@ services:
       VIZRS_LIVE_MULTIVIEW_MAX: ${VIZRS_LIVE_MULTIVIEW_MAX:-4}
       VIZRS_LIVE_CG_URL: http://cg:7700
       VIZRS_LIVE_CG_TOKEN: ${VIZRS_PANEL_TOKEN:?ustaw VIZRS_PANEL_TOKEN (live API sidecara)}
+    # media tak jak w legacy (ścieżki pozycji 1:1), tylko odczyt – odtwarzanie plików lokalnych w Przeglądarce bez legacy
+    volumes:
+      - ${MEDIA_DIR:-seed-media}:/media:ro
     ports:
       - "${VIZRS_LIVE_PORT:-8090}:8090"
 
