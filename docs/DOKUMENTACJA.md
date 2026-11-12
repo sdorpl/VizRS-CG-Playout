@@ -307,7 +307,7 @@ z grafiką (pasek tickera, nie cały kanał).
 |---|---|
 | `chromium` | bezgłowy Chromium, jak dotąd |
 | `native` | tylko renderer natywny, Chromium się nie uruchamia; czego renderer nie umie, nie ma na obrazie (lista w logu) |
-| `auto` (domyślnie) | renderer natywny, dopóki wszystko na antenie umie narysować; gdy na antenę wejdzie coś, czego nie umie (np. ruch na wzór BTB, obraz WebP albo wideo, font spoza wbudowanych; renderer 0.2 rysuje całe INFO24 i R7), w tej samej klatce rysuje Chromium, a po zejściu tej grafiki znów renderer natywny |
+| `auto` (domyślnie) | renderer natywny, dopóki wszystko na antenie umie narysować; gdy na antenę wejdzie coś, czego nie umie (np. ruch `node.motion`, obraz WebP albo wideo, font spoza wbudowanych; renderer 0.2 rysuje całe INFO24 i R7), w tej samej klatce rysuje Chromium, a po zejściu tej grafiki znów renderer natywny |
 
 W trybie `auto` Chromium działa obok w trybie `frames`, ale nie rysuje, dopóki
 rysuje renderer natywny (prawie nie zużywa CPU). Przejście na Chromium daje
@@ -1992,7 +1992,7 @@ z `VIZRS_BROWSER_GPU=1` Chromium rysuje na GPU (EGL przez ANGLE: `--use-gl=angle
 2026-11-11 na Quadro P400 (zrzuty PNG 1920×1080 strony z paskiem, crawlem,
 rozmyciem i zegarem): 66 ms CPU na klatkę zamiast 179 ms, za ok. 67 MiB pamięci
 GPU. Renderer natywny (`renderer: auto|native`) zawsze rysuje na CPU, więc
-przełącznik działa tylko na sceny rysowane przez Chromium (np. ruch BTB).
+przełącznik działa tylko na sceny rysowane przez Chromium (np. ruch `node.motion`).
 Sprawdzenie: w logu Chromium (`DEBUG=1`) brak `GLDisplayEGL::Initialize failed`,
 a `nvidia-smi` pokazuje proces `chromium-headless-shell`. ErsatzTV wysyła je na kartę (`format=yuva420p,hwupload_cuda`)
 i nakłada `overlay_cuda`; `VIZRS_FFMPEG_FPS` działa też na klatkach CUDA. Karty konsumenckie ograniczają liczbę

@@ -94,7 +94,7 @@ Wariant sprzętowy, który rozwiązuje to bez zmian na pulpicie, opisuje E8.
 ### E2. Ustawienia stosu (tylko `.env`)
 
 - `VIZRS_BROWSER_GPU=0`: renderer natywny (`auto`) i tak rysuje na CPU, a
-  Chromium na GPU pomaga tylko scenom rysowanym przez przeglądarkę (BTB).
+  Chromium na GPU pomaga tylko scenom rysowanym przez przeglądarkę (np. ruch `node.motion`).
   Zysk ok. 67 MiB. Włączać tylko pod show z takimi scenami.
 - Zostają: `VIZRS_FFMPEG_CUDA=overlay`, `VIZRS_FFMPEG_NVENC_BF=0`,
   `VIZRS_AREA=auto`.
