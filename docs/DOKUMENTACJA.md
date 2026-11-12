@@ -320,8 +320,8 @@ zatrzymywany. `/health`: `renderer` (ustawienie) i `drawn_by` (`native` albo
 `chromium` – kto narysował ostatnią klatkę). Zmiany listy rzeczy, których
 renderer nie umie, trafiają do logu (`vizrs-render: …`).
 
-**Łaty renderera natywnego** (2026-11-11, VizRS `vizrs-render` z gałęzi
-next-v). Sidecar dopisuje do każdego żądania klatki flagę `p`. Renderer, który
+**Łaty renderera natywnego** (2026-11-11, VizRS `vizrs-render` od wydania
+26.11.1). Sidecar dopisuje do każdego żądania klatki flagę `p`. Renderer, który
 ją zna, wysyła przy niezmienionym prostokącie z grafiką tylko zmienione piksele
 (rekord 6, VizRS DOKUMENTACJA §10.1). Sidecar trzyma ostatni obraz renderera,
 nakłada na niego łatę i dalej postępuje jak z całym obrazem. Przewijany crawl
