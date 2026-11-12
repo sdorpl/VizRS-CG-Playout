@@ -18,7 +18,7 @@
 # Kopię, środowisko usługi live i nakładkę VAAPI porównuje z VizRS Live jego scripts/check-cg-overlay.sh (przed każdym wdrożeniem).
 services:
   ersatztv:
-    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:1.2.7}
+    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:26.11.1}
     environment:
       VIZRS_BRIDGE_TOKEN: ${VIZRS_BRIDGE_TOKEN:?ustaw VIZRS_BRIDGE_TOKEN}
     ports: !reset []
@@ -37,7 +37,7 @@ services:
       - "${ETV_PORT:-8409}:8409"
 
   live:
-    image: ${LIVE_IMAGE:-ghcr.io/sdorpl/vizrs-live:latest}
+    image: ${LIVE_IMAGE:-ghcr.io/sdorpl/vizrs-live:26.11.1}
     labels:
       com.centurylinklabs.watchtower.enable: "false"
     restart: unless-stopped

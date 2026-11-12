@@ -1823,10 +1823,9 @@ Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
 `VIZRS_BRIDGE_TOKEN` (most), `VIZRS_LIVE_TOKEN` (logowanie do panelu),
 `VIZRS_PANEL_TOKEN` (live API sidecara, §„Live API”); opcjonalnie
 `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Panel (`LIVE_IMAGE`) i proxy
-(`PROXY_IMAGE`) to zawsze najnowsze wydania (`vizrs-live:latest`,
-`caddy:alpine`; od 2026-11-09), a ErsatzTV z mostem (`LIVE_LEGACY_IMAGE`)
-zostaje przypięty do wydania VizRS Live (1.2.7) – podnosi go nowe wydanie
-panelu, które zmienia most. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
+(`PROXY_IMAGE`): panel i ErsatzTV z mostem (`LIVE_LEGACY_IMAGE`) są przypięte
+do tego samego wydania VizRS Live (26.11.1) – od 26.11.1 wersja mostu = wersja
+panelu, więc podnosi się je razem; proxy to zawsze najnowsze `caddy:alpine`. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
 zmiana jednego wymaga zmiany drugiego. Zgodność kopii, środowiska usługi `live`
 (z nakładką `compose.cg-playout.yml` VizRS Live) i `docker-compose.vaapi.yml`
 sprawdza `scripts/check-cg-overlay.sh` w VizRS Live – uruchamia go każde
