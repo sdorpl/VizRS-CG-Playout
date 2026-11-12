@@ -53,6 +53,7 @@
 //                        auto = overlay while the card has VIZRS_FFMPEG_CUDA_MIN_FREE MiB free, encode below
 //     VIZRS_FFMPEG_CUDA_MIN_FREE  free GPU memory in MiB for overlay in auto (default 400)
 //     VIZRS_FFMPEG_NVENC_BF  B-frames of hardware encoders (NVENC, QSV, VAAPI), e.g. 0 (empty: ffmpeg's)
+//     VIZRS_FFMPEG_SYNC_RAM  1 = with CUDA overlay, media frames wait for the graphics in RAM, not on the card
 //
 // The graphics of a canvas transcode with `-init_hw_device cuda` go to the
 // card through `hwupload` (that device), not `hwupload_cuda`: each
@@ -85,6 +86,17 @@
 // the time lost (HLS at 0.93x, the player's buffer ran out). Measured on a Quadro P400
 // (720p25 media to 1080p50 with a graphics strip): 0.33 of a core instead of
 // 1.40 with `encode`, about the same GPU memory (213 MiB instead of 206).
+//
+// With VIZRS_FFMPEG_SYNC_RAM=1 and `overlay` (also chosen by `auto`) the
+// media frames wait for the graphics of their moment in RAM, before they go
+// to the card (`media_waits_in_ram`): `loudnorm` gives its audio about 3 s
+// late, so ffmpeg decodes the media that far ahead, and each frame uploaded
+// at once waited in front of `overlay_cuda` for graphics that come in the
+// channel's time – about 3 MiB a 1080p frame, up to 560 MiB more on the card,
+// and a burst ran a Quadro P400 out of memory. Measured (1080p50, loudnorm,
+// graphics from a pipe): 91 MiB instead of 667, with or without `-readrate`
+// and its burst; the frames take that RAM instead (+430 MB RSS) and the sync
+// about 0.09 of a core (PLAN-p400, E9).
 //
 // With VIZRS_FFMPEG_CUDA=auto a command encoding with NVENC and CUDA asks
 // `nvidia-smi` for the free memory of the card first (at most 1 s): with at
@@ -195,6 +207,8 @@ pub struct Settings {
     pub cuda_min_free: u64,
     /// `-shortest` left out of commands whose output has a `-t` (VIZRS_FFMPEG_NO_SHORTEST).
     pub no_shortest: bool,
+    /// With `Cuda::Overlay`, media frames wait for the graphics in RAM (VIZRS_FFMPEG_SYNC_RAM).
+    pub sync_ram: bool,
 }
 
 /// What of a command encoding with NVENC stays on the card (`VIZRS_FFMPEG_CUDA`).
@@ -242,6 +256,7 @@ impl Settings {
             bframes: var("VIZRS_FFMPEG_NVENC_BF").trim().to_owned(),
             cuda_min_free: var("VIZRS_FFMPEG_CUDA_MIN_FREE").trim().parse().unwrap_or(DEFAULT_CUDA_MIN_FREE),
             no_shortest: var("VIZRS_FFMPEG_NO_SHORTEST").trim() == "1",
+            sync_ram: var("VIZRS_FFMPEG_SYNC_RAM").trim() == "1",
         }
         .with_encoder_file(&std::env::var("VIZRS_FFMPEG_SETTINGS").unwrap_or_else(|_| encoder::DEFAULT_PATH.into()))
     }
@@ -637,7 +652,7 @@ fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec
     let args = match cuda {
         Cuda::Full | Cuda::Auto => args,
         Cuda::Encode => cuda_encode_only(args),
-        Cuda::Overlay => paced_media(cuda_decode_on_cpu(args), burst),
+        Cuda::Overlay => media_waits_in_ram(paced_media(cuda_decode_on_cpu(args), burst), settings.sync_ram),
     };
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
@@ -869,6 +884,74 @@ pub fn paced_media(args: Vec<OsString>, burst: Option<f64>) -> Vec<OsString> {
     let mut out = args;
     out.splice(first..first, rate);
     out
+}
+
+/// The filters that hold a media frame until the graphics of its moment are
+/// there: a 2x2 cut of the graphics overlaid outside the picture (nothing
+/// drawn), in the media's pixel format, but without alpha – `auto` offers
+/// `yuva420p` too, which `scale_cuda` does not take (ffmpeg 8.1 of ErsatzTV);
+/// after the graphics end the media goes on alone.
+const RAM_SYNC: &str = "overlay=x=main_w:y=main_h:format=auto:eof_action=pass,format=nv12|yuv420p|p010le|yuv444p|p016le|yuv444p16le";
+
+/// `VIZRS_FFMPEG_SYNC_RAM=1` with `overlay`: in the graph that overlays the
+/// graphics on the card (`overlay_cuda`), the one media chain that uploads
+/// decoded frames (`[N:…]…,hwupload,…`) first syncs them with the graphics of
+/// the pipe input on the CPU (`RAM_SYNC`), so frames decoded ahead – for the
+/// 3 s of `loudnorm` lookahead, a burst, no `-readrate` – wait in RAM, and
+/// only frames whose graphics are there go to the card. The graphics input
+/// is split for it. Any other command (off, no graphics pipe, no
+/// `overlay_cuda`, no such media chain or more than one, graphics used twice)
+/// unchanged.
+pub fn media_waits_in_ram(args: Vec<OsString>, on: bool) -> Vec<OsString> {
+    if !on {
+        return args;
+    }
+    let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
+    let Some(text) = text else { return args };
+    let inputs: Vec<&str> = text.windows(2).filter(|w| w[0] == "-i").map(|w| w[1]).collect();
+    let Some(graphics) = inputs.iter().position(|input| input.starts_with("pipe:")) else { return args };
+    let Some(at) = text.windows(2).position(|w| w[0] == "-filter_complex" && w[1].contains("overlay_cuda")) else { return args };
+    match graph_waiting_in_ram(text[at + 1], graphics) {
+        Some(graph) => {
+            let mut out = args;
+            out[at + 1] = graph.into();
+            out
+        }
+        None => args,
+    }
+}
+
+/// `graph` with its media frames synced with the graphics of input `graphics` before their upload.
+fn graph_waiting_in_ram(graph: &str, graphics: usize) -> Option<String> {
+    if graph.contains("[vz_w") {
+        return None;
+    }
+    let pattern = Regex::new(&format!(r"\[{graphics}(:[^\]]*)?\]")).ok()?;
+    let mut uses = pattern.find_iter(graph);
+    let label = uses.next()?.as_str().to_owned();
+    if uses.next().is_some() {
+        return None;
+    }
+    let mut chains: Vec<String> = graph.split(';').map(str::to_owned).collect();
+    let uploads = |body: &str| {
+        let filters = &body[..body.len() - trailing_labels(body)];
+        filters.split(',').any(|f| matches!(f.split_once('=').map_or(f, |(n, _)| n), "hwupload" | "hwupload_cuda"))
+    };
+    let media: Vec<usize> = (0..chains.len())
+        .filter(|&i| {
+            let chain = &chains[i];
+            let (labels, body) = chain.split_at(leading_labels(chain));
+            let input = labels.strip_prefix('[').and_then(|l| l.strip_suffix(']')).filter(|l| !l.contains('['));
+            let stream = input.and_then(|l| l.split(':').next()).and_then(|n| n.parse::<usize>().ok());
+            stream.is_some_and(|n| n != graphics) && uploads(body)
+        })
+        .collect();
+    let [media] = media.as_slice() else { return None };
+    let chain = &chains[*media];
+    let (labels, body) = chain.split_at(leading_labels(chain));
+    chains[*media] = format!("{labels}[vz_wt]{RAM_SYNC},{body}");
+    let joined = chains.join(";").replacen(&label, "[vz_w1]", 1);
+    Some(format!("{label}split=2[vz_w0][vz_w1];[vz_w0]crop=2:2:0:0[vz_wt];{joined}"))
 }
 
 /// ffmpeg's own initial burst of `-readrate`.
@@ -2239,6 +2322,72 @@ mod tests {
         assert_eq!(paced_media(cpu.clone(), Some(4.0)), cpu);
         let plain = args(&["-i", "http://m", "-filter_complex", on_card, "-c:v", "h264_nvenc", "o"]);
         assert_eq!(paced_media(plain.clone(), Some(4.0)), plain);
+    }
+
+    #[test]
+    fn media_waits_for_the_graphics_in_ram_before_its_upload() {
+        let canvas = |filter: &str| {
+            args(&[
+                "-init_hw_device",
+                "cuda",
+                "-readrate",
+                "1",
+                "-i",
+                "/m/a.mp4",
+                "-f",
+                "rawvideo",
+                "-i",
+                "pipe:6",
+                "-filter_complex",
+                "[0:1]loudnorm=I=-23,apad[a]",
+                "-filter_complex",
+                filter,
+                "-map",
+                "[v_o0]",
+                "-map",
+                "[a]",
+                "-vcodec",
+                "h264_nvenc",
+                "o.m3u8",
+            ])
+        };
+        // ErsatzTV's graph after `cuda_decode_on_cpu` and two graphics areas (`placed_areas`).
+        let graph = format!(
+            "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=1056:320:0:0,format=yuva420p,hwupload[vz_g0];\
+             [vz_s1]crop=1280:80:0:320,format=yuva420p,hwupload[vz_g1];\
+             [0:0]{UPLOAD_FORMATS},hwupload,fps=23620/1000,setsar=1,scale_cuda=format=yuv420p[v_m0];[v_m0]fps=25[v_m0_fps];\
+             [v_m0_fps][vz_g0]overlay_cuda=x=112:y=208[vz_o0];[vz_o0][vz_g1]overlay_cuda=x=0:y=640,hwdownload,{UPLOAD_FORMATS}[v_o0]"
+        );
+        let synced = format!(
+            "[1:0]split=2[vz_w0][vz_w1];[vz_w0]crop=2:2:0:0[vz_wt];\
+             [vz_w1]split=2[vz_s0][vz_s1];[vz_s0]crop=1056:320:0:0,format=yuva420p,hwupload[vz_g0];\
+             [vz_s1]crop=1280:80:0:320,format=yuva420p,hwupload[vz_g1];\
+             [0:0][vz_wt]{RAM_SYNC},{UPLOAD_FORMATS},hwupload,fps=23620/1000,setsar=1,scale_cuda=format=yuv420p[v_m0];\
+             [v_m0]fps=25[v_m0_fps];\
+             [v_m0_fps][vz_g0]overlay_cuda=x=112:y=208[vz_o0];[vz_o0][vz_g1]overlay_cuda=x=0:y=640,hwdownload,{UPLOAD_FORMATS}[v_o0]"
+        );
+        assert_eq!(media_waits_in_ram(canvas(&graph), true), canvas(&synced));
+        // Twice: the graph is already synced.
+        assert_eq!(media_waits_in_ram(canvas(&synced), true), canvas(&synced));
+        // One area, the graphics straight into the overlay.
+        let direct = "[0:0]format=yuv420p,hwupload[m];[m][1:v]overlay_cuda=x=0:y=780,hwdownload,format=yuv420p[v_o0]";
+        assert_eq!(
+            media_waits_in_ram(canvas(direct), true),
+            canvas(&format!(
+                "[1:v]split=2[vz_w0][vz_w1];[vz_w0]crop=2:2:0:0[vz_wt];\
+                 [0:0][vz_wt]{RAM_SYNC},format=yuv420p,hwupload[m];[m][vz_w1]overlay_cuda=x=0:y=780,hwdownload,format=yuv420p[v_o0]"
+            ))
+        );
+        // Off, the overlay on the CPU, no graphics pipe, two uploading media chains, graphics used twice: unchanged.
+        assert_eq!(media_waits_in_ram(canvas(&graph), false), canvas(&graph));
+        let cpu = canvas("[0:0][1:0]overlay=x=0:y=0[v_o0]");
+        assert_eq!(media_waits_in_ram(cpu.clone(), true), cpu);
+        let no_pipe = args(&["-i", "a", "-i", "b", "-filter_complex", &graph, "-c:v", "h264_nvenc", "o"]);
+        assert_eq!(media_waits_in_ram(no_pipe.clone(), true), no_pipe);
+        let two = canvas("[0:0]hwupload[m];[2:0]hwupload[n];[m][1:0]overlay_cuda[o];[o][n]overlay_cuda[v_o0]");
+        assert_eq!(media_waits_in_ram(two.clone(), true), two);
+        let twice = canvas("[0:0]hwupload[m];[1:0]hwupload[g];[m][g]overlay_cuda[o];[o][1:0]overlay_cuda[v_o0]");
+        assert_eq!(media_waits_in_ram(twice.clone(), true), twice);
     }
 
     #[test]

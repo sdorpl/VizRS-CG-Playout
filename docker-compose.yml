@@ -224,6 +224,10 @@ services:
       # 1 = without -shortest where the output ends at -t anyway: with loudnorm it
       # holds ~3 s of raw video frames (1080p50 ffmpeg 657 MB -> 268 MB). Empty = off.
       VIZRS_FFMPEG_NO_SHORTEST: ${VIZRS_FFMPEG_NO_SHORTEST:-}
+      # 1 = with VIZRS_FFMPEG_CUDA=overlay (or auto) media frames wait for the graphics in
+      # RAM, not on the card in front of overlay_cuda (loudnorm decodes ~3 s ahead:
+      # P400, 1080p50: 359 -> 111 MiB of GPU memory, ~+430 MB RAM). Empty = off.
+      VIZRS_FFMPEG_SYNC_RAM: ${VIZRS_FFMPEG_SYNC_RAM:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
       - ersatztv-config:/config

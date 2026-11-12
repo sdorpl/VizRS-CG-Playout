@@ -841,15 +841,18 @@ test("ffmpeg overlay VIZRS_FFMPEG_CUDA=overlay: the media paced at -readrate 1 w
   writeFileSync(ffmpeg, FAKE_FFMPEG);
   chmodSync(ffmpeg, 0o755);
   const env = { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_CUDA: "overlay", FRAME_BYTES: String(yuvaSize(8, 4)), FRAMES: "2" };
-  const burst = async (startMs) => {
+  const transcode = (startMs, extra = {}) => {
     start = new Date(startMs).toISOString();
-    const result = await runWrapper([
+    return runWrapper([
       "-init_hw_device", "cuda", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
       "-i", "/m/News.mp4", "-headers", "x-etv-frame-rate:25/1\r\n", "-t", "44000ms",
       "-i", `http://127.0.0.1:${etvPort}/internal/graphics/1/7?exp=1&sig=x`,
       "-filter_complex", "[0:0]hwupload,scale_cuda=8:4[v_m0];[1:0]format=yuva420p,hwupload_cuda[v_s0];[v_m0][v_s0]overlay_cuda=x=0:y=0[v_o0]",
       "-map", "[v_o0]", "-vcodec", "h264_nvenc", "-f", "hls", "/t/ffmpeg.m3u8",
-    ], env);
+    ], { ...env, ...extra });
+  };
+  const burst = async (startMs) => {
+    const result = await transcode(startMs);
     // Without CUDA decoding, the media input paced, with its burst.
     assert.deepEqual(result.args.slice(0, 4), ["-init_hw_device", "cuda", "-readrate", "1"]);
     assert.equal(result.args[4], "-readrate_initial_burst");
@@ -862,6 +865,13 @@ test("ffmpeg overlay VIZRS_FFMPEG_CUDA=overlay: the media paced at -readrate 1 w
   // A piece started 3 s late: the lead and the 3 s missed.
   const late = await burst(Date.now() - 3000);
   assert.ok(late >= 4.9 && late <= 5.8, `late ${late}`);
+  // VIZRS_FFMPEG_SYNC_RAM=1: the media waits for the graphics in RAM, before its upload.
+  const graph = (result) => result.args[result.args.indexOf("-filter_complex") + 1];
+  const synced = graph(await transcode(Date.now(), { VIZRS_FFMPEG_SYNC_RAM: "1" }));
+  assert.match(synced, /^\[1:0\]split=2\[vz_w0\]\[vz_w1\];\[vz_w0\]crop=2:2:0:0\[vz_wt\];/);
+  assert.match(synced, /\[0:0\]\[vz_wt\]overlay=x=main_w:y=main_h:format=auto:eof_action=pass,[^;]*hwupload,scale_cuda/);
+  assert.match(synced, /\[vz_w1\]format=yuva420p,hwupload\[v_s0\]/);
+  assert.ok(!graph(await transcode(Date.now())).includes("vz_w"), "off by default");
 });
 
 test("ffmpeg overlay VIZRS_FFMPEG_CUDA=auto: overlay with free GPU memory, encode on a full card", async (t) => {
