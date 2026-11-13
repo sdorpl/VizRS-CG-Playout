@@ -1225,7 +1225,7 @@ z EPG, `inputs` (niżej), ramówkę po kanałach i zdarzenia.
 listę `features` – VizRS Live pokazuje tylko to, co sidecar zgłosi, więc
 starsza wersja sidecara nie psuje nowszego panelu (brak pola = brak elementu
 w UI). Dziś: `layers` (warstwy na antenie), `take` (ręczne TAKE / CONTINUE /
-OUT), `asrun` (dziennik emisji), `encoder` (koder nakładki: presety x264/NVENC/QSV, profil H.264, opcje x264, klatki B, `/api/live/encoder`) i `webhook` – ten ostatni tylko, gdy ustawiony
+OUT), `asrun` (dziennik emisji), `encoder` (koder nakładki: presety x264/NVENC/QSV, profil H.264, opcje x264, klatki B, `/api/live/encoder`), `thumbs` (miniatury stron VizRS, `/api/live/thumbs/<numer>.png`) i `webhook` – ten ostatni tylko, gdy ustawiony
 jest `alert_webhook`. Kontrakt uzgodniony z VizRS Live (jego DOKUMENTACJA §3,
 punkty K12–K17 planu PLAN-mcr).
 
@@ -1338,6 +1338,9 @@ API (`/api/live/*`, JSON, token jak wyżej):
 | PUT | `/api/live/inputs` | `{"listeners":[{"channel":"2","url":"rtmp://0.0.0.0:1937/live/<klucz>"}]}` – cała lista; walidacja (rtmp/srt, port z zakresu, jeden odbiornik na port, klucz RTMP, hasło SRT 10–79 znaków), zapis `inputs.json`, odbiorniki przejmują ją w ciągu kilku sekund; pusta lista = bez wejść |
 | GET | `/api/live/encoder` | koder nakładki ffmpeg w użyciu od następnego ffmpeg: `{"used":{"preset","profile","x264_params","nvenc_preset","qsv_preset","bframes"}, "from":"panel"\|"env"\|"default", "store", "presets":[…], "profiles":["baseline","main","high"], "x264_keys":[…], "nvenc_presets":["p1"…"p7"], "qsv_presets":[…], "max_bframes":4}` – `panel` = `encoder.json`, `env` = jeszcze bez pliku, ze zmiennych, `default` = ani jedno, ani drugie (§1, „Koder z VizRS Live”) |
 | PUT | `/api/live/encoder` | `{"preset":"veryfast", "profile":"high", "x264_params":"bframes=0:subme=0", "nvenc_preset":"p5", "qsv_preset":"slow", "bframes":"0"}` – wszystkie klucze; puste, `null` albo brak = domyślne; walidacja (listy wartości, biała lista opcji x264, klatki B 0–4), zapis `encoder.json`, wpis w `log.jsonl` |
+| GET | `/api/live/thumbs/<numer>.png` | miniatura strony VizRS (PNG z przezroczystością, szerokość 320 px; `ETag`, `Cache-Control: private, max-age=300`); 404 – nie ma takiej strony albo nic nie rysuje, 502 – VizRS albo renderer zawiódł (niżej, „Miniatury stron”) |
+
+**Miniatury stron (`/api/live/thumbs`, `src/thumbs.rs`).** VizRS Live pokazuje je przy elementach graficznych ErsatzTV, które są stronami VizRS (`page-<numer>.yml`), w wyborze grafiki pozycji harmonogramu, bloku i deco. Rysuje je renderer natywny (`vizrs-render thumb`, VizRS DOKUMENTACJA §10.1): strona po wejściu, przycięta do miejsca, w którym rysuje, zmniejszona do 320 px. Show sidecar bierze z API HTTP VizRS jak przy granicach stron (adres z `output_url`, token operatora `vizrs.token`; show ważne 10 s dla kolejnych żądań), fonty i pliki – z serwera VizRS. Gotowe miniatury leżą w `<etv_config>/vizrs-live/thumbs/<numer>-<podpis>.png` (bez `etv_config` – w katalogu tymczasowym); podpis to skrót wersji strony i jej sceny, więc miniatura powstaje od nowa dopiero po zmianie strony w VizRS, a stare pliki strony są usuwane. Strona, która nic nie rysuje (albo bez sceny), zostaje zapamiętana jako `<numer>-<podpis>.none` (404 bez ponownego rysowania). Jedno uruchomienie renderera rysuje naraz wszystkie brakujące strony, a żądania czekają na nie po kolei – panel pytający o dwadzieścia stron uruchamia renderer raz. Błąd VizRS albo renderera to 502 i wpis w logu; emisji nie dotyczy.
 
 **Reguły grafiki przez API (`/api/live/graphics`, `src/graphics.rs`).** Dokument
 ma kształt tych pól z `config.json`: `on_clip`, `on_ad`, `ad_match` (`path`,

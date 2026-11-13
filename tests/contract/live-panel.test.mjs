@@ -5,7 +5,7 @@
 // VIZRS_LIVE_SHOWS.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -324,7 +324,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -391,7 +391,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");
@@ -402,4 +402,63 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   assert.equal((await api("POST", "channels/4/release")).status, 200);
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(alerts.length, 1);
+});
+
+// Thumbnails of VizRS pages (src/thumbs.rs): the show from VizRS's HTTP API, one
+// renderer run for every page missing, kept until the page's revision changes;
+// a page that draws nothing is a 404 and is not drawn again.
+const THUMB_RENDERER = `#!/usr/bin/env node
+const fs = require("fs");
+const a = process.argv.slice(2);
+const dir = a[a.indexOf("--dir") + 1];
+const pages = a.flatMap((x, i) => (x === "--page" ? [a[i + 1]] : []));
+fs.appendFileSync(process.env.FAKE_LOG, pages.join(",") + "\\n");
+for (const n of pages) {
+  if (n === "3") { console.log(JSON.stringify({ number: n, empty: true, issues: [] })); continue; }
+  const file = dir + "/" + n + ".png";
+  fs.writeFileSync(file, "PNG " + n + " " + fs.readFileSync(a[a.indexOf("--show") + 1], "utf8").length);
+  console.log(JSON.stringify({ number: n, file, crop: [0, 0, 10, 10], issues: [] }));
+}
+`;
+
+test("thumbnails of VizRS pages are drawn once per revision and kept", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "vizrs-thumbs-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, "vizrs-render");
+  writeFileSync(bin, THUMB_RENDERER);
+  chmodSync(bin, 0o755);
+  const log = path.join(dir, "runs.log");
+  writeFileSync(log, "");
+  let rev = 1;
+  const show = () => ({ scenes: [{ id: "s", rev: 1 }], pages: [{ id: "a", number: 1, scene: "s", rev }, { id: "b", number: 2, scene: "s", rev: 1 }, { id: "c", number: 3, scene: "s" }] });
+  const vizrsHttp = http.createServer((req, res) => {
+    if (req.url !== "/api/show") return res.writeHead(404).end();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(show()));
+  });
+  await new Promise((r) => vizrsHttp.listen(0, "127.0.0.1", r));
+  t.after(() => vizrsHttp.close());
+  const { cg } = await setup(t, { FAKE_LOG: log }, { renderer_bin: bin, output_url: `http://127.0.0.1:${vizrsHttp.address().port}/output` });
+  const get = (n) => fetch(`${cg.url}/api/live/thumbs/${n}`, { headers: { "X-Panel-Token": TOKEN } });
+  const runs = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
+
+  const one = await get("1.png");
+  assert.equal(one.status, 200);
+  assert.equal(one.headers.get("content-type"), "image/png");
+  assert.match(await one.text(), /^PNG 1 /);
+  const tag = one.headers.get("etag");
+  assert.deepEqual(runs(), ["1,2,3"], "one run for every page");
+  assert.equal((await get("2.png")).status, 200);
+  assert.equal((await get("3.png")).status, 404, "a page that draws nothing");
+  assert.equal((await get("9.png")).status, 404, "no such page");
+  assert.equal((await get("..%2F1.png")).status, 404);
+  assert.equal((await fetch(`${cg.url}/api/live/thumbs/1.png`)).status, 401, "the panel token");
+  assert.deepEqual(runs(), ["1,2,3"], "kept: nothing drawn again");
+
+  rev = 2;
+  await new Promise((r) => setTimeout(r, 10500)); // the show stands 10 s for the next requests
+  const again = await get("1.png");
+  assert.equal(again.status, 200);
+  assert.notEqual(again.headers.get("etag"), tag, "a new revision, a new tag");
+  assert.deepEqual(runs(), ["1,2,3", "1"], "only the changed page is drawn again");
 });

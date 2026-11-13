@@ -39,6 +39,7 @@ pub mod sys;
 pub mod takeover;
 pub mod tape;
 pub mod template;
+pub mod thumbs;
 pub mod time;
 pub mod vizrs;
 pub mod yuva;

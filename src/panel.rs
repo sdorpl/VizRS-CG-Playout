@@ -26,6 +26,7 @@
 //   GET    /api/live/encoder              encoder settings of the ffmpeg overlay in force (x264
 //                                         preset, H.264 profile, x264 options, NVENC/QSV presets,
 //                                         hardware B-frames), and where from
+//   GET    /api/live/thumbs/<number>.png  thumbnail of a VizRS page (src/thumbs.rs), 404 = none
 //   PUT    /api/live/encoder              {"preset", "profile", "x264_params", "nvenc_preset",
 //                                         "qsv_preset", "bframes"} ("" or null = default):
 //                                         encoder.json, from the next ffmpeg (src/encoder.rs)
@@ -176,6 +177,8 @@ pub struct Panel {
     cache: Mutex<Cache>,
     /// The layers on air of each channel (K12), refreshed in the background.
     layers: Mutex<Layers>,
+    /// Thumbnails of the show's pages (`vizrs-render thumb`), made on demand and kept.
+    thumbs: crate::thumbs::Thumbs,
 }
 
 /// What VizRS has on the antenna of each channel, and since when.
@@ -300,6 +303,12 @@ impl Panel {
             settings: Mutex::new(Settings::default()),
             cache: Mutex::new(Cache::default()),
             layers: Mutex::new(Layers::default()),
+            thumbs: crate::thumbs::Thumbs::new(
+                &config.etv_config,
+                crate::native::find_renderer(&config.renderer_bin),
+                &config.output_url,
+                &config.vizrs.token,
+            ),
             config: config.clone(),
         });
         if let Some(path) = panel.control_path() {
@@ -812,6 +821,7 @@ impl Panel {
             ("GET", ["inputs"]) => reply(&mut stream, 200, &self.inputs_json(ingest)),
             ("PUT", ["inputs"]) => self.put_inputs(&body, &mut stream, ingest, &who),
             ("GET", ["encoder"]) => reply(&mut stream, 200, &self.encoder_json()),
+            ("GET", ["thumbs", file]) => self.thumb(file.strip_suffix(".png").unwrap_or(""), &mut stream),
             ("PUT", ["encoder"]) => self.put_encoder(&body, &mut stream, ingest, &who),
             ("GET", ["shows"]) => reply(&mut stream, 200, &self.shows_state()),
             ("POST", ["shows", "scan"]) => self.scan(&mut stream, ingest, &who),
@@ -873,9 +883,27 @@ impl Panel {
         ])
     }
 
+    /// `GET /api/live/thumbs/<number>.png`: the page's thumbnail; 404 when there is no
+    /// such page or it draws nothing, 502 when VizRS or the renderer fails.
+    fn thumb(&self, number: &str, stream: &mut TcpStream) -> io::Result<()> {
+        match self.thumbs.get(number) {
+            Ok(Some(thumb)) => {
+                let etag = format!("\"{}\"", thumb.tag);
+                let headers = [("Content-Type", "image/png"), ("Cache-Control", "private, max-age=300"), ("ETag", etag.as_str())];
+                http::respond_with(stream, 200, &headers, &thumb.png)
+            }
+            Ok(None) => fail(stream, 404, "brak miniatury tej strony"),
+            Err(e) => {
+                crate::warn!("thumbnails: {e}");
+                fail(stream, 502, &format!("miniatura strony: {e}"))
+            }
+        }
+    }
+
     /// What this build can do, for VizRS Live (an older sidecar simply lists less).
     fn features(&self) -> Vec<Value> {
-        let mut features = vec![Value::from("layers"), Value::from("take"), Value::from("asrun"), Value::from("encoder")];
+        let mut features =
+            vec![Value::from("layers"), Value::from("take"), Value::from("asrun"), Value::from("encoder"), Value::from("thumbs")];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
         }
