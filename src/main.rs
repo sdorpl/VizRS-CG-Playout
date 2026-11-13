@@ -118,6 +118,14 @@ fn main() -> ExitCode {
         }
     };
 
+    if !config.etv_config.is_empty() {
+        let path = std::path::Path::new(&config.etv_config).join("vizrs-live").join("logs").join("vizrs-cg.log");
+        match log::set_file(&path) {
+            Ok(()) => info!("log also in {}", path.display()),
+            Err(e) => warn!("log file {}: {e}; log on stdout only", path.display()),
+        }
+    }
+
     let listener = match TcpListener::bind(config.listen_addr()) {
         Ok(listener) => listener,
         Err(e) => {

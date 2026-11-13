@@ -278,8 +278,11 @@ services:
       # VIZRS_INGEST_IDLE_SECONDS (8 s): a shorter silence then only ends the live
       # on air, the publisher stays.
       VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-15000}
+      # The log also in a file next to the sidecar's (vizrs-cg.log): it outlives the container.
+      VIZRS_INGEST_LOG: /etv-config/vizrs-live/logs/vizrs-ingest.log
     volumes:
       - vizrs-client:/vizrs:ro
+      - ${ERSATZTV_CONFIG:-ersatztv-config}:/etv-config
     ports:
       - "${INGEST_RTMP_PORT:-1936}:1936"
       - "${INGEST_SRT_PORT:-9000}:9000/udp"

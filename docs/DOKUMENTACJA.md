@@ -2328,6 +2328,11 @@ powyżej 4 MB plik przechodzi w `….1`, jeden stary zostaje). `docker logs`
 znika razem z kontenerem, więc po nocnym wdrożeniu stosu nie było czym
 sprawdzić, co działo się z live wcześniej. Folder, którego nie da się
 założyć, zostawia log tylko na stdout (ostrzeżenie przy starcie).
+Obok leży `vizrs-ingest.log` odbiorników live ingest (usługa `ingest`,
+`VIZRS_INGEST_LOG`; ta sama rotacja): nadawcy przychodzący i odchodzący
+(`publisher on` / `publisher gone`) i błędy ich ffmpeg, z czasem. Na stderr
+odbiorniki piszą jak dotąd, bez czasu. Ślad przejęć kanału (przebiegi live,
+ich tempo) jest w `<etv_config>/logs/vizrs-takeover-<kanał>.log`.
 
 Grafika nigdy nie zatrzymuje playoutu. Komendy idą w tle z limitem 2 s na
 połączenie i każdą odpowiedź; błędy i odpowiedzi `ERR` trafiają do logu.

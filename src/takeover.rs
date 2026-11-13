@@ -43,6 +43,11 @@ const DONE: f64 = 0.1;
 const POLL: Duration = Duration::from_millis(250);
 /// A live run that brought less than this: live is left alone for `SUPPRESS`.
 const SHORT_LIVE: f64 = 1.0;
+/// ...but only a run that had at least this much of the piece to make. The tail
+/// of a piece after a live run stopped for overrunning (a second or two) is
+/// shorter than ffmpeg's start: judging the source by it put the schedule on air
+/// for that tail (S1, 2026-11-13: "gave no picture" after every overrun).
+const JUDGED_LIVE: f64 = 5.0;
 const SUPPRESS: Duration = Duration::from_secs(30);
 const PROBE_WAIT: Duration = Duration::from_secs(3);
 /// A run that has not ended this long after SIGINT gets SIGTERM, and SIGKILL
@@ -55,6 +60,9 @@ const KILL_GRACE: Duration = Duration::from_secs(2);
 /// stalled for a minute and the viewers' players freeze). The live run goes at
 /// the clock: alive this long past the rest of the piece, it is stopped.
 const LIVE_OVERRUN: Duration = Duration::from_secs(3);
+/// A long live run writes its pace to the trace this often: a run slower than
+/// the clock drains the channel's HLS buffer long before it ends.
+const LIVE_PACE_EVERY: Duration = Duration::from_secs(120);
 /// Global options of ErsatzTV's command that the live run keeps (the rest
 /// before the first input are options of the media input).
 const GLOBAL_FLAGS: [&str; 5] = ["-hide_banner", "-nostdin", "-nostats", "-y", "-benchmark"];
@@ -664,11 +672,17 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         let mut restarted = false;
         let mut stop = Stop::default();
         let started = Instant::now();
+        let mut paced = started;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) => {}
                 Err(e) => break Err(e),
+            }
+            if source.is_some() && paced.elapsed() >= LIVE_PACE_EVERY {
+                paced = Instant::now();
+                let (made, wall) = (produced(&job.playlist, &before) - elapsed, started.elapsed().as_secs_f64());
+                trace(job, format_args!("channel {}: live run made {made:.1} s in {wall:.1} s ({})", job.channel, pace(made, wall)));
             }
             if source.is_none() && !interrupted && !runner.stopping.load(Ordering::Relaxed) && live() {
                 // ffmpeg ends on SIGINT as on `q`: the segment it writes is closed and listed.
@@ -700,8 +714,17 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         }
         if source.is_some() {
             let brought = now - elapsed;
-            trace(job, format_args!("channel {}: live run ended after {brought:.1} s (exit {})", job.channel, code(status)));
-            if brought < SHORT_LIVE {
+            let wall = started.elapsed().as_secs_f64();
+            trace(
+                job,
+                format_args!(
+                    "channel {}: live run ended after {brought:.1} s in {wall:.1} s ({}, exit {})",
+                    job.channel,
+                    pace(brought, wall),
+                    code(status)
+                ),
+            );
+            if no_picture(brought, job.duration - elapsed) {
                 trace(job, format_args!("channel {}: the live source gave no picture; the schedule goes on", job.channel));
                 *quiet.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + SUPPRESS);
             }
@@ -727,6 +750,17 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         }
         elapsed = elapsed.max(now);
     }
+}
+
+/// Pace of a run for the trace: seconds of the piece made per second of the clock
+/// (below 1.00x the channel falls behind and its HLS buffer drains).
+fn pace(brought: f64, wall: f64) -> String {
+    if wall > 0.0 { format!("{:.2}x", brought / wall) } else { "-".to_owned() }
+}
+
+/// A live run that brought `brought` of `remaining` seconds: its source gave no picture.
+fn no_picture(brought: f64, remaining: f64) -> bool {
+    brought < SHORT_LIVE && remaining >= JUDGED_LIVE
 }
 
 /// A live run alive `running` with `remaining` seconds of the piece to produce has overrun.
@@ -925,6 +959,20 @@ mod tests {
         assert!(!overran(Duration::from_secs(44) + LIVE_OVERRUN, 44.0));
         assert!(overran(Duration::from_secs(48), 44.0));
         assert!(overran(Duration::from_secs(4), -1.0));
+    }
+
+    #[test]
+    fn a_short_tail_does_not_judge_the_source() {
+        use super::{no_picture, pace};
+        // The tail after an overrun (S1: 0.1–3 s left) proves nothing about the source.
+        assert!(!no_picture(0.1, 0.1));
+        assert!(!no_picture(0.7, 3.1));
+        // A run with the piece ahead of it that brought nothing: no picture.
+        assert!(no_picture(0.3, 44.0));
+        assert!(!no_picture(1.5, 44.0));
+        assert_eq!(pace(40.9, 47.0), "0.87x");
+        assert_eq!(pace(44.0, 44.0), "1.00x");
+        assert_eq!(pace(1.0, 0.0), "-");
     }
 
     use super::*;

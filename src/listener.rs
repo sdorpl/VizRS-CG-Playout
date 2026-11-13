@@ -13,6 +13,8 @@
 //     VIZRS_INGEST_IDLE_MS a publisher silent this long has ended (default 15000)
 //     VIZRS_CG_URL         sidecar, e.g. http://cg:7700
 //     VIZRS_FFMPEG         ffmpeg (default /usr/local/bin/ffmpeg)
+//     VIZRS_INGEST_LOG     a file the log lines also go to, with the time
+//                          (compose: <etv_config>/vizrs-live/logs/vizrs-ingest.log)
 //
 // ffmpeg's RTMP server takes any stream name and only warns about one it
 // does not expect: that publisher is cut off here, so the key is the password.
@@ -187,6 +189,7 @@ pub fn listen_args(url: &str) -> Vec<OsString> {
 
 fn log(message: impl std::fmt::Display) {
     let _ = writeln!(io::stderr(), "vizrs-ingest: {message}");
+    crate::log::to_file_only(format_args!("vizrs-ingest: {message}"));
 }
 
 /// The listeners' environment.

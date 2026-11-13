@@ -390,14 +390,17 @@ impl Feed {
     /// keyframe nearest to the cursor the run before left, or at the live edge
     /// (no cursor, a source without timestamps, the cursor `MAX_LAG` behind).
     /// The cursor moves on by `take` from the keyframe taken; also returned:
-    /// how far that keyframe is behind the live edge (s).
-    fn follow(&self, take: f64) -> (From, f64) {
+    /// how far that keyframe is behind the live edge (s), and how far behind the
+    /// cursor was when it was dropped for `MAX_LAG` (live runs slower than the
+    /// clock: the channel falls behind and its HLS buffer drains).
+    fn follow(&self, take: f64) -> (From, f64, Option<f64>) {
         let mut buffer = self.lock();
         let keys: Vec<(u64, u64)> = buffer.runs.iter().filter(|e| e.key).filter_map(|e| e.pts.map(|p| (e.number, p))).collect();
         let Some(&(_, edge)) = keys.last() else {
             buffer.cursor = None;
-            return (From::Edge, 0.0);
+            return (From::Edge, 0.0, None);
         };
+        let dropped = buffer.cursor.map(|cursor| pts_seconds(edge, cursor)).filter(|lag| *lag > MAX_LAG);
         let pick = match buffer.cursor {
             Some(cursor) if pts_seconds(edge, cursor) <= MAX_LAG => keys
                 .iter()
@@ -408,7 +411,7 @@ impl Feed {
         };
         let ticks = (take.max(0.0) * PTS_HZ).round() as u64;
         buffer.cursor = Some((pick.1 + ticks) % PTS_WRAP);
-        (From::Start(pick.0), pts_seconds(edge, pick.1))
+        (From::Start(pick.0), pts_seconds(edge, pick.1), dropped)
     }
 
     /// The stream for a reader from `from` (the headers first when it starts),
@@ -755,8 +758,13 @@ impl Ingest {
         let take = request.param("take").and_then(|t| t.parse::<f64>().ok()).filter(|t| t.is_finite() && *t > 0.0);
         let mut from = match take {
             Some(take) => {
-                let (from, behind) = feed.follow(take);
-                crate::info!("ingest: channel {channel}: live run of {take:.1} s from {behind:.1} s behind the source");
+                let (from, behind, dropped) = feed.follow(take);
+                match dropped {
+                    Some(lag) => crate::warn!(
+                        "ingest: channel {channel}: live run of {take:.1} s from the live edge: the runs before left it {lag:.1} s behind (slower than the clock, or the channel held)"
+                    ),
+                    None => crate::info!("ingest: channel {channel}: live run of {take:.1} s from {behind:.1} s behind the source"),
+                }
                 from
             }
             None => From::Edge,
@@ -969,20 +977,21 @@ mod tests {
     fn live_runs_go_on_from_the_cursor() {
         let (feed, mut scanner) = feed_of_seconds(100, 110);
         // The first run starts at the live edge; the cursor is 4 s on from there.
-        let (from, behind) = feed.follow(4.0);
-        assert_eq!((first_second(&feed, from), behind), (109, 0.0));
+        let (from, behind, dropped) = feed.follow(4.0);
+        assert_eq!((first_second(&feed, from), behind, dropped), (109, 0.0, None));
         // The run took 5.5 s of the clock for its 4 s: the next one goes on at 113, behind the edge.
         for second in 110..115 {
             add_second(&feed, &mut scanner, second);
         }
-        let (from, behind) = feed.follow(4.0);
-        assert_eq!((first_second(&feed, from), behind), (113, 1.0));
+        let (from, behind, dropped) = feed.follow(4.0);
+        assert_eq!((first_second(&feed, from), behind, dropped), (113, 1.0, None));
         // A cursor further than MAX_LAG behind (a held channel): the live edge again.
         for second in 115..135 {
             add_second(&feed, &mut scanner, second);
         }
-        let (from, behind) = feed.follow(4.0);
-        assert_eq!((first_second(&feed, from), behind), (134, 0.0));
+        // The cursor was at 117: 17 s behind the edge, dropped (and said so in the log).
+        let (from, behind, dropped) = feed.follow(4.0);
+        assert_eq!((first_second(&feed, from), behind, dropped), (134, 0.0, Some(17.0)));
         // Other readers start at the live edge whatever the cursor.
         assert_eq!(first_second(&feed, From::Edge), 134);
         // A start gone from the buffer: the live edge.
