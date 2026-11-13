@@ -466,6 +466,11 @@ pub fn parse_rate(text: &str) -> Option<f64> {
     (rate.is_finite() && rate > 0.0).then_some(rate)
 }
 
+/// One frame of `rate` (`25`, `30000/1001`); None for no rate.
+fn frame_interval(rate: &str) -> Option<Duration> {
+    parse_rate(rate).map(|fps| Duration::from_secs_f64(1.0 / fps))
+}
+
 /// The media input whose rate a transcode to HLS converts (`[0:0]fps=25,…`).
 pub fn media_input(args: &[OsString]) -> Option<String> {
     (0..args.len()).find(|&i| pair(args, i, "-f", "hls"))?;
@@ -700,8 +705,8 @@ fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec
         mode => mode,
     };
     let args = match cuda {
-        Cuda::Full | Cuda::Auto => args,
-        Cuda::Encode => cuda_encode_only(args),
+        Cuda::Full | Cuda::Auto => cpu_synced_in_ram(args, settings.sync_ram),
+        Cuda::Encode => cpu_synced_in_ram(cuda_encode_only(args), settings.sync_ram),
         Cuda::Overlay => overlay_paced(cuda_decode_on_cpu(args), burst, settings.sync_ram),
     };
     let rated = with_rate(args, &settings.fps);
@@ -953,6 +958,56 @@ fn overlay_paced(args: Vec<OsString>, burst: Option<f64>, sync_ram: bool) -> Vec
         return synced;
     }
     paced_media(args, burst)
+}
+
+/// `VIZRS_FFMPEG_SYNC_RAM=1` with the graphics overlaid on the CPU (`overlay`,
+/// S1/S2 on Ampere): the media input loses its `-readrate` (and burst and
+/// catch-up rate), as a graph synced in RAM on the card. `overlay` already
+/// holds the media frames in RAM until the graphics of their moment come, so
+/// the graphics of the sidecar (at most `lead_seconds` ahead of the clock)
+/// pace the transcode. With ErsatzTV's `-readrate 1.0` an item started late
+/// (the channel's timeline 10–15 s behind the clock, seconds to open the
+/// media) never made it up: the overlay read the graphics 17–22 s after their
+/// moment, older than the history, and they jumped 0.5–4.9 s (S1,
+/// 2026-11-13). The sidecar gone, `relay` paces its transparent frames at the
+/// channel's rate, so the media does not race ahead behind them. Any other
+/// command unchanged: off, no graphics pipe, no CPU `overlay` reading it, a
+/// graph on a card (`overlay_cuda`, `overlay_vaapi`, `overlay_qsv`).
+pub fn cpu_synced_in_ram(args: Vec<OsString>, on: bool) -> Vec<OsString> {
+    if !on {
+        return args;
+    }
+    let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
+    let Some(text) = text else { return args };
+    let inputs: Vec<usize> = (0..text.len().saturating_sub(1)).filter(|&i| text[i] == "-i").collect();
+    let Some(graphics) = inputs.iter().position(|&i| text[i + 1].starts_with("pipe:")) else { return args };
+    let Some(media) = inputs.iter().position(|&i| !text[i + 1].starts_with("pipe:")) else { return args };
+    let graph = (0..text.len().saturating_sub(1)).find(|&i| text[i] == "-filter_complex" && text[i + 1].contains(&format!("[{graphics}:")));
+    let Some(graph) = graph.map(|i| text[i + 1]) else { return args };
+    let filters: Vec<&str> = graph
+        .split([';', ','])
+        .map(|f| {
+            let f = &f[leading_labels(f)..];
+            f.split(['=', '[']).next().unwrap_or("")
+        })
+        .collect();
+    if !filters.contains(&"overlay") || filters.iter().any(|f| f.starts_with("overlay_")) {
+        return args;
+    }
+    let from = if media == 0 { 0 } else { inputs[media - 1] + 2 };
+    let to = inputs[media];
+    let pacing = ["-readrate", "-readrate_initial_burst", "-readrate_catchup"];
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if (from..to).contains(&i) && i + 1 < to && pacing.contains(&text[i]) {
+            i += 2;
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
 }
 
 /// The filters that hold a media frame until the graphics of its moment are
@@ -1352,11 +1407,20 @@ fn frame_bytes(width: u32, height: u32) -> usize {
 }
 
 /// Frames from the sidecar -> ffmpeg's input. The sidecar gone (a new version
-/// of the stack), ffmpeg gets transparent frames, as fast as it reads them, so
-/// the channel goes on; a thread reconnects and the frames follow. Without a
-/// way back (`resume` empty) ffmpeg sees the end of its input, as before.
-/// A delta stream is patched into the frame shown, and ffmpeg gets it whole.
-fn relay(socket: FrameSocket, mut pipe: impl Write, frame: usize, reconnect: Option<&dyn Fn() -> mpsc::Receiver<FrameSocket>>) {
+/// of the stack), ffmpeg gets transparent frames, one every `interval` (the
+/// channel's rate: a media read without `-readrate`, synced in RAM, would
+/// otherwise race to the end of the item behind them; `None` = as fast as it
+/// reads them), so the channel goes on; a thread reconnects and the frames
+/// follow. Without a way back (`resume` empty) ffmpeg sees the end of its
+/// input, as before. A delta stream is patched into the frame shown, and
+/// ffmpeg gets it whole.
+fn relay(
+    socket: FrameSocket,
+    mut pipe: impl Write,
+    frame: usize,
+    interval: Option<Duration>,
+    reconnect: Option<&dyn Fn() -> mpsc::Receiver<FrameSocket>>,
+) {
     let mut buffer = vec![0u8; 1 << 20];
     let blank = vec![0u8; frame];
     let mut shown = vec![0u8; frame];
@@ -1390,9 +1454,19 @@ fn relay(socket: FrameSocket, mut pipe: impl Write, frame: usize, reconnect: Opt
         }
         partial = 0;
         let back = reconnect();
+        let mut next = std::time::Instant::now();
         source = loop {
             if pipe.write_all(&blank).is_err() {
                 return;
+            }
+            if let Some(interval) = interval {
+                next += interval;
+                // Behind by more than a second (a stalled reader): from now, no burst.
+                let now = std::time::Instant::now();
+                if next + Duration::from_secs(1) < now {
+                    next = now;
+                }
+                std::thread::sleep(next.saturating_duration_since(now));
             }
             if let Ok(socket) = back.try_recv() {
                 log("frame stream back");
@@ -1819,6 +1893,7 @@ fn relayed(settings: &Settings, frames: Frames, socket: FrameSocket, place: bool
     let area = if place { "&area=1" } else { "" };
     let resume = (!frames.resume.is_empty()).then(|| format!("/ffmpeg/resume?{}&fps={}{area}", frames.resume, quote_plus(&frames.rate)));
     let sidecar = settings.sidecar.clone();
+    let interval = frame_interval(&frames.rate);
     std::thread::spawn(move || {
         let reconnect = |path: &str| {
             let (sender, receiver) = mpsc::channel();
@@ -1835,7 +1910,7 @@ fn relayed(settings: &Settings, frames: Frames, socket: FrameSocket, place: bool
             receiver
         };
         let again = resume.as_deref().map(|path| move || reconnect(path));
-        relay(socket, sink, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<FrameSocket>));
+        relay(socket, sink, frame, interval, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<FrameSocket>));
     });
     Feed { frames, control }
 }
@@ -1916,6 +1991,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     let area = if place { "&area=1" } else { "" };
     let resume = (!frames.resume.is_empty()).then(|| format!("/ffmpeg/resume?{}&fps={}{area}", frames.resume, quote_plus(&frames.rate)));
     let sidecar = settings.sidecar.clone();
+    let interval = frame_interval(&frames.rate);
     std::thread::spawn(move || {
         let reconnect = |path: &str| {
             let (sender, receiver) = mpsc::channel();
@@ -1932,7 +2008,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
             receiver
         };
         let again = resume.as_deref().map(|path| move || reconnect(path));
-        relay(socket, writer, frame, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<FrameSocket>));
+        relay(socket, writer, frame, interval, again.as_ref().map(|f| f as &dyn Fn() -> mpsc::Receiver<FrameSocket>));
     });
 
     let pid = child.id();
@@ -2202,7 +2278,7 @@ mod tests {
             receiver
         };
         let seen = Arc::new(Mutex::new(Vec::new()));
-        relay(FrameSocket { stream: first, delta: false }, Tap(Arc::clone(&seen)), 4, Some(&reconnect));
+        relay(FrameSocket { stream: first, delta: false }, Tap(Arc::clone(&seen)), 4, None, Some(&reconnect));
         let seen = seen.lock().unwrap();
         assert_eq!(&seen[..8], &[1, 1, 1, 1, 1, 1, 0, 0], "the broken frame is filled");
         let at = seen.iter().position(|b| *b == 2).unwrap();
@@ -2227,7 +2303,7 @@ mod tests {
         server.write_all(&records).unwrap();
         drop(server);
         let mut seen = Vec::new();
-        relay(FrameSocket { stream: first, delta: true }, &mut seen, 10, None);
+        relay(FrameSocket { stream: first, delta: true }, &mut seen, 10, None, None);
         assert_eq!(seen, [&one[..], &two, &two].concat());
     }
 
@@ -2464,6 +2540,82 @@ mod tests {
         assert_eq!(media_on_graphics_grid(plain.clone()), plain);
         let stacked = "[0:0]scale=10:10[a];[1:0]scale=10:10[b];[a][b]hstack[v_o0]";
         assert_eq!(media_on_graphics_grid(cmd(stacked, "25")), cmd(stacked, "25"));
+    }
+
+    #[test]
+    fn cpu_overlay_synced_in_ram_reads_the_media_without_its_readrate() {
+        let cmd = |pacing: &[&str], graph: &str| {
+            let mut list: Vec<&str> = vec!["-threads", "0", "-fflags", "+genpts"];
+            list.extend(pacing);
+            list.extend(["-i", "http://m/a", "-t", "3177561ms", "-f", "rawvideo", "-framerate", "25", "-i", "pipe:6"]);
+            list.extend([
+                "-filter_complex",
+                "[0:1]loudnorm,apad[a]",
+                "-filter_complex",
+                graph,
+                "-map",
+                "[v_o0]",
+                "-vcodec",
+                "libx264",
+                "o.m3u8",
+            ]);
+            args(&list)
+        };
+        // S1: ErsatzTV's -readrate 1.0 on the media, the graphics overlaid on the CPU (two areas).
+        let s1 = "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=176:176:0:0,format=yuva420p[vz_g0];[vz_s1]crop=1600:84:0:176,format=yuva420p[vz_g1];\
+                  [0:0]fps=25,scale=1600:900[v_m0];[v_m0]fps=25[v_m0_fps];[v_m0_fps][vz_g0]overlay=format=0:x=1360:y=16[vz_o0];[vz_o0][vz_g1]overlay=format=0:x=0:y=816[v_o0]";
+        let paced = ["-readrate", "1.0", "-readrate_initial_burst", "2", "-readrate_catchup", "2"];
+        assert_eq!(cpu_synced_in_ram(cmd(&paced, s1), true), cmd(&[], s1));
+        assert_eq!(cpu_synced_in_ram(cmd(&paced, s1), false), cmd(&paced, s1), "off by default");
+        // On a card, or no overlay of the graphics: unchanged.
+        let cuda = "[0:0]hwupload,scale_cuda=8:4[v_m0];[1:0]format=yuva420p,hwupload[v_s0];[v_m0][v_s0]overlay_cuda=x=0:y=0[v_o0]";
+        assert_eq!(cpu_synced_in_ram(cmd(&paced, cuda), true), cmd(&paced, cuda));
+        let vaapi = "[0:0]scale_vaapi=8:4[v_m0];[1:0]format=yuva420p[v_s0];[v_m0][v_s0]overlay=format=0,format=nv12|vaapi,hwupload[x];[x][v_s0]overlay_vaapi[v_o0]";
+        assert_eq!(cpu_synced_in_ram(cmd(&paced, vaapi), true), cmd(&paced, vaapi));
+        let stacked = "[0:0]scale=8:4[a];[1:0]scale=8:4[b];[a][b]hstack[v_o0]";
+        assert_eq!(cpu_synced_in_ram(cmd(&paced, stacked), true), cmd(&paced, stacked));
+        // A -readrate of another input stays.
+        let other = args(&[
+            "-readrate",
+            "1",
+            "-i",
+            "http://m/a",
+            "-readrate",
+            "1",
+            "-f",
+            "rawvideo",
+            "-i",
+            "pipe:6",
+            "-filter_complex",
+            s1,
+            "o.m3u8",
+        ]);
+        let kept = args(&["-i", "http://m/a", "-readrate", "1", "-f", "rawvideo", "-i", "pipe:6", "-filter_complex", s1, "o.m3u8"]);
+        assert_eq!(cpu_synced_in_ram(other, true), kept);
+    }
+
+    #[test]
+    fn transparent_frames_of_a_lost_sidecar_come_at_the_channel_rate() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let first = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        drop(listener.accept().unwrap()); // the sidecar lost at once
+        let seen = Arc::new(Mutex::new(0usize));
+        struct Count(Arc<Mutex<usize>>);
+        impl Write for Count {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                let mut n = self.0.lock().unwrap();
+                *n += data.len();
+                if *n >= 4 * 30 { Err(io::ErrorKind::BrokenPipe.into()) } else { Ok(data.len()) }
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let never = || mpsc::channel::<FrameSocket>().1;
+        let start = std::time::Instant::now();
+        relay(FrameSocket { stream: first, delta: false }, Count(Arc::clone(&seen)), 4, Some(Duration::from_millis(10)), Some(&never));
+        // 30 frames of 4 bytes, one per 10 ms: not at once.
+        assert!(start.elapsed() >= Duration::from_millis(250), "{:?}", start.elapsed());
     }
 
     #[test]

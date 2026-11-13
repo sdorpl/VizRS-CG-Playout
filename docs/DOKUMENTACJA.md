@@ -629,7 +629,7 @@ sidecar ok. 15%.
 
 Restart sidecara nie przerywa kanału. `vizrs-ffmpeg` trwa przez całą pozycję i
 przekazuje klatki przez rurę do ffmpeg. Gdy strumień zniknie, dopełnia klatkę,
-wysyła przezroczyste klatki i co sekundę łączy się ponownie (`/ffmpeg/resume`),
+wysyła przezroczyste klatki w tempie klatkażu kanału i co sekundę łączy się ponownie (`/ffmpeg/resume`),
 po czym grafika wraca na tym samym ffmpeg. Tak działa aktualizacja `cg` bez
 restartu ErsatzTV; komendy kanału wrócą z następną pozycją, a stan anteny zostaje w
 VizRS. Po powrocie obraz idzie z czasu bieżącego, nie z osi czasu pozycji.
@@ -689,7 +689,7 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 | `VIZRS_FFMPEG_CUDA_MIN_FREE` | `400` | wolna pamięć karty w MiB, przy której `VIZRS_FFMPEG_CUDA=auto` wybiera `overlay`. Kawałek `overlay` 1080p50 zajmuje ok. 280 MiB (pule klatek po początkowym zrywie; 160 MiB bez niego), a przy zmianie pozycji poprzedni działa jeszcze chwilę |
 | `VIZRS_FFMPEG_NVENC_BF` | – | liczba klatek B koderów sprzętowych (NVENC `*_nvenc`, QSV `*_qsv`, VAAPI `*_vaapi`) bez własnego `-bf`, np. `0`; nakładka dopisuje `-bf:v N` po nazwie kodera w każdym wywołaniu. Tylko dopóki `encoder.json` nie ma klucza `bframes` – potem ustawia je VizRS Live. Klatki B trzymają na karcie klatki odniesienia: koder 1080p50 zajmuje 139 MiB przy domyślnych ffmpeg, 99 MiB przy `1`, 79 MiB przy `0` (pomiar 2026-11-11, Quadro P400) – dla karty dzielonej z pulpitem, kosztem kilku procent bitrate przy tej samej jakości; puste = ffmpeg |
 | `VIZRS_FFMPEG_NO_SHORTEST` | – | `1` = nakładka usuwa `-shortest` z każdego wywołania, którego wyjście i tak kończy `-t` (ErsatzTV podaje oba). Dźwięk ErsatzTV idzie przez `apad` i `loudnorm` z ok. 3 s wyprzedzenia, a `-shortest` trzyma surowe klatki obrazu w kolejce, aż dojdzie dźwięk tej samej chwili: przy 1080p50 ok. 150 klatek, czyli RSS ffmpeg 657 MB zamiast 268 MB, i drugi raz przy zmianie pozycji, gdy działają dwa procesy (pomiar 2026-11-11, materiał 1080p, NVENC). Długość wyjścia bez zmian. Wywołanie bez `-t` wyjścia – bez zmian; puste = komenda ErsatzTV |
-| `VIZRS_FFMPEG_SYNC_RAM` | – | `1` = w trybie `overlay` (także wybranym przez `auto`) klatki materiału czekają na grafikę swojej chwili w RAM, zanim trafią na kartę: w grafie z `overlay_cuda` jedyny łańcuch materiału z `hwupload` dostaje na początku synchronizację z wejściem grafiki (`pipe:N`) na CPU – wycinek grafiki 2×2 px nałożony poza kadrem (`overlay=x=main_w:y=main_h`, nic nie rysuje), z formatem bez alfy; wejście grafiki rozdziela `split`. Bez tego klatki zdekodowane z wyprzedzeniem (ok. 3 s `loudnorm`, zryw, brak `-readrate`) czekają na karcie przed `overlay_cuda` (niżej, Pamięć karty przy NVENC). Graf z synchronizacją nie dostaje `-readrate` ani zrywu: tempo materiału wyznacza grafika z sidecara (najwyżej `lead_seconds` przed zegarem), a klatki zdekodowane wcześniej czekają w RAM – kanał nie zostaje za ramówką i grafika nie przeskakuje (niżej). Graf bez jednoznacznego łańcucha materiału albo z grafiką użytą dwa razy = bez zmian (wtedy `-readrate` jak dotąd); puste = wyłączone |
+| `VIZRS_FFMPEG_SYNC_RAM` | – | `1` = w trybie `overlay` (także wybranym przez `auto`) klatki materiału czekają na grafikę swojej chwili w RAM, zanim trafią na kartę: w grafie z `overlay_cuda` jedyny łańcuch materiału z `hwupload` dostaje na początku synchronizację z wejściem grafiki (`pipe:N`) na CPU – wycinek grafiki 2×2 px nałożony poza kadrem (`overlay=x=main_w:y=main_h`, nic nie rysuje), z formatem bez alfy; wejście grafiki rozdziela `split`. Bez tego klatki zdekodowane z wyprzedzeniem (ok. 3 s `loudnorm`, zryw, brak `-readrate`) czekają na karcie przed `overlay_cuda` (niżej, Pamięć karty przy NVENC). Graf z synchronizacją nie dostaje `-readrate` ani zrywu: tempo materiału wyznacza grafika z sidecara (najwyżej `lead_seconds` przed zegarem), a klatki zdekodowane wcześniej czekają w RAM – kanał nie zostaje za ramówką i grafika nie przeskakuje (niżej). Graf bez jednoznacznego łańcucha materiału albo z grafiką użytą dwa razy = bez zmian (wtedy `-readrate` jak dotąd). **Nakładka na CPU** (`overlay`, np. Ampere: S1, S2) – `overlay` i tak trzyma klatki materiału w RAM do grafiki ich chwili, więc wejście materiału traci tylko `-readrate` ErsatzTV (z `-readrate_initial_burst` i `-readrate_catchup`): pozycja, która ruszyła późno (oś czasu kanału 10–15 s za zegarem, kilka sekund otwierania materiału), nadrabia start, zamiast czytać grafikę 17–22 s po jej chwili – starszą niż historia, grafika przeskakiwała o 0,5–4,9 s (S1, 2026-11-13: 4 skoki na 48 przebiegów). Pomiar (ffmpeg ErsatzTV, CPU, 1600×900@25, grafika w tempie zegara): 30 s wyjścia w 30,4 s bez `-readrate`, 33,5 s z nim; szczyt RSS bez zmian (ok. 425 MB). Graf na karcie (`overlay_cuda`, `overlay_vaapi`, `overlay_qsv`) – bez tej zmiany. Gdy sidecar zniknie, nakładka podaje przezroczyste klatki w tempie klatkażu kanału (nie tak szybko, jak ffmpeg czyta), więc materiał bez `-readrate` nie ucieka do końca pozycji. `docker-compose.ampere.yml` włącza ją domyślnie; puste = wyłączone |
 | `VIZRS_FFMPEG_NO_DISCARDCORRUPT` | – | `1` = kopia strumienia (`-c copy`) z wejścia HLS (`….m3u8`) – tak ErsatzTV składa strumień MPEG-TS kanału (`/iptv/channel/N.ts`) z własnego HLS – traci `discardcorrupt` z `-fflags` tego wejścia (puste `-fflags` znika). Każdy kawałek kanału to nowy ffmpeg, którego liczniki ciągłości MPEG-TS zaczynają się od 0, więc demuxer oznaczał ostatnią klatkę wideo kawałka przed granicą jako uszkodzoną, a flaga ją wyrzucała: 40 ms zatrzymania obrazu co kawałek (44 s), choć klatka dekoduje się bez błędów (ta sama suma MD5 co w segmencie; pomiar 2026-11-12: 399 zamiast 400 klatek na dwóch segmentach z granicy). Segmenty HLS same są ciągłe – dotyczy tylko strumienia `.ts`. Flagi zapisane inaczej niż `+…` = bez zmian; puste = wyłączone |
 | `VIZRS_FFMPEG_INGEST` | – (compose: `1`) | `1` = sygnał live kanału z sidecara przejmuje transkodowanie (§1, Live ingest); przy wyłączonym ingest w sidecarze jedno zapytanie `/ingest/state` na kawałek i nic więcej; puste = nigdy |
 
@@ -1106,6 +1106,15 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    playlisty): czas UTC, PID nakładki, komunikat i stan playlisty (media
    sequence, liczba segmentów, ostatni z `PROGRAM-DATE-TIME`, pliki `.ts`
    na dysku). Plik powyżej 2 MB przechodzi w `….1` (jeden stary zostaje).
+   Koniec przebiegu live podaje też czas zegara i tempo (`live run ended after
+   40.9 s in 47.0 s (0.87x, exit 255)`), a przebieg dłuższy niż 2 min co 2 min
+   dopisuje `live run made … s in … s (…x)`. Tempo poniżej 1,00x oznacza, że
+   kanał zostaje za zegarem: bufor HLS (`ts on disk`) topnieje, aż odtwarzacze
+   dostaną pustą playlistę (S1, 2026-11-13: ok. 0,9x przez pół godziny, od
+   35 segmentów do zera). Po stronie sidecara ślad zostawia kursor ciągłości:
+   gdy poprzednie przebiegi zostawiły go dalej niż 12 s za źródłem, sidecar
+   zaczyna od bieżącej chwili i pisze ostrzeżenie `live run of … s from the
+   live edge: the runs before left it … s behind`.
    Live zastępuje harmonogram, nie przesuwa go: program po powrocie idzie
    od bieżącego miejsca, a ominięta część przepada (w ffPlayout program był
    wstrzymywany). Kawałek, który zaczyna się w trakcie live, od razu idzie
@@ -2271,6 +2280,13 @@ jako UTC.
 
 ## 6. Awarie
 
+Log sidecara trafia, poza stdout/stderr, do pliku
+`<etv_config>/vizrs-live/logs/vizrs-cg.log` (gdy `etv_config` jest ustawione;
+powyżej 4 MB plik przechodzi w `….1`, jeden stary zostaje). `docker logs`
+znika razem z kontenerem, więc po nocnym wdrożeniu stosu nie było czym
+sprawdzić, co działo się z live wcześniej. Folder, którego nie da się
+założyć, zostawia log tylko na stdout (ostrzeżenie przy starcie).
+
 Grafika nigdy nie zatrzymuje playoutu. Komendy idą w tle z limitem 2 s na
 połączenie i każdą odpowiedź; błędy i odpowiedzi `ERR` trafiają do logu.
 Nieudane przywrócenie stron po reklamie jest ponawiane na kolejnym klipie.
@@ -2312,7 +2328,10 @@ Live ingest nie zatrzymuje kanału: przebieg live, który nie da obrazu
 (sygnał zniknął między sprawdzeniem stanu a startem, uszkodzony strumień),
 kończy się, a kawałek leci dalej z harmonogramu; ten sam sygnał jest pomijany
 przez 30 s albo do jego zejścia (`the live source gave no picture` w logu
-ErsatzTV). Sidecar nieosiągalny = nakładka widzi kanał bez live. Przebieg
+ErsatzTV). Ocenia się tylko przebieg, który miał przed sobą co najmniej 5 s
+kawałka: ogon kawałka po przebiegu zatrzymanym za przekroczenie czasu (zwykle
+0,1–3 s) jest krótszy niż start ffmpeg, a jego ocena wstawiała na ten ogon
+harmonogram (S1, 2026-11-13). Sidecar nieosiągalny = nakładka widzi kanał bez live. Przebieg
 programu, który sam skończy się błędem, kończy kawałek z tym kodem jak bez
 ingest. Restart sidecara w trakcie live kończy przebieg live (koniec
 strumienia), kawałek wraca do harmonogramu, a odbiornik łączy się ponownie
