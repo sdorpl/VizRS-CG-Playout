@@ -61,6 +61,13 @@ const NEAR: u32 = 32;
 const TIE: u64 = 500;
 /// After a page goes off the air its out animation may last this long (ms): no learning.
 const OUT_GRACE: u64 = 3_000;
+/// After a page goes off the air the streams of the overlay may still carry it
+/// this long (ms): they read the history up to `lead_seconds` + 12 s behind
+/// the clock (S1: 17–22 s). Meanwhile only the capture's last picture counts,
+/// in step with VizRS's `STATE`; the cells streamed since the step before
+/// could be the page gone (S1, 2026-11-13: a crawl's band learnt as the
+/// logo's after its OUT, zones 11% of the channel instead of 2%).
+const STREAM_LAG: u64 = 30_000;
 /// Pages that went off the air this long ago (ms) are still in the zones of a
 /// run starting now: their out animation may still be drawn (`Footprints::leaving`).
 const LEAVING: u64 = 5_000;
@@ -404,6 +411,7 @@ impl Footprints {
         if pages.is_empty() || seen.left.is_some_and(|left| now.saturating_sub(left) < OUT_GRACE) {
             return false;
         }
+        let cells = if seen.left.is_some_and(|left| now.saturating_sub(left) < STREAM_LAG) { last } else { cells };
         let size = cells.size;
         let n = pages.len();
         let known: Vec<Option<Vec<Area>>> = pages.iter().map(|p| self.get(&p.page, size)).collect();
@@ -948,6 +956,28 @@ mod tests {
         assert_eq!(zones(&f, &[page("full:7", 1)], &[], &[], HD, true), None);
         assert_eq!(zones(&f, &[page("logo:3001", 1)], &[], &[], HD, false), None);
         assert_eq!(zones(&f, &[page("logo:3001", 1)], &[], &[], HD, true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_page_gone_still_in_the_streams_is_not_learnt_as_the_one_left() {
+        let mut f = Footprints::default();
+        alone(&mut f, "logo:7507", &[(1360, 16, 176, 176)]);
+        let both = [page("logo:7507", 1), page("crawl:3001", 2_000)];
+        let logo = [page("logo:7507", 1)];
+        let (bug, band) = ((1360, 16, 176, 176), (0, 816, 1600, 84));
+        learn(&mut f, &both, &[bug, band], 5_000);
+        // OUT of the crawl at 10 s: the capture shows the logo alone, the overlay's
+        // streams (read 20 s late) still carry the crawl's band for a while.
+        let last = Cells::of_boxes(&[bug], HD);
+        let mut streamed = last.clone();
+        streamed.add(&Cells::of_boxes(&[band], HD));
+        f.learn_between("1", &logo, &last, &last, 10_000);
+        for now in [14_000, 25_000, 39_000] {
+            assert!(!f.learn_between("1", &logo, &streamed, &last, now), "{now} ms");
+        }
+        assert!(!covered(&f.get("logo:7507", HD).unwrap(), &[band]), "the crawl's band is not the logo's");
+        // Past the streams' lag the cells between steps count again (a slide-in of the logo itself).
+        assert!(f.learn_between("1", &logo, &streamed, &last, 41_000));
     }
 
     #[test]

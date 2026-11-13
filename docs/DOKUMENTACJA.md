@@ -129,7 +129,12 @@ i która przez 15 s nie narysowała nic swojego (wszystko w śladach innych),
 dostaje pusty ślad: jej piksele są w strefach, dopóki tamte strony są na
 antenie, a bez nich piksele poza strefami poszerzają przebieg. Przez 3 s po
 zejściu strony z anteny (jej animacja wyjścia jeszcze trwa, a `STATE` już jej
-nie ma) nikt się nie uczy; obraz jest brany przed `STATE`, więc strona wzięta
+nie ma) nikt się nie uczy, a przez 30 s liczy się tylko ostatni obraz
+przechwytywania (zgodny w czasie ze `STATE`), bez komórek strumieni wysłanych
+od poprzedniego kroku: nakładka czyta historię nawet `lead_seconds` + 12 s za
+zegarem (S1: 17–22 s), więc jej strumienie niosą jeszcze stronę, która zeszła
+(2026-11-13 pasek crawla po jego OUT trafił do śladu logo i strefy kanału
+urosły z 2% do 11%). Obraz jest brany przed `STATE`, więc strona wzięta
 między nimi jest na liście, ale jeszcze nie na obrazie. Uczenie trwa tylko,
 gdy kanał ma sesję z przechwytywaniem (ErsatzTV transkoduje); komórki
 pierwszego obrazu po przerwie (ponad 5 s bez obrazu) pojawiły się w nieznanej
