@@ -542,6 +542,17 @@ ponad 2 s po końcu wyrzutu albo ponad 10 s w przeszłości to zły zegar lub
 stare dane – wtedy oś czasu liczy się od startu strumienia, jak bez czasu
 emisji.
 
+Kolejny przebieg kanału (do 10 s po poprzednim) przejmuje jego oś czasu:
+przesunięcie względem czasu emisji i miejsce, w którym poprzedni skończył
+(klatka 0 następnego = klatka po ostatniej wysłanej). Gdy start z czasu
+emisji odbiega od tego miejsca o ponad 3 s, czasy emisji kolejnych kawałków
+do siebie nie pasują, a przebieg idzie dalej od końca poprzedniego
+(`graphics stream: the air time is … s off the end of the run before`).
+Tak było po restarcie ErsatzTV na S2 (2026-11-13): dwa kawałki jednej
+pozycji miały czasy emisji przesunięte o 34 s, a grafika czytana 35 s po
+swojej chwili przeskoczyła o 18 s. Margines 3 s pokrywa klatki, które
+ffmpeg nakładki przeczytał z wyprzedzeniem.
+
 ### Nakładka ffmpeg
 
 Element „script” ma w ErsatzTV stały koszt, niezależny od grafiki: dla

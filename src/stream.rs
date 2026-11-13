@@ -87,22 +87,45 @@ fn picture_moment(at: Instant, shift: &mut Duration, oldest: Instant, newest: In
 /// further than the air time is trusted). A run placing itself by the clock
 /// instead showed the graphics of up to seconds before or after: a jump at
 /// every piece. Carried, the pictures follow one another across the pieces.
+/// With it, where the run before left its timeline (`end`: the frame 0 a
+/// next run takes to go on from its last frame), against air times that do
+/// not follow one another (`CARRY_SLIP`).
 #[derive(Default)]
-pub struct Carry(Mutex<Option<(f64, Instant)>>);
+pub struct Carry(Mutex<Option<Kept>>);
+
+#[derive(Clone, Copy, Debug)]
+struct Kept {
+    offset: f64,
+    end: Option<Instant>,
+    at: Instant,
+}
+
+/// The carried timeline placed by the air time further than this (s) from
+/// where the run before ended: the air times do not follow one another (S2,
+/// 2026-11-13: after a restart of ErsatzTV two pieces of one item 34 s off,
+/// the graphics read 35 s late jumped 18 s) – the run goes on from the end
+/// of the run before. Within it: frames the overlay's ffmpeg read ahead.
+const CARRY_SLIP: f64 = 3.0;
 
 /// A timeline older than this is not carried: the channel stood (no viewers).
 const CARRY_FOR: Duration = Duration::from_secs(10);
 
 impl Carry {
     fn take(&self) -> Option<f64> {
-        match *self.0.lock().unwrap_or_else(|e| e.into_inner()) {
-            Some((offset, at)) if at.elapsed() < CARRY_FOR => Some(offset),
-            _ => None,
-        }
+        self.taken().map(|kept| kept.offset)
     }
 
+    fn taken(&self) -> Option<Kept> {
+        (*self.0.lock().unwrap_or_else(|e| e.into_inner())).filter(|kept| kept.at.elapsed() < CARRY_FOR)
+    }
+
+    #[cfg(test)]
     fn keep(&self, offset: f64) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((offset, Instant::now()));
+        self.keep_end(offset, None);
+    }
+
+    fn keep_end(&self, offset: f64, end: Option<Instant>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(Kept { offset, end, at: Instant::now() });
     }
 }
 
@@ -260,15 +283,25 @@ pub fn stream_carried(
     // The air time as given, trusted or not: the channel's timeline (`carry`) is relative to it.
     let given = options.air.and_then(instant_of).filter(|_| raw);
     let carry = carry.filter(|_| given.is_some());
-    // Not a timeline whose first picture is not drawn yet (a jump in the schedule): the reader would wait for it.
-    let carried =
-        carry.and_then(Carry::take).filter(|&offset| given.is_some_and(|given| seconds_between(moved(given, offset), now) <= lead_s + 0.5));
+    // The run before ended where this one starts: on with its timeline – placed by
+    // the air time, or from its end when the air times do not follow one another.
+    let carried = carry.and_then(Carry::taken).and_then(|kept| {
+        let by_air = moved(given?, kept.offset);
+        let start = match kept.end {
+            Some(end) if seconds_between(by_air, end).abs() > CARRY_SLIP => {
+                crate::warn!(
+                    "graphics stream: the air time is {:+.1} s off the end of the run before; going on from its end",
+                    seconds_between(by_air, end)
+                );
+                end
+            }
+            _ => by_air,
+        };
+        // Not a timeline whose first picture is not drawn yet (a jump in the schedule): the reader would wait for it.
+        (seconds_between(start, now) <= lead_s + 0.5).then_some(start)
+    });
     let air = options.air.filter(|&air| air_is_timeline(air, crate::time::now_ms() as f64, lead_s)).and_then(instant_of);
-    let mut base = match (given, carried) {
-        // The run before ended where this one starts: on with its timeline.
-        (Some(given), Some(offset)) => moved(given, offset),
-        _ => air.unwrap_or(now),
-    };
+    let mut base = carried.unwrap_or_else(|| air.unwrap_or(now));
     // The timeline is the air time's or the carried one; without them it starts again after a pause.
     let anchored = air.is_some() || carried.is_some();
     if raw {
@@ -298,9 +331,10 @@ pub fn stream_carried(
     };
     // Raw frames: how far after its moment an output frame takes its picture.
     let mut shift = Duration::ZERO;
-    let keep = |base: Instant, shift: Duration| {
+    // Kept with where a next run goes on from the last frame sent (frame `sent` is its frame 0).
+    let keep = |base: Instant, shift: Duration, sent: u64| {
         if let (Some(carry), Some(offset)) = (carry, place(base, shift)) {
-            carry.keep(offset);
+            carry.keep_end(offset, Some(moved(base + shift, sent as f64 * frame_s)));
         }
     };
     // Delta frames: the frame sent last, and its size.
@@ -364,7 +398,7 @@ pub fn stream_carried(
                         (now.saturating_duration_since(moment(base, sent) + before)).as_secs_f64(),
                         (shift - before).as_secs_f64()
                     );
-                    keep(base, shift);
+                    keep(base, shift, sent);
                 }
                 source.frame_at(at)
             } else {
@@ -380,7 +414,7 @@ pub fn stream_carried(
                             Some((_, same, yuva)) if Arc::ptr_eq(same, &picture) => Arc::clone(yuva),
                             _ => {
                                 if watch(&picture) && hold(control) {
-                                    keep(base, shift);
+                                    keep(base, shift, sent - 1);
                                     return sent - 1;
                                 }
                                 builder.build(&picture.rects)
@@ -414,14 +448,14 @@ pub fn stream_carried(
             };
             if written.and_then(|()| out.flush()).is_err() {
                 control.close();
-                keep(base, shift);
+                keep(base, shift, sent);
                 return sent;
             }
         }
-        keep(base, shift);
+        keep(base, shift, sent);
         std::thread::sleep(TICK);
     }
-    keep(base, shift);
+    keep(base, shift, sent);
     sent
 }
 
@@ -747,7 +781,7 @@ mod tests {
         assert_eq!(carry.take(), None);
         carry.keep(-1.5);
         assert_eq!(carry.take(), Some(-1.5));
-        *carry.0.lock().unwrap() = Some((-1.5, Instant::now() - CARRY_FOR));
+        *carry.0.lock().unwrap() = Some(Kept { offset: -1.5, end: None, at: Instant::now() - CARRY_FOR });
         assert_eq!(carry.take(), None);
     }
 
@@ -789,6 +823,42 @@ mod tests {
         // Without the run before: by the clock, about where the first run started – 1 s back.
         let alone = first_picture(&Carry::default(), air + 1000.0);
         assert!(next > alone + 30, "next {next}, alone {alone}");
+    }
+
+    /// After a restart of ErsatzTV (S2, 2026-11-13) two pieces of one item had
+    /// air times 34 s off one another: placed by the air time the second run
+    /// read its first frames 35 s late and the graphics jumped. It goes on
+    /// from where the run before ended instead.
+    #[test]
+    fn a_run_whose_air_time_is_off_goes_on_from_the_end_of_the_run_before() {
+        let history = Arc::new(History::new(Duration::from_secs(60)));
+        let t0 = Instant::now();
+        for k in 0..250u8 {
+            let at = t0 - Duration::from_millis(5000 - 20 * u64::from(k));
+            history.set(vec![Rect { x: 0, y: 0, w: 1, h: 1, pixels: vec![k, 0, 0, 255].into() }], at);
+        }
+        let run = |carry: &Carry, air: f64| {
+            let source = Recording(Arc::clone(&history), Mutex::new(Vec::new()));
+            let control = Control::new(false);
+            let closer = Arc::clone(&control);
+            let timer = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                closer.close();
+            });
+            let mut out = Vec::new();
+            let format = Format::Yuva { layout: Layout::whole(1, 1), hd: false, delta: false };
+            let options = Options { fps: 50.0, lead_seconds: 3.0, format, air: Some(air) };
+            stream_carried(&source, &mut out, &options, &control, &mut |_| false, Some(carry));
+            timer.join().unwrap();
+            let pictures = source.1.lock().unwrap().clone();
+            (pictures[0], *pictures.last().unwrap(), pictures.len())
+        };
+        let air = crate::time::now_ms() as f64 - 3_000.0;
+        let carry = Carry::default();
+        let (_, last, _) = run(&carry, air);
+        // The next piece of the item, its air time 30 s behind where the run before ended.
+        let (next, _, _) = run(&carry, air - 30_000.0);
+        assert!(next.abs_diff(last) <= 2, "the next run goes on from the last picture: last {last}, next {next}");
     }
 
     /// A source that remembers the pictures it gave.
