@@ -90,6 +90,9 @@ services:
     - VIZRS_FFMPEG_PRESET=${VIZRS_FFMPEG_PRESET:-veryfast}
     - VIZRS_FFMPEG_X264_PARAMS=${VIZRS_FFMPEG_X264_PARAMS:-}
     - VIZRS_FFMPEG_READRATE_CATCHUP=${VIZRS_FFMPEG_READRATE_CATCHUP-2}
+    # Grafika wyznacza tempo transkodowania (overlay na CPU, materiał bez -readrate): kanał trzyma zegar,
+    # grafika nie przeskakuje (S1, 2026-11-13; DOKUMENTACJA §5, jak docker-compose.ampere.yml).
+    - VIZRS_FFMPEG_SYNC_RAM=${VIZRS_FFMPEG_SYNC_RAM:-1}
     image: ghcr.io/ersatztv/legacy:latest
     labels:
       com.centurylinklabs.watchtower.enable: 'false'
