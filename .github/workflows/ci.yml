@@ -23,6 +23,9 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --release --locked
+      # Wspólny stos s1 i s2 zgodny ze źródłami (docker-compose.yml, .ampere, .live).
+      - run: python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+      - run: python3 scripts/portainer-stack.py --check
       - uses: actions/upload-artifact@v4
         with:
           name: vizrs-cg-linux-x86_64

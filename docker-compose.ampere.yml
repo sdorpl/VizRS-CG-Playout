@@ -8,8 +8,9 @@
 # There is no hardware encoder, so ErsatzTV encodes with libx264 on the CPU
 # (FFmpeg profile: Hardware Acceleration None). The next streaming engine
 # ignores the profile's preset (x264 would run at medium, too slow here), so
-# the ffmpeg overlay sets it: VIZRS_FFMPEG_PRESET, veryfast by default
-# (superfast for several channels, 1080p50/60 media or a continuous ticker).
+# the ffmpeg overlay sets it: VIZRS_FFMPEG_PRESET, ultrafast by default (S1 and
+# S2, two channels each with a continuous ticker; VizRS Live sets it per server
+# afterwards, encoder.json). Frame blending off: too heavy for these cores.
 #
 # CPU split for 4 OCPUs: the sidecar (Chromium, PNG decode, scaling) is
 # capped so ffmpeg keeps most of the cores. With the ffmpeg overlay ffmpeg
@@ -33,24 +34,25 @@ services:
     platform: linux/arm64
     build: !reset null
     cpus: ${CG_CPUS:-2}
-    mem_limit: ${CG_MEMORY:-2g}
+    mem_limit: ${CG_MEMORY:-6g}
     environment:
       # Chromium: software raster on fewer threads.
       VIZRS_BROWSER_ARGS: ${VIZRS_BROWSER_ARGS:---num-raster-threads=2 --disable-smooth-scrolling}
       # A1 cores are slower per thread than x86: a little more player buffer.
       LEAD_SECONDS: ${LEAD_SECONDS:-5}
       # First filling of the encoder VizRS Live sets (encoder.json), as for ersatztv below.
-      VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-veryfast}
+      VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-ultrafast}
 
   ersatztv:
     platform: linux/arm64
     # Higher CPU priority than the graphics when the cores are busy.
     cpu_shares: 2048
     environment:
-      VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-veryfast}
+      VIZRS_FFMPEG_PRESET: ${VIZRS_FFMPEG_PRESET:-ultrafast}
       # The graphics pace the transcode (CPU overlay, no -readrate on the media): the channel
       # keeps to the clock and the graphics do not jump (S1, 2026-11-13; DOKUMENTACJA §5).
       VIZRS_FFMPEG_SYNC_RAM: ${VIZRS_FFMPEG_SYNC_RAM:-1}
+      VIZRS_FFMPEG_FPS_BLEND: ${VIZRS_FFMPEG_FPS_BLEND:-}
       # Optymalizacja .NET CLR na 4 OCPU ARM (brak zacięć GC podczas transkodowania)
       DOTNET_gcServer: "0"
       DOTNET_GCHeapHardLimit: "0x60000000"
