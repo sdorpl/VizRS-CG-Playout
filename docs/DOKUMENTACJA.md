@@ -774,6 +774,21 @@ ramówką zamiast 8 s za nią, zero przeskoków, ffmpeg 117–135 MiB karty i do
 565 MB RSS (kolejka ograniczona); animacje wyjścia i wejścia strony (`OUT`
 i `TAKE` z live API) w obrazie HLS klatka po klatce, bez skoków.
 
+**Klatka 0 kawałka na siatce grafiki (`[vz_grid]`).** Przewinięcie `-ss`
+zostawia pierwszą klatkę materiału trochę po zerze (0,003–0,024 s w pomiarze
+2026-11-13), więc `fps` ErsatzTV kładzie ją na klatce 1. Nakładka dawała jej
+grafikę klatki 1, a wyjście (`-fps_mode cfr`) wypełniało klatkę 0 jej kopią.
+Grafika na każdej granicy kawałka (co 44 s) szła więc 1 1 2 3… zamiast
+0 1 2 3…: przeskok o klatkę i postój, widoczny na crawlu jako drgnięcie.
+Nakładka (każda: CPU, VAAPI, CUDA, synchronizacja w RAM) przepuszcza główne
+wejście pierwszego `overlay` w grafie przez `fps=<klatkaż grafiki>:start_time=0`
+(łańcuch `[vz_grid]`). Materiał ma tu już klatkaż kanału, po `fps`, płynnych
+przejściach i `-r`. Klatka 0 dostaje grafikę klatki 0, a czasy klatek
+materiału się nie zmieniają (bez przesunięcia względem dźwięku). Pomiar
+crawla na lokalnym stosie (kanał 1, 50 kl./s, 4 granice kawałków w 186 s):
+taśma o 3 px w każdej klatce poza animacją wejścia (wcześniej para „+6 px, 0”
+na każdej granicy).
+
 Każdy `hwupload_cuda` otwiera własny kontekst CUDA (ok. 28 MiB), a nakładka
 wstawia go dla każdej strefy grafiki (`area: auto`). W transkodowaniu z płótnem
 grafiki i jednym urządzeniem `-init_hw_device cuda` nakładka zamienia więc

@@ -706,7 +706,8 @@ fn adjusted(args: Vec<OsString>, settings: &Settings, burst: Option<f64>) -> Vec
     };
     let rated = with_rate(args, &settings.fps);
     let source = if settings.blend { media_input(&rated).and_then(|input| source_rate(settings, &input)) } else { None };
-    let blended = with_blend(rated, settings.blend, source);
+    // After every graph rewrite: the media meets the graphics from frame 0 of the channel's rate.
+    let blended = media_on_graphics_grid(with_blend(rated, settings.blend, source));
     // Each goes right after the encoder: the last inserted comes first (preset, profile, options).
     let encoded = with_presets(
         with_profile(with_x264_params(blended, &settings.x264_params), &settings.profile),
@@ -1020,6 +1021,47 @@ fn graph_waiting_in_ram(graph: &str, graphics: usize) -> Option<String> {
     chains[*media] = format!("{labels}[vz_wt]{RAM_SYNC},{body}");
     let joined = chains.join(";").replacen(&label, "[vz_w1]", 1);
     Some(format!("{label}split=2[vz_w0][vz_w1];[vz_w0]crop=2:2:0:0[vz_wt];{joined}"))
+}
+
+/// A command overlaying raw graphics from a pipe (`-framerate R -i pipe:N`):
+/// the media meets the graphics on their frame grid from 0 – the main input
+/// of the graph's first overlay (in the channel's rate by then) goes through
+/// `fps=R:start_time=0` (`[vz_grid]`). A seek (`-ss`) lands the media's first
+/// frame a little after 0 (0.003–0.024 s measured, 2026-11-13); ErsatzTV's
+/// `fps` put it on frame 1, the overlay gave it the graphics of frame 1 and
+/// the output (`-fps_mode cfr`) filled frame 0 with a copy of it: at every
+/// 44 s piece the graphics stepped one frame ahead, then stood for one (a
+/// crawl jerked). Filled before the overlay, frame 0 takes the graphics of
+/// frame 0; the media's frames keep their times (no shift against the
+/// sound). Any other command unchanged: no graphics pipe or rate, no overlay
+/// with two inputs in the graph reading the graphics.
+pub fn media_on_graphics_grid(args: Vec<OsString>) -> Vec<OsString> {
+    let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
+    let Some(text) = text else { return args };
+    // Inputs in order: index of their `-i`, their value.
+    let inputs: Vec<(usize, &str)> = text.windows(2).enumerate().filter(|(_, w)| w[0] == "-i").map(|(i, w)| (i, w[1])).collect();
+    let Some(graphics) = inputs.iter().position(|(_, input)| input.starts_with("pipe:")) else { return args };
+    let options_from = if graphics == 0 { 0 } else { inputs[graphics - 1].0 + 2 };
+    let rate = text[options_from..inputs[graphics].0].windows(2).find(|w| w[0] == "-framerate").map(|w| w[1]);
+    let Some(rate) = rate.filter(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit() || b == b'/' || b == b'.')) else { return args };
+    let Some(at) = (0..text.len().saturating_sub(1))
+        .find(|&i| text[i] == "-filter_complex" && text[i + 1].contains(&format!("[{graphics}:")) && !text[i + 1].contains("[vz_grid]"))
+    else {
+        return args;
+    };
+    let mut chains: Vec<String> = text[at + 1].split(';').map(str::to_owned).collect();
+    // The first overlay of two inputs: its first one is the media.
+    let first = chains.iter().position(|chain| {
+        let (labels, body) = chain.split_at(leading_labels(chain));
+        labels.matches('[').count() == 2 && body.split([',', '=']).next().is_some_and(|f| f.starts_with("overlay"))
+    });
+    let Some(first) = first else { return args };
+    let main = chains[first][..chains[first].find(']').map_or(0, |end| end + 1)].to_owned();
+    chains[first] = chains[first].replacen(main.as_str(), "[vz_grid]", 1);
+    let gridded = format!("{main}fps={rate}:start_time=0[vz_grid];{}", chains.join(";"));
+    let mut out = args;
+    out[at + 1] = gridded.into();
+    out
 }
 
 /// ffmpeg's own initial burst of `-readrate`.
@@ -2390,6 +2432,38 @@ mod tests {
         assert_eq!(paced_media(cpu.clone(), Some(4.0)), cpu);
         let plain = args(&["-i", "http://m", "-filter_complex", on_card, "-c:v", "h264_nvenc", "o"]);
         assert_eq!(paced_media(plain.clone(), Some(4.0)), plain);
+    }
+
+    #[test]
+    fn media_starts_on_the_frame_grid_of_the_graphics() {
+        let cmd = |graph: &str, rate: &str| {
+            let mut list = vec!["-ss", "132000ms", "-i", "http://m/a", "-f", "rawvideo"];
+            if !rate.is_empty() {
+                list.extend(["-framerate", rate]);
+            }
+            list.extend(["-i", "pipe:6", "-filter_complex", "[0:1]loudnorm,apad[a]", "-filter_complex", graph, "-map", "[v_o0]", "o.m3u8"]);
+            args(&list)
+        };
+        // S1 (CPU overlay, two areas): the media in the channel's rate, filled to frame 0 before the first overlay.
+        let cpu = "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=320:112:0:0,format=yuva420p[vz_g0];[vz_s1]crop=144:144:0:112,format=yuva420p[vz_g1];\
+                   [0:0]fps=25,scale=1600:900[v_m0];[v_m0]fps=25[v_m0_fps];[v_m0_fps][vz_g0]overlay=x=0:y=80[vz_o0];[vz_o0][vz_g1]overlay=x=1360:y=16[v_o0]";
+        let fixed = format!("[v_m0_fps]fps=25:start_time=0[vz_grid];{}", cpu.replacen("[v_m0_fps][vz_g0]", "[vz_grid][vz_g0]", 1));
+        assert_eq!(media_on_graphics_grid(cmd(cpu, "25")), cmd(&fixed, "25"));
+        // Once only.
+        assert_eq!(media_on_graphics_grid(cmd(&fixed, "25")), cmd(&fixed, "25"));
+        // Synced in RAM (local stack, CUDA): filled before the sync with the graphics, not before `overlay_cuda`.
+        let ram = format!(
+            "[1:0]split=2[vz_w0][vz_w1];[vz_w0]crop=2:2:0:0[vz_wt];[0:0]fps=50[0:0_fps];[0:0_fps][vz_wt]{RAM_SYNC},hwupload,fps=50[v_m0];\
+             [vz_w1]hwupload[v_s0];[v_m0][v_s0]overlay_cuda[v_o0]"
+        );
+        let ram_fixed = format!("[0:0_fps]fps=50:start_time=0[vz_grid];{}", ram.replacen("[0:0_fps][vz_wt]", "[vz_grid][vz_wt]", 1));
+        assert_eq!(media_on_graphics_grid(cmd(&ram, "50")), cmd(&ram_fixed, "50"));
+        // No rate of the graphics, no graphics pipe, no overlay: unchanged.
+        assert_eq!(media_on_graphics_grid(cmd(cpu, "")), cmd(cpu, ""));
+        let plain = args(&["-i", "a.mp4", "-filter_complex", "[0:0]fps=25[v]", "-map", "[v]", "o.ts"]);
+        assert_eq!(media_on_graphics_grid(plain.clone()), plain);
+        let stacked = "[0:0]scale=10:10[a];[1:0]scale=10:10[b];[a][b]hstack[v_o0]";
+        assert_eq!(media_on_graphics_grid(cmd(stacked, "25")), cmd(stacked, "25"));
     }
 
     #[test]

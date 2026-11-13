@@ -576,6 +576,18 @@ test("ffmpeg overlay: raw frames from the sidecar, the script session stops its 
   assert.deepEqual((await runWrapper(["-version"], env)).args, ["-version"]);
 });
 
+// The media meets the graphics from frame 0 of their rate (src/overlay.rs
+// `media_on_graphics_grid`): the main input of the graph's first overlay
+// goes through `fps=<rate>:start_time=0` – a seek no longer leaves frame 0
+// a copy of frame 1 with the graphics of frame 1 (a jerk at every piece).
+const grid = (graph, rate) => {
+  const chains = graph.split(";");
+  const i = chains.findIndex((chain) => /^\[[^\]]*\]\[[^\]]*\]overlay/.test(chain));
+  const main = chains[i].slice(0, chains[i].indexOf("]") + 1);
+  chains[i] = "[vz_grid]" + chains[i].slice(main.length);
+  return `${main}fps=${rate}:start_time=0[vz_grid];${chains.join(";")}`;
+};
+
 test("ffmpeg overlay at a forced rate, blending, preset and catch-up: the media rate converted to the channel rate, fps before the overlay, -r on the HLS output, framerate for faster media only, -preset:v after libx264, -readrate_catchup on HLS inputs", async (t) => {
   const vizrs = await fakeVizrs();
   t.after(vizrs.close);
@@ -615,7 +627,7 @@ test("ffmpeg overlay at a forced rate, blending, preset and catch-up: the media 
   assert.deepEqual(overlay.args, [
     "-i", "/m/News.mp4",
     "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "50", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
-    "-filter_complex", "[0:0]framerate=fps=50,scale=8:4[v_m0];[1:0]format=yuva420p[v_s0];[v_m0]fps=50[v_m0_fps];[v_m0_fps][v_s0]overlay=x=0:y=0[v_o0]",
+    "-filter_complex", grid("[0:0]framerate=fps=50,scale=8:4[v_m0];[1:0]format=yuva420p[v_s0];[v_m0]fps=50[v_m0_fps];[v_m0_fps][v_s0]overlay=x=0:y=0[v_o0]", "50"),
     "-map", "[v_o0]", "-vcodec", "libx264", "-preset:v", "superfast", "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8",
   ]);
   assert.equal(overlay.read, 2 * yuvaSize(8, 4));
@@ -704,7 +716,7 @@ test("graphics area: frames of the area overlaid at its place; full frames when 
   assert.deepEqual(placed.args, [
     "-i", "/m/News.mp4",
     "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "4x2", "-framerate", "25/1", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
-    "-filter_complex", "[1:0]format=yuva420p[v_s0];[0:0][v_s0]overlay=x=4:y=2[v_o0]", "-map", "[v_o0]", "-f", "hls", "/t/ffmpeg.m3u8",
+    "-filter_complex", grid("[1:0]format=yuva420p[v_s0];[0:0][v_s0]overlay=x=4:y=2[v_o0]", "25/1"), "-map", "[v_o0]", "-f", "hls", "/t/ffmpeg.m3u8",
   ]);
   assert.equal(placed.read, 2 * yuvaSize(4, 2));
   assert.equal((await cg.health()).captures[0].area, "4x2+4+2");
@@ -713,7 +725,7 @@ test("graphics area: frames of the area overlaid at its place; full frames when 
   await sleep(300);
   const whole = await run("[1:0]scale=8:4,format=yuva420p[v_s0];[0:0][v_s0]overlay=x=0:y=0[v_o0]", [8, 4]);
   assert.ok(whole.args.includes("8x4"));
-  assert.ok(whole.args.includes("[1:0]scale=8:4,format=yuva420p[v_s0];[0:0][v_s0]overlay=x=0:y=0[v_o0]"));
+  assert.ok(whole.args.includes(grid("[1:0]scale=8:4,format=yuva420p[v_s0];[0:0][v_s0]overlay=x=0:y=0[v_o0]", "25/1")));
   assert.equal(whole.read, 2 * yuvaSize(8, 4));
 });
 
@@ -748,8 +760,8 @@ test("two graphics areas: stacked in one frame, split, cropped and overlaid each
     "-i", "/m/News.mp4",
     "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "4x4", "-framerate", "25/1", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
     "-filter_complex",
-    "[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=4:2:0:0,format=yuva420p[vz_g0];[vz_s1]crop=2:2:0:2,format=yuva420p[vz_g1];"
-      + "[0:0][vz_g0]overlay=x=0:y=2[vz_o0];[vz_o0][vz_g1]overlay=x=6:y=0[v_o0]",
+    grid("[1:0]split=2[vz_s0][vz_s1];[vz_s0]crop=4:2:0:0,format=yuva420p[vz_g0];[vz_s1]crop=2:2:0:2,format=yuva420p[vz_g1];"
+      + "[0:0][vz_g0]overlay=x=0:y=2[vz_o0];[vz_o0][vz_g1]overlay=x=6:y=0[v_o0]", "25/1"),
     "-map", "[v_o0]", "-f", "hls", "/t/ffmpeg.m3u8",
   ]);
   assert.equal(overlay.read, 2 * yuvaSize(4, 4));
@@ -813,7 +825,7 @@ test("ffmpeg overlay with hardware acceleration: ErsatzTV's NVIDIA and VAAPI gra
     assert.deepEqual(result.args, [
       ...input, "-i", "/m/News.mp4", "-t", "44000ms",
       "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "50", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
-      "-filter_complex", expected, "-map", "[v_o0]", "-vcodec", encoder, "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8",
+      "-filter_complex", grid(expected, "50"), "-map", "[v_o0]", "-vcodec", encoder, "-g", "50", "-r", "50", "-f", "hls", "-hls_time", "4", "/t/ffmpeg.m3u8",
     ], encoder);
     assert.equal(result.read, 2 * yuvaSize(8, 4), encoder);
   }
@@ -870,8 +882,9 @@ test("ffmpeg overlay VIZRS_FFMPEG_CUDA=overlay: the media paced at -readrate 1 w
   const syncedRun = await transcode(Date.now(), { VIZRS_FFMPEG_SYNC_RAM: "1" });
   assert.ok(!syncedRun.args.includes("-readrate"), "synced in RAM: the graphics pace the media, no -readrate");
   const synced = graph(syncedRun);
-  assert.match(synced, /^\[1:0\]split=2\[vz_w0\]\[vz_w1\];\[vz_w0\]crop=2:2:0:0\[vz_wt\];/);
-  assert.match(synced, /\[0:0\]\[vz_wt\]overlay=x=main_w:y=main_h:format=auto:eof_action=pass,[^;]*hwupload,scale_cuda/);
+  // Filled to frame 0 before the sync with the graphics, not only before overlay_cuda.
+  assert.match(synced, /^\[0:0\]fps=25\/1:start_time=0\[vz_grid\];\[1:0\]split=2\[vz_w0\]\[vz_w1\];\[vz_w0\]crop=2:2:0:0\[vz_wt\];/);
+  assert.match(synced, /\[vz_grid\]\[vz_wt\]overlay=x=main_w:y=main_h:format=auto:eof_action=pass,[^;]*hwupload,scale_cuda/);
   assert.match(synced, /\[vz_w1\]format=yuva420p,hwupload\[v_s0\]/);
   assert.ok(!graph(await transcode(Date.now())).includes("vz_w"), "off by default");
 });
