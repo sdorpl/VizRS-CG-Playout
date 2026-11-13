@@ -1876,31 +1876,31 @@ dotąd klient (§3). `seed` wypełnia tylko puste wolumeny i przy każdym starci
 stosu daje użytkownikowi 10001 zapis do klientów, elementów i audycji na żywo (`vizrs-live`, §1) oraz odczyt klucza
 API. Błędy trafiają tylko do logu.
 
-### Stosy s1 i s2 (`docker-compose.portainer.yml`)
+### Stosy s1 i s2
 
-s1 i s2 mają jeden stos: [docker-compose.portainer.yml](../docker-compose.portainer.yml),
-w Portainerze **Repository → Compose path** bez **Additional paths** (agent
-Portainera na s2 nie buduje). Plik generuje `scripts/portainer-stack.py` z
-`docker-compose.yml`, `docker-compose.ampere.yml` i `docker-compose.live.yml`
-(`docker compose config`, wymaga PyYAML); CI (`--check`) pilnuje, żeby był
-aktualny – zmiany wpisuje się w te trzy pliki, nie w wygenerowany. Usługa
-`ingest` jest w nim zawsze (bez profilu). Ustawienia są wspólne – domyślne
-dla Ampere (preset `ultrafast`, `cg` 6 GB, bez płynnych przejść, synchronizacja
-w RAM, renderer `auto`); stos w Portainerze ustawia tylko to, co się różni:
+s1 i s2 mają ten sam stos z repozytorium: w Portainerze **Repository → Compose
+path** `docker-compose.yml`, **Additional paths** `docker-compose.ampere.yml` i
+`docker-compose.live.yml` (po złożeniu nic się nie buduje – `ampere` zeruje
+`build`, więc działa też przez agenta Portainera na s2) oraz
+`COMPOSE_PROFILES=ingest`. Ustawienia są wspólne – domyślne dla Ampere: preset
+`ultrafast`, `cg` 6 GB, bez płynnych przejść, synchronizacja w RAM, 25 kl./s,
+renderer `auto`; obie stacje mają też `VIZRS_CHANNEL_BUSES=1`. Stos ustawia tylko
+to, co się różni:
 
-| Zmienna | s1 | s2 |
+| Zmienna | s1 (`vizplay`) | s2 (`vizrtplay-s2`) |
 |---|---|---|
-| `STACK_PREFIX` (nazwy woluminów i sieci) | `vizplay` (domyślnie) | `repo` |
-| `ERSATZTV_CONFIG` (konfiguracja ErsatzTV: wolumin albo ścieżka) | wolumin (domyślnie) | `/etc/ersatz` |
-| `MEDIA_DIR` / `MEDIA_MOUNT` (media na hoście / w ErsatzTV i VizRS Live) | `/media` / `/media` | `/media/tv` / `/media/tv` |
-| `VIZRS_INGEST`, `VIZRS_INGEST_PUBLIC` (kanały i adres sygnałów live) | kanał 1, `s1.btb.j00r.us` | kanały s2, `s2.btb.j00r.us` |
+| `STACK_PREFIX` (nazwy woluminów i sieci; domyślnie nazwa projektu) | – | `repo` |
+| `ERSATZTV_CONFIG` (konfiguracja ErsatzTV: wolumin albo ścieżka na hoście) | – (wolumin) | `/etc/ersatz` |
+| `MEDIA_DIR` / `MEDIA_MOUNT` (media na hoście / w ErsatzTV i VizRS Live) | `/media` / – | `/media/tv` / `/media/tv` |
+| `VIZRS_INGEST`, `VIZRS_INGEST_PUBLIC`, `INGEST_RTMP_PORT` | kanał 1, `s1.btb.j00r.us`, 1936 | kanał 4, `s2.btb.j00r.us`, 1944 (1936 zajmuje Restreamer) |
 | `VIZRS_LIVE_STREAM_URL`, `VIZRS_LIVE_VIZRS_URL` | `emisja.`, `s1.` | `emisja2.`, `s2.` |
 
-oraz tokeny (`VIZRS_TOKEN`, `VIZRS_PANEL_TOKEN`, `VIZRS_BRIDGE_TOKEN`,
-`VIZRS_LIVE_TOKEN`, `VIZRS_INGEST_TOKEN`, …). Dawne `docker-compose.s2-stack.yml`
-(kopia, która rozjechała się ze źródłami: brak strojenia .NET, ingestu,
-`VIZRS_FFMPEG_SYNC_RAM`) i `docker-compose.s2.yml` zastąpił ten plik
-(2026-11-13).
+oraz tokeny (`VIZRS_PANEL_TOKEN`, `VIZRS_BRIDGE_TOKEN`, `VIZRS_LIVE_TOKEN`,
+`VIZRS_INGEST_TOKEN`). `STACK_PREFIX`, `ERSATZTV_CONFIG` i `MEDIA_MOUNT`
+pozwalają stosowi użyć danych starszej instalacji bez ich przenoszenia.
+Dawne `docker-compose.s2-stack.yml` (kopia, która rozjechała się ze źródłami:
+brak strojenia .NET, ingestu, `VIZRS_FFMPEG_SYNC_RAM`) i `docker-compose.s2.yml`
+zastąpił ten układ 2026-11-13.
 
 ### Automatyczna aktualizacja po wydaniu
 

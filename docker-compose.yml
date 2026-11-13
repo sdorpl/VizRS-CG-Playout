@@ -43,7 +43,7 @@ services:
       <<: *timezone
     volumes:
       - vizrs-data:/vizrs-data
-      - ersatztv-config:/ersatztv-config
+      - ${ERSATZTV_CONFIG:-ersatztv-config}:/ersatztv-config
       - vizrs-client:/vizrs-client
       - seed-media:/media
 
@@ -165,7 +165,7 @@ services:
       # Where alarms of the as-run log go (signal lost, studio held, graphics off); empty = nowhere.
       VIZRS_ALERT_WEBHOOK: ${VIZRS_ALERT_WEBHOOK:-}
     volumes:
-      - ersatztv-config:/etv-config
+      - ${ERSATZTV_CONFIG:-ersatztv-config}:/etv-config
       - vizrs-client:/vizrs-client
     # Chromium renders through /dev/shm; the Docker default of 64 MB is too small.
     shm_size: 512mb
@@ -239,11 +239,11 @@ services:
       VIZRS_FFMPEG_NO_DISCARDCORRUPT: ${VIZRS_FFMPEG_NO_DISCARDCORRUPT:-}
     volumes:
       # Holds templates/…/script/vizrs.yml, written by seed.
-      - ersatztv-config:/config
+      - ${ERSATZTV_CONFIG:-ersatztv-config}:/config
       - vizrs-client:/vizrs:ro
       # Test videos of the seeded channel; your own: MEDIA_DIR, a host path
       # (paths in ErsatzTV start with /media).
-      - ${MEDIA_DIR:-seed-media}:/media:ro
+      - ${MEDIA_DIR:-seed-media}:${MEDIA_MOUNT:-/media}:ro
     tmpfs:
       - /transcode
     ports:
@@ -287,8 +287,20 @@ services:
       - "1937-1943:1937-1943"
       - "9001-9007:9001-9007/udp"
 
+# Names of the volumes and the network: the project's by default; STACK_PREFIX
+# keeps those of an older stack (s2: repo_*). ERSATZTV_CONFIG can be a host path
+# (s2: /etc/ersatz), MEDIA_MOUNT where ErsatzTV and VizRS Live see MEDIA_DIR
+# (s2: /media/tv). DOKUMENTACJA §4, „Stosy s1 i s2”.
+networks:
+  default:
+    name: ${STACK_PREFIX:-${COMPOSE_PROJECT_NAME}}_default
+
 volumes:
   vizrs-data:
+    name: ${STACK_PREFIX:-${COMPOSE_PROJECT_NAME}}_vizrs-data
   ersatztv-config:
+    name: ${STACK_PREFIX:-${COMPOSE_PROJECT_NAME}}_ersatztv-config
   vizrs-client:
+    name: ${STACK_PREFIX:-${COMPOSE_PROJECT_NAME}}_vizrs-client
   seed-media:
+    name: ${STACK_PREFIX:-${COMPOSE_PROJECT_NAME}}_seed-media

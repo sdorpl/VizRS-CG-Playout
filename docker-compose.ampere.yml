@@ -52,6 +52,8 @@ services:
       # The graphics pace the transcode (CPU overlay, no -readrate on the media): the channel
       # keeps to the clock and the graphics do not jump (S1, 2026-11-13; DOKUMENTACJA §5).
       VIZRS_FFMPEG_SYNC_RAM: ${VIZRS_FFMPEG_SYNC_RAM:-1}
+      # s1 and s2 broadcast at 25 fps (1600x900@25).
+      VIZRS_FFMPEG_FPS: ${VIZRS_FFMPEG_FPS:-25}
       VIZRS_FFMPEG_FPS_BLEND: ${VIZRS_FFMPEG_FPS_BLEND:-}
       # Optymalizacja .NET CLR na 4 OCPU ARM (brak zacięć GC podczas transkodowania)
       DOTNET_gcServer: "0"
