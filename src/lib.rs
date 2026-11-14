@@ -24,6 +24,7 @@ pub mod ingest;
 pub mod json;
 pub mod listener;
 pub mod live_shows;
+pub mod logs;
 pub mod native;
 pub mod net;
 pub mod overlay;

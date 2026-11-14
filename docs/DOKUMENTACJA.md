@@ -1300,6 +1300,24 @@ sygnał zakończony), `graphics_off` i `graphics_on` (cała grafika zdjęta
 i przywrócona). Bez `etv_config` nie ma gdzie pisać i dziennika nie ma
 (`store: false`), ale alarmy niżej i tak wychodzą.
 
+**Logi emisji (`logs`).** `GET /api/live/logs?source=<cg|ingest|takeover>&channel=<n>&day=<RRRR-MM-DD>`
+zwraca `{source, channel, day, tz: "UTC", store, truncated, entries: [{t,
+level, text}]}` – logi systemu emisji kanału z jednej doby (UTC), które VizRS
+Live pokazuje w „Dzienniku emisji” obok zapisu anteny
+([src/logs.rs](../src/logs.rs)). Źródła to pliki na woluminie konfiguracji
+ErsatzTV, każdy z rotowanym `.1` (§6): `cg` – log sidecara
+`<etv_config>/vizrs-live/logs/vizrs-cg.log` (wiersze, które wymieniają ten kanał
+– „channel N”, „kanał N” – i wiersze bez kanału), `ingest` – odbiorniki live
+ingest `vizrs-live/logs/vizrs-ingest.log` (wiersze tego kanału), `takeover` –
+ślad przejęć `<etv_config>/logs/vizrs-takeover-<n>.log` (z PID-em uciętym, stan
+playlisty zostaje). Poziom: z logu sidecara (`WARN` → `warn`, `ERROR` →
+`error`), dla odbiorników i przejęć z treści (rozłączony nadawca, „no
+picture”, „behind the clock”, `SIGTERM` – `warn`; błąd ffmpeg, `SIGKILL` –
+`error`). Najwyżej 3000 najnowszych wpisów doby (`truncated: true`, gdy było
+więcej). Klucze strumieni (`/live/…`, `/live2/…`, `/app/…`), `passphrase=`,
+`streamid=`, `token=`, `key=`, `password=` i `użytkownik:hasło@` w adresach są
+zastąpione `***`. `features` stanu zgłasza `logs`.
+
 **Zmiany na antenie spoza panelu.** Antenę kanału zmienia nie tylko sidecar
 (reguły, komendy z VizRS Live), ale też Trio, `/mobile`, makra i karuzela
 VizRS albo Companion. Wątek `panel-layers` porównuje dwa kolejne odczyty warstw
@@ -2383,6 +2401,25 @@ programu, który sam skończy się błędem, kończy kawałek z tym kodem jak be
 ingest. Restart sidecara w trakcie live kończy przebieg live (koniec
 strumienia), kawałek wraca do harmonogramu, a odbiornik łączy się ponownie
 i kanał wraca na live z następnym sprawdzeniem stanu.
+
+Live nie może zostawić osi czasu kanału za zegarem. ErsatzTV (Next engine,
+`ersatztv-channel`) liczy czas segmentów z sumy wyprodukowanego materiału, a nie
+z zegara, a segmenty starsze niż 2 min kasuje od razu po zapisaniu. Zakłada, że
+zwykłe pozycje transkoduje szybciej niż w czasie rzeczywistym i zawsze nadgoni.
+Kawałek wypełniany przebiegami live nadgonić nie może: źródło w tempie 0,3×
+(S1, 2026-11-13 20:30 UTC, przekaźnik z sesji `.ts` ErsatzTV na S2) rozciągnęło
+kawałki 2–3 razy, oś czasu spadła ponad 2 min za zegar, a live w tempie 1,0×
+nigdy tego nie odrobił: playlista widzów była pusta przez 3,5 h, aż do restartu
+ErsatzTV. Nakładka przed kawałkiem czyta z playlisty (ErsatzTV nadpisuje ją
+własną osią czasu przed każdym kawałkiem), o ile kanał jest za zegarem, a w
+trakcie przebiegu live co sekundę dolicza czas zegara minus wyprodukowany
+materiał. Powyżej 10 s (`LIVE_BEHIND_MAX`) przebieg live jest kończony, a
+kawałek leci z harmonogramu (ErsatzTV robi go wtedy szybciej niż w czasie
+rzeczywistym), aż oś czasu dogoni zegar; potem live wraca. W logu ErsatzTV:
+`live leaves the channel's timeline … s behind the clock; the schedule makes it
+up`, `the channel's timeline caught up with the clock`, a na starcie kawałka
+`the channel's timeline is … s behind the clock`. Playlista samych skasowanych
+segmentów (sekwencja powyżej 0, nic na liście) liczy się jako 2 min za zegarem.
 
 ## 7. Testy
 

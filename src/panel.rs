@@ -23,6 +23,7 @@
 //   POST   /api/live/channels/<n>/take    {"page": "101"} one page on the channel's antenna (K13)
 //   POST   /api/live/channels/<n>/continue {"layer": …} · /out {"layer": …} one layer
 //   GET    /api/live/asrun?channel=&day=  the as-run log of a day (K14, src/asrun.rs)
+//   GET    /api/live/logs?source=&channel=&day=  sidecar, ingest and takeover logs of a day (src/logs.rs)
 //   GET    /api/live/encoder              encoder settings of the ffmpeg overlay in force (x264
 //                                         preset, H.264 profile, x264 options, NVENC/QSV presets,
 //                                         hardware B-frames), and where from
@@ -757,6 +758,37 @@ impl Panel {
         )
     }
 
+    /// `GET /api/live/logs?source=<cg|ingest|takeover>&channel=<n>&day=<YYYY-MM-DD>`.
+    fn logs(&self, request: &Request, stream: &mut TcpStream) -> io::Result<()> {
+        let source = request.param("source").unwrap_or("").to_owned();
+        let channel = request.param("channel").unwrap_or("").to_owned();
+        let day = request.param("day").unwrap_or("").to_owned();
+        let day = if day.is_empty() { crate::asrun::day_of(crate::time::now_ms()) } else { day };
+        if !crate::logs::SOURCES.contains(&source.as_str()) {
+            return fail(stream, 400, "złe źródło logu (cg, ingest, takeover)");
+        }
+        if !Self::valid_channel(&channel) {
+            return fail(stream, 400, "zły numer kanału");
+        }
+        if !crate::asrun::valid_day(&day) {
+            return fail(stream, 400, "zły dzień (RRRR-MM-DD)");
+        }
+        let (entries, truncated) = crate::logs::read(&self.etv_config, &source, &channel, &day);
+        reply(
+            stream,
+            200,
+            &json::object([
+                ("source", source.as_str().into()),
+                ("channel", channel.as_str().into()),
+                ("day", day.as_str().into()),
+                ("tz", "UTC".into()),
+                ("store", (!self.etv_config.is_empty()).into()),
+                ("truncated", truncated.into()),
+                ("entries", Value::Array(entries)),
+            ]),
+        )
+    }
+
     fn shows(&self) -> io::Result<Vec<LiveShow>> {
         if self.etv_config.is_empty() {
             return Ok(self.configured.clone());
@@ -805,6 +837,7 @@ impl Panel {
                 self.command(channel, action, &body, &mut stream, ingest, &who)
             }
             ("GET", ["asrun"]) => self.asrun(request, &mut stream),
+            ("GET", ["logs"]) => self.logs(request, &mut stream),
             ("POST", ["channels", channel, "rebuild"]) => {
                 let result = self.etv.reset_playout(channel);
                 if result.is_ok() {
@@ -902,8 +935,14 @@ impl Panel {
 
     /// What this build can do, for VizRS Live (an older sidecar simply lists less).
     fn features(&self) -> Vec<Value> {
-        let mut features =
-            vec![Value::from("layers"), Value::from("take"), Value::from("asrun"), Value::from("encoder"), Value::from("thumbs")];
+        let mut features = vec![
+            Value::from("layers"),
+            Value::from("take"),
+            Value::from("asrun"),
+            Value::from("encoder"),
+            Value::from("thumbs"),
+            Value::from("logs"),
+        ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
         }

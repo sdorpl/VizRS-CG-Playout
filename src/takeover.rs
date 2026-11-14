@@ -60,6 +60,16 @@ const KILL_GRACE: Duration = Duration::from_secs(2);
 /// stalled for a minute and the viewers' players freeze). The live run goes at
 /// the clock: alive this long past the rest of the piece, it is stopped.
 const LIVE_OVERRUN: Duration = Duration::from_secs(3);
+/// Live may leave the channel's timeline this far behind the clock (s). ErsatzTV's
+/// timeline (ersatztv-channel) counts the seconds made, not the clock, and it
+/// drops segments older than 2 min on arrival: live runs slower than the clock
+/// (a source at 0.3x, S1 2026-11-13 20:30) made each piece take 2-3x its length,
+/// the timeline fell over 2 min behind, and live at 1.0x never made it up – the
+/// channel went out empty for hours. Past this the schedule (made faster than
+/// the clock while ErsatzTV is behind) takes over until the timeline caught up.
+const LIVE_BEHIND_MAX: f64 = 10.0;
+/// How often a run checks how far behind the clock the channel's timeline is.
+const BEHIND_EVERY: Duration = Duration::from_secs(1);
 /// A long live run writes its pace to the trace this often: a run slower than
 /// the clock drains the channel's HLS buffer long before it ends.
 const LIVE_PACE_EVERY: Duration = Duration::from_secs(120);
@@ -623,6 +633,14 @@ fn code(status: io::Result<ExitStatus>) -> i32 {
 /// Plays the piece `job` as runs of its own command and of the live source; the exit code.
 pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> i32 {
     let before: HashSet<String> = read_segments(&job.playlist).into_iter().map(|(name, _)| name).collect();
+    // ErsatzTV rewrites the playlist with its own timeline before each piece:
+    // how far behind the clock this piece starts.
+    let behind_at_start =
+        std::fs::read_to_string(&job.playlist).ok().and_then(|text| timeline_behind(&text, crate::time::now_ms())).unwrap_or(0.0);
+    let piece_started = Instant::now();
+    let behind = |made: f64| behind_clock(behind_at_start, piece_started.elapsed().as_secs_f64(), made);
+    // The timeline too far behind: no live until the schedule made it up.
+    let catching_up = std::cell::Cell::new(false);
     let poller = Poller::start(runner.sidecar, &job.channel, live_now, audio_now, runner.takeover);
     let source_url = format!("{}/ingest?channel={}", runner.sidecar, quote_plus(&job.channel));
     let mut elapsed = 0.0;
@@ -633,6 +651,18 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
             job.channel, job.duration, job.offset, job.slot
         ),
     );
+    if behind_at_start > LIVE_BEHIND_MAX {
+        catching_up.set(true);
+        if live_now {
+            trace(
+                job,
+                format_args!(
+                    "channel {}: the channel's timeline is {behind_at_start:.1} s behind the clock; the schedule makes it up before live",
+                    job.channel
+                ),
+            );
+        }
+    }
     // A live source that gave no picture is left alone until it goes or for `SUPPRESS`.
     let quiet: Mutex<Option<Instant>> = Mutex::new(None);
     let live = || {
@@ -641,7 +671,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         if quiet.is_some_and(|until| !on || Instant::now() >= until) {
             *quiet = None;
         }
-        on && quiet.is_none()
+        on && quiet.is_none() && !catching_up.get()
     };
     loop {
         if job.duration - elapsed < DONE {
@@ -673,6 +703,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         let mut stop = Stop::default();
         let started = Instant::now();
         let mut paced = started;
+        let mut checked = started;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -683,6 +714,26 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
                 paced = Instant::now();
                 let (made, wall) = (produced(&job.playlist, &before) - elapsed, started.elapsed().as_secs_f64());
                 trace(job, format_args!("channel {}: live run made {made:.1} s in {wall:.1} s ({})", job.channel, pace(made, wall)));
+            }
+            if checked.elapsed() >= BEHIND_EVERY && !interrupted {
+                checked = Instant::now();
+                let late = behind(produced(&job.playlist, &before));
+                if source.is_some() && late > LIVE_BEHIND_MAX {
+                    trace(
+                        job,
+                        format_args!(
+                            "channel {}: live leaves the channel's timeline {late:.1} s behind the clock; the schedule makes it up",
+                            job.channel
+                        ),
+                    );
+                    catching_up.set(true);
+                    crate::sys::send_signal(child.id(), crate::sys::SIGINT);
+                    interrupted = true;
+                    stop.since = Some(Instant::now());
+                } else if source.is_none() && catching_up.get() && late <= 0.0 {
+                    trace(job, format_args!("channel {}: the channel's timeline caught up with the clock", job.channel));
+                    catching_up.set(false);
+                }
             }
             if source.is_none() && !interrupted && !runner.stopping.load(Ordering::Relaxed) && live() {
                 // ffmpeg ends on SIGINT as on `q`: the segment it writes is closed and listed.
@@ -756,6 +807,38 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
 /// (below 1.00x the channel falls behind and its HLS buffer drains).
 fn pace(brought: f64, wall: f64) -> String {
     if wall > 0.0 { format!("{:.2}x", brought / wall) } else { "-".to_owned() }
+}
+
+/// How far behind the clock (s) the timeline of a playlist ends: the last
+/// segment's program date time plus its length. A playlist of trimmed segments
+/// only (media sequence past 0, nothing listed): at least the 2 min ErsatzTV keeps.
+/// `None` for a new channel (nothing yet) or a playlist without dates.
+fn timeline_behind(text: &str, now_ms: i64) -> Option<f64> {
+    let mut date = None;
+    let mut length = 0.0;
+    let mut end = None;
+    let mut listed = 0;
+    for line in text.lines().map(str::trim) {
+        if let Some(d) = line.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
+            date = crate::time::parse_iso(d);
+        } else if let Some(l) = line.strip_prefix("#EXTINF:") {
+            length = l.trim_end_matches(',').split(',').next().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0);
+        } else if !line.is_empty() && !line.starts_with('#') {
+            listed += 1;
+            end = date.map(|d| d as f64 + length * 1000.0);
+            date = None;
+        }
+    }
+    if listed == 0 {
+        let sequence: u64 = text.lines().find_map(|l| l.trim().strip_prefix("#EXT-X-MEDIA-SEQUENCE:")?.trim().parse().ok())?;
+        return (sequence > 0).then_some(120.0);
+    }
+    end.map(|end| (now_ms as f64 - end) / 1000.0)
+}
+
+/// Behind the clock (s) `wall` seconds into a piece that started `at_start` behind and made `made` seconds.
+fn behind_clock(at_start: f64, wall: f64, made: f64) -> f64 {
+    at_start + wall - made
 }
 
 /// A live run that brought `brought` of `remaining` seconds: its source gave no picture.
@@ -959,6 +1042,30 @@ mod tests {
         assert!(!overran(Duration::from_secs(44) + LIVE_OVERRUN, 44.0));
         assert!(overran(Duration::from_secs(48), 44.0));
         assert!(overran(Duration::from_secs(4), -1.0));
+    }
+
+    #[test]
+    fn timeline_behind_the_clock_from_the_playlist() {
+        use super::{LIVE_BEHIND_MAX, behind_clock, timeline_behind};
+        let now = crate::time::parse_iso("2026-11-14T00:24:50.000Z").unwrap();
+        let list = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:11708\n#EXT-X-DISCONTINUITY\n\
+                    #EXTINF:4.000000,\n#EXT-X-PROGRAM-DATE-TIME:2026-11-14T01:24:14.847+0100\nlive011708.ts\n\
+                    #EXTINF:4.000000,\n#EXT-X-PROGRAM-DATE-TIME:2026-11-14T01:24:42.847+0100\nlive011715.ts\n";
+        // The last segment ends at 00:24:46.847 UTC: 3.153 s behind.
+        let behind = timeline_behind(list, now).unwrap();
+        assert!((behind - 3.153).abs() < 0.001, "{behind}");
+        // Ahead of the clock (working ahead): negative.
+        assert!(timeline_behind(list, now - 20_000).unwrap() < 0.0);
+        // Everything trimmed on arrival (S1 2026-11-13): at least 2 min behind.
+        assert_eq!(timeline_behind("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:11716\n#EXT-X-INDEPENDENT-SEGMENTS\n", now), Some(120.0));
+        // A new channel: nothing known.
+        assert_eq!(timeline_behind("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n", now), None);
+        assert_eq!(timeline_behind("", now), None);
+        // A source at 0.4x: 20 s of the clock made 8 s, on top of 1 s behind at the start.
+        assert!(behind_clock(1.0, 20.0, 8.0) > LIVE_BEHIND_MAX);
+        assert!(behind_clock(1.0, 44.0, 44.0) <= LIVE_BEHIND_MAX);
+        // The schedule made faster than the clock catches up.
+        assert!(behind_clock(13.0, 10.0, 30.0) <= 0.0);
     }
 
     #[test]

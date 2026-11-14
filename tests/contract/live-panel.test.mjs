@@ -5,7 +5,7 @@
 // VIZRS_LIVE_SHOWS.
 
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -324,7 +324,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -377,6 +377,38 @@ test("TAKE, CONTINUE and OUT by hand reach VizRS and the as-run log", async (t) 
   assert.equal((await api("GET", "asrun?channel=4&day=2026-11-9")).status, 400);
 });
 
+// Emission logs next to the as-run log (src/logs.rs): the sidecar's own file, the
+// ingest listeners' file and the takeover trace of a channel, one UTC day, keys masked.
+test("emission logs of a channel and a day", async (t) => {
+  const { api, folder } = await setup(t);
+  const day = new Date().toISOString().slice(0, 10);
+  const ingest = path.join(folder, "vizrs-live", "logs", "vizrs-ingest.log");
+  writeFileSync(
+    ingest,
+    `${day}T00:00:01.000Z vizrs-ingest: channel 4: publisher on rtmp://0.0.0.0:1936/live/secret-key\n` +
+      `${day}T00:00:02.000Z vizrs-ingest: channel 9: publisher on rtmp://0.0.0.0:1936/live/other\n` +
+      `2020-01-01T00:00:00.000Z vizrs-ingest: channel 4: long ago\n`,
+  );
+  mkdirSync(path.join(folder, "logs"), { recursive: true });
+  writeFileSync(
+    path.join(folder, "logs", "vizrs-takeover-4.log"),
+    `${day}T00:00:03.000Z pid 7 channel 4: the live source gave no picture; the schedule goes on | seq 1\n`,
+  );
+
+  const got = (await api("GET", `logs?source=ingest&channel=4&day=${day}`)).body;
+  assert.equal(got.tz, "UTC");
+  assert.deepEqual(got.entries.map((e) => e.text), ["channel 4: publisher on rtmp://0.0.0.0:1936/live/***"]);
+  assert.equal(got.entries[0].level, "info");
+  const takeover = (await api("GET", `logs?source=takeover&channel=4&day=${day}`)).body.entries;
+  assert.equal(takeover[0].level, "warn");
+  assert.match(takeover[0].text, /^channel 4: the live source gave no picture/);
+  // The sidecar logs to its file from the start (etv_config set).
+  const own = (await api("GET", `logs?source=cg&channel=4&day=${day}`)).body.entries;
+  assert.ok(own.length > 0, "the sidecar's own log of today");
+  assert.equal((await api("GET", `logs?source=etc&channel=4&day=${day}`)).status, 400);
+  assert.equal((await api("GET", "logs?source=cg&channel=4&day=2026-1-1")).status, 400);
+});
+
 test("alarms of the as-run log reach the webhook", async (t) => {
   const alerts = [];
   const hook = http.createServer((req, res) => {
@@ -391,7 +423,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");
