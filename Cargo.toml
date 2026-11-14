@@ -1,6 +1,6 @@
 [package]
 name = "vizrs-cg"
-version = "26.11.9"
+version = "26.11.10"
 edition = "2024"
 rust-version = "1.87"
 description = "VizRS graphics for ErsatzTV channels: commands on clip start and burn-in of /output"
