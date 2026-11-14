@@ -2,7 +2,7 @@
 // the live programmes of ErsatzTV's schedule, for VizRS Live (the operator's
 // panel, a separate application). The sidecar has no page of its own here.
 //
-//   GET    /api/live/state                channels: source, on air, hold, anytime,
+//   GET    /api/live/state                channels: source, on air, hold, takeover, anytime,
 //                                         now and next from the guide; events
 //   PUT    /api/live/settings             {"library": id|null}
 //   POST   /api/live/channels/<n>/hold    keep the studio off the channel
@@ -942,6 +942,7 @@ impl Panel {
             Value::from("encoder"),
             Value::from("thumbs"),
             Value::from("logs"),
+            Value::from("on_live"),
         ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
@@ -981,6 +982,8 @@ impl Panel {
         }
         sort_channels(&mut numbers);
 
+        // Taken over by the overlay now: schedule graphics held, `on_live` on air.
+        let takeovers: BTreeMap<String, bool> = ingest.takeovers(crate::ingest::TAKEOVER_GRACE).into_iter().collect();
         let mut guide_by_channel = Vec::new();
         let channels: Vec<Value> = numbers
             .iter()
@@ -1001,6 +1004,7 @@ impl Panel {
                     ("source", source.unwrap_or(Value::Null)),
                     ("on_air", (signal && !control.hold && (anytime || in_slot)).into()),
                     ("hold", control.hold.into()),
+                    ("takeover", takeovers.get(number.as_str()).copied().unwrap_or(false).into()),
                     ("anytime", anytime.into()),
                     ("anytime_own", control.anytime.map_or(Value::Null, Value::from)),
                     ("now", current.map_or(Value::Null, |p| programme_json(p, in_slot))),

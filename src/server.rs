@@ -222,6 +222,9 @@ struct ShowLayers {
     fetched: Option<Instant>,
 }
 
+/// How often the takeovers of the channels are checked (`start_takeovers`).
+const TAKEOVERS_EVERY: Duration = Duration::from_millis(250);
+
 /// How long the zones count a page an element of a single page took on the channel.
 const ELEMENT_PAGES_KEEP_MS: u64 = 600_000;
 /// How often the layers on air are checked against the list, and how often the show is read anyway.
@@ -361,6 +364,32 @@ impl Server {
         }
     }
 
+    /// With live ingest, follows the overlay's takeovers of the channels: while a
+    /// live is on air, the channel's schedule graphics are held and its `on_live`
+    /// (a LIVE logo) goes on air instead (`ChannelEvents::live_takeover`).
+    pub fn start_takeovers(self: &Arc<Self>) {
+        if !self.ingest.enabled() {
+            return;
+        }
+        let server = Arc::clone(self);
+        let _ = thread::Builder::new().name("takeovers".into()).spawn(move || {
+            let mut on_air: HashSet<String> = HashSet::new();
+            loop {
+                thread::sleep(TAKEOVERS_EVERY);
+                for (channel, on) in server.ingest.takeovers(crate::ingest::TAKEOVER_GRACE) {
+                    if on != on_air.contains(&channel) {
+                        if on {
+                            on_air.insert(channel.clone());
+                        } else {
+                            on_air.remove(&channel);
+                        }
+                        server.events_for(&channel).live_takeover(on);
+                    }
+                }
+            }
+        });
+    }
+
     /// With `area: auto`, learns the footprints of the pages on air from the
     /// pictures of the channels' captures (PLAN-strefy S1), in the background.
     pub fn start_footprints(self: &Arc<Self>) {
@@ -484,6 +513,10 @@ impl Server {
                 add(show.on_clip.as_deref().unwrap_or(""));
                 add(show.on_end.as_deref().unwrap_or(""));
             }
+        }
+        // A live source of the channel: its takeover graphics may come on air in this run.
+        if self.ingest.is_live(channel) {
+            lines.extend(config.on_live.lines().map(str::to_owned));
         }
         let mut numbers = vizrs::taken_pages(&lines);
         // Pages this piece may take besides its rules: back from a break, or by

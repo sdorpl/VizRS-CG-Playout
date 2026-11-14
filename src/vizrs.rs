@@ -375,8 +375,106 @@ struct Batch {
     /// Pages taken out for a break come back first (not before an `OUT`).
     restore: bool,
     commands: Vec<String>,
-    /// VizRS Live took all graphics off (`Some(true)`) or back (`Some(false)`).
-    switch: Option<bool>,
+    /// All graphics off or back (VizRS Live), or a live takeover of the channel.
+    switch: Option<Switch>,
+}
+
+/// What holds the schedule's graphics of a channel.
+#[derive(Clone, Debug, PartialEq)]
+enum Switch {
+    /// VizRS Live took all graphics off (`true`) or back (`false`).
+    Graphics(bool),
+    /// A live takeover with the channel's `on_live` commands (`Some`), or its end (`None`).
+    Live(Option<Vec<String>>),
+}
+
+/// The sender's hold of the schedule's graphics: ZDEJMIJ GRAFIKĘ and a live
+/// takeover, each on its own. While either holds, clip commands are not sent;
+/// `parked` follows the pages they would put on air, to take back after both.
+#[derive(Debug, Default)]
+struct Hold {
+    off: bool,
+    /// The live takeover's `on_live` commands while the channel is taken over.
+    live: Option<Vec<String>>,
+    parked: Option<Vec<String>>,
+}
+
+/// What the sender does for a switch.
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// OUT for every layer on air (from `STATE`); `park`: their pages come back later.
+    Clear {
+        park: bool,
+    },
+    Send(Vec<String>),
+}
+
+impl Hold {
+    fn plan(&mut self, switch: Switch) -> Vec<Step> {
+        match switch {
+            Switch::Graphics(true) => {
+                if self.off {
+                    return Vec::new();
+                }
+                self.off = true;
+                if self.parked.is_none() {
+                    vec![Step::Clear { park: true }]
+                } else if self.live.is_some() {
+                    // The schedule is parked already: only the live graphics go out.
+                    vec![Step::Clear { park: false }]
+                } else {
+                    Vec::new()
+                }
+            }
+            Switch::Graphics(false) => {
+                if !std::mem::take(&mut self.off) {
+                    return Vec::new();
+                }
+                match &self.live {
+                    Some(commands) if commands.is_empty() => Vec::new(),
+                    Some(commands) => vec![Step::Send(commands.clone())],
+                    None => match self.parked.take() {
+                        Some(pages) if !pages.is_empty() => vec![Step::Send(vec![format!("TAKE {}", pages.join(","))])],
+                        _ => Vec::new(),
+                    },
+                }
+            }
+            Switch::Live(Some(commands)) => {
+                if self.live.is_some() {
+                    return Vec::new();
+                }
+                self.live = Some(commands.clone());
+                if self.off {
+                    return Vec::new();
+                }
+                let mut steps = Vec::new();
+                if self.parked.is_none() {
+                    steps.push(Step::Clear { park: true });
+                }
+                if !commands.is_empty() {
+                    steps.push(Step::Send(commands));
+                }
+                steps
+            }
+            Switch::Live(None) => {
+                let Some(commands) = self.live.take() else { return Vec::new() };
+                if self.off {
+                    return Vec::new();
+                }
+                let mut live_pages = Vec::new();
+                follow_pages(&mut live_pages, &commands);
+                let mut back = Vec::new();
+                if !live_pages.is_empty() {
+                    back.push(format!("OUT {}", live_pages.join(",")));
+                }
+                let pages: Vec<String> = self.parked.take().unwrap_or_default().into_iter().filter(|p| !live_pages.contains(p)).collect();
+                if !pages.is_empty() {
+                    back.push(format!("TAKE {}", pages.join(",")));
+                }
+                if back.is_empty() { Vec::new() } else { vec![Step::Send(back)] }
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -443,14 +541,20 @@ impl ChannelEvents {
             .spawn(move || {
                 // Pages taken out for the break, owned by the sender as in the Node.js queue.
                 let mut cleared: Option<Vec<String>> = None;
-                // While VizRS Live keeps the graphics off: the pages to take back in.
-                let mut parked: Option<Vec<String>> = None;
+                // While VizRS Live keeps the graphics off or a live takes the channel over.
+                let mut hold = Hold::default();
                 for batch in batches {
                     match batch.switch {
-                        Some(true) => switch_out(&sender_config, &mut parked),
-                        Some(false) => switch_in(&sender_config, &mut parked),
-                        None if parked.is_some() => park(parked.as_mut().unwrap(), &mut cleared, &batch),
-                        None => send_clip(&sender_config, &mut cleared, batch),
+                        Some(switch) => {
+                            let what = if matches!(switch, Switch::Live(_)) { "live takeover" } else { "graphics off" };
+                            for step in hold.plan(switch) {
+                                run_step(&sender_config, &mut hold.parked, step, what);
+                            }
+                        }
+                        None => match hold.parked.as_mut() {
+                            Some(parked) => park(parked, &mut cleared, &batch),
+                            None => send_clip(&sender_config, &mut cleared, batch),
+                        },
                     }
                     mirror_break(&mirror, cleared.as_ref(), time::now_ms() as u64);
                 }
@@ -458,7 +562,7 @@ impl ChannelEvents {
             .expect("vizrs sender thread");
         // Graphics off already (kept from before a restart): nothing goes on air until they come back.
         if GRAPHICS_OFF.load(Ordering::Relaxed) {
-            let _ = queue.send(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(true) });
+            let _ = queue.send(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(Switch::Graphics(true)) });
         }
         let rules = RwLock::new(Arc::new(ClipRules::of(&config, ads, shows)));
         let events = Arc::new(ChannelEvents {
@@ -507,6 +611,40 @@ impl ChannelEvents {
 
     fn enqueue(&self, batch: Batch) {
         let _ = self.sender().send(batch);
+    }
+
+    /// A live takeover of the channel began (`true`: the overlay put the studio on
+    /// air) or ended: the schedule's graphics are held meanwhile and the channel's
+    /// `on_live` (a LIVE logo) goes on air instead; after it, the schedule's pages of now.
+    pub fn live_takeover(&self, on: bool) {
+        let switch = if on {
+            let on_live = self.rules().on_live.clone();
+            let commands = render_commands(&on_live, &ClipContext::default());
+            crate::info!(
+                "channel {}: live takeover: schedule graphics held{}",
+                self.channel,
+                if commands.is_empty() { String::new() } else { format!(", live graphics: {}", commands.join(" | ")) }
+            );
+            crate::asrun::log(
+                &self.config.etv_config,
+                &self.channel,
+                &crate::asrun::Entry::of(crate::asrun::LIVE_GRAPHICS_ON).detail(if commands.is_empty() {
+                    "grafika ramówki wstrzymana".to_owned()
+                } else {
+                    format!("grafika ramówki wstrzymana, grafika live: {}", commands.join(" | "))
+                }),
+            );
+            Switch::Live(Some(commands))
+        } else {
+            crate::info!("channel {}: live takeover over: schedule graphics back", self.channel);
+            crate::asrun::log(
+                &self.config.etv_config,
+                &self.channel,
+                &crate::asrun::Entry::of(crate::asrun::LIVE_GRAPHICS_OFF).detail("grafika ramówki wraca"),
+            );
+            Switch::Live(None)
+        };
+        self.enqueue(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(switch) });
     }
 
     /// A script session of the channel starts; call `ended` when it is over.
@@ -743,6 +881,8 @@ impl ChannelEvents {
 /// The graphics rules of a channel in force.
 struct ClipRules {
     on_clip: String,
+    /// The channel's graphics of a live takeover (`channels.N.on_live`).
+    on_live: String,
     on_ad: String,
     on_end: String,
     end_seconds: f64,
@@ -754,6 +894,7 @@ impl ClipRules {
     fn of(config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) -> ClipRules {
         ClipRules {
             on_clip: config.on_clip.clone(),
+            on_live: config.on_live.clone(),
             on_ad: config.on_ad.clone(),
             on_end: config.on_end.clone(),
             end_seconds: config.end_seconds,
@@ -796,7 +937,7 @@ pub fn graphics_switch(off: bool, animate: bool) {
         let channels: Vec<Arc<ChannelEvents>> =
             CHANNELS.lock().unwrap_or_else(|e| e.into_inner()).iter().filter_map(Weak::upgrade).collect();
         for events in channels {
-            events.enqueue(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(off) });
+            events.enqueue(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(Switch::Graphics(off)) });
         }
     }
     if !off {
@@ -812,39 +953,29 @@ pub fn graphics_switch(off: bool, animate: bool) {
     });
 }
 
-/// Graphics off: OUT for everything on the channel's antenna; its pages are kept for the TAKE back.
-fn switch_out(config: &Config, parked: &mut Option<Vec<String>>) {
-    if parked.is_some() {
-        return;
-    }
-    let pages = match send(&config.vizrs.address, &config.vizrs.token, &config.command_prefix, &[], true) {
+/// One step of a switch: OUT for everything on the channel's antenna (its
+/// pages kept for the TAKE back when `park`), or commands (live graphics, the TAKE back).
+fn run_step(config: &Config, parked: &mut Option<Vec<String>>, step: Step, what: &str) {
+    let park = step == Step::Clear { park: true };
+    let (commands, clear) = match step {
+        Step::Clear { .. } => (Vec::new(), true),
+        Step::Send(commands) => (commands, false),
+    };
+    match send(&config.vizrs.address, &config.vizrs.token, &config.command_prefix, &commands, clear) {
         Ok(sent) => {
             for (command, reply) in &sent.replies {
-                crate::info!("VizRS {command} (graphics off): {reply}");
+                crate::info!("VizRS {command} ({what}): {reply}");
             }
-            sent.cleared_pages
+            if park {
+                *parked = Some(sent.cleared_pages);
+            }
         }
         Err(error) => {
-            crate::error!("VizRS (graphics off): {error}");
-            Vec::new()
-        }
-    };
-    *parked = Some(pages);
-}
-
-/// Graphics back: one TAKE of the pages that are to be on air now (IN animations).
-fn switch_in(config: &Config, parked: &mut Option<Vec<String>>) {
-    let Some(pages) = parked.take() else { return };
-    if pages.is_empty() {
-        return;
-    }
-    match send(&config.vizrs.address, &config.vizrs.token, &config.command_prefix, &[format!("TAKE {}", pages.join(","))], false) {
-        Ok(sent) => {
-            for (command, reply) in &sent.replies {
-                crate::info!("VizRS {command} (graphics back): {reply}");
+            crate::error!("VizRS ({what}): {error}");
+            if park {
+                *parked = Some(Vec::new());
             }
         }
-        Err(error) => crate::error!("VizRS (graphics back): {error}"),
     }
 }
 
@@ -966,16 +1097,71 @@ mod tests {
         });
         let mut config = Config::default();
         config.vizrs.address = address.clone();
-        let mut parked = None;
-        switch_out(&config, &mut parked);
-        assert_eq!(parked.as_deref(), Some(&["1001".to_string(), "7".to_string()][..]));
+        let mut hold = Hold::default();
+        let steps = hold.plan(Switch::Graphics(true));
+        assert_eq!(steps, [Step::Clear { park: true }]);
+        for step in steps {
+            run_step(&config, &mut hold.parked, step, "graphics off");
+        }
+        assert_eq!(hold.parked.as_deref(), Some(&["1001".to_string(), "7".to_string()][..]));
         assert_eq!(server.join().unwrap(), ["STATE", "OUT main,bug"]);
         let (address, server) = fake(|line| if line == "END" { None } else { Some("OK {}".into()) });
         config.vizrs.address = address;
-        switch_in(&config, &mut parked);
-        assert!(parked.is_none());
+        for step in hold.plan(Switch::Graphics(false)) {
+            run_step(&config, &mut hold.parked, step, "graphics off");
+        }
+        assert!(hold.parked.is_none());
         assert_eq!(server.join().unwrap(), ["TAKE 1001,7"]);
     }
+
+    #[test]
+    fn live_takeover_holds_the_schedule_and_shows_its_own_graphics() {
+        let logo = || Switch::Live(Some(vec!["TAKE 7510".to_string()]));
+        let send = |c: &[&str]| Step::Send(c.iter().map(|s| s.to_string()).collect());
+        // Live on: the schedule out (kept), the logo in; the schedule meanwhile only followed.
+        let mut hold = Hold::default();
+        assert_eq!(hold.plan(logo()), [Step::Clear { park: true }, send(&["TAKE 7510"])]);
+        hold.parked = Some(vec!["1001".into()]);
+        assert!(hold.plan(logo()).is_empty(), "a takeover already on");
+        follow_pages(hold.parked.as_mut().unwrap(), &["TAKE 2001".into(), "OUT 1001".into()]);
+        // Live off: the logo out, the schedule's pages of now back.
+        assert_eq!(hold.plan(Switch::Live(None)), [send(&["OUT 7510", "TAKE 2001"])]);
+        assert!(hold.parked.is_none() && hold.live.is_none());
+        assert!(hold.plan(Switch::Live(None)).is_empty());
+
+        // No on_live: the schedule is held all the same, nothing comes instead.
+        let mut hold = Hold::default();
+        assert_eq!(hold.plan(Switch::Live(Some(Vec::new()))), [Step::Clear { park: true }]);
+        hold.parked = Some(Vec::new());
+        assert!(hold.plan(Switch::Live(None)).is_empty());
+        assert!(hold.parked.is_none());
+    }
+
+    #[test]
+    fn graphics_off_and_live_takeover_together() {
+        let logo = || Switch::Live(Some(vec!["TAKE 7510".to_string()]));
+        let send = |c: &[&str]| Step::Send(c.iter().map(|s| s.to_string()).collect());
+        // ZDEJMIJ during a live takes the logo out too; PRZYWRÓĆ brings the logo, not the schedule.
+        let mut hold = Hold::default();
+        hold.plan(logo());
+        hold.parked = Some(vec!["1001".into()]);
+        assert_eq!(hold.plan(Switch::Graphics(true)), [Step::Clear { park: false }]);
+        assert_eq!(hold.plan(Switch::Graphics(false)), [send(&["TAKE 7510"])]);
+        // The live ends while all graphics are off: nothing goes on air until they come back.
+        hold.plan(Switch::Graphics(true));
+        assert!(hold.plan(Switch::Live(None)).is_empty());
+        assert_eq!(hold.plan(Switch::Graphics(false)), [send(&["TAKE 1001"])]);
+        assert!(hold.parked.is_none());
+
+        // A live that starts while all graphics are off: its logo comes with them.
+        let mut hold = Hold::default();
+        hold.plan(Switch::Graphics(true));
+        hold.parked = Some(vec!["1001".into()]);
+        assert!(hold.plan(logo()).is_empty());
+        assert_eq!(hold.plan(Switch::Graphics(false)), [send(&["TAKE 7510"])]);
+        assert_eq!(hold.plan(Switch::Live(None)), [send(&["OUT 7510", "TAKE 1001"])]);
+    }
+
     use std::net::TcpListener;
 
     use super::*;

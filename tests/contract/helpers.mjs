@@ -2,6 +2,7 @@
 // ScriptElement.PrepareFromPacket (one frame per call) and the yuva420p frame
 // layout. Independent of src/, so the black-box tests run against any build.
 
+import net from "node:net";
 import { deflateSync } from "node:zlib";
 
 const MAGIC = 0x47565445;
@@ -121,4 +122,35 @@ export function readFrames(stream, width, height) {
   }
 
   return frames;
+}
+
+/** VizRS stand-in on TCP: `OK {layers}` to STATE, `OK {}` to the rest; `received` = the lines. */
+export async function fakeVizrs(layers = []) {
+  const received = [];
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let index;
+      while ((index = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        received.push(line);
+        socket.write(line.endsWith("STATE") ? `OK ${JSON.stringify({ layers })}\n` : "OK {}\n");
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    received,
+    address: `127.0.0.1:${server.address().port}`,
+    close: () => {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
 }

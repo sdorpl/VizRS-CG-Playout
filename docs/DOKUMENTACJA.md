@@ -1155,6 +1155,56 @@ przykładowy klucz `change-me`), najlepiej tylko dla zaufanych adresów.
 `GET /ingest` i `/ingest/state` nie wymagają tokenu, jak reszta API sidecara
 (`/ffmpeg/frames`): portu 7700 nie wystawiaj publicznie.
 
+#### Grafika podczas przejęcia (`on_live`)
+
+Gdy live ingest przejmuje kanał (nakładka `vizrs-ffmpeg` z `VIZRS_FFMPEG_INGEST`,
+[src/takeover.rs](../src/takeover.rs)), ErsatzTV w tle nadal przetwarza kolejne
+kawałki harmonogramu i wywołuje `POST /etv`. Aby grafika ramówki (`on_clip`,
+`on_end`, `on_ad`, reguły `shows` i zaplanowane czasy stron) nie trafiała na sygnał
+ze studia, sidecar wstrzymuje komendy ramówki na czas przejęcia i opcjonalnie
+wprowadza dedykowaną grafikę kanału zdefiniowaną w polu `on_live`
+(np. `"on_live": "TAKE 7510"` – logo kanału z dopiskiem „NA ŻYWO”).
+
+- **Definicja**: `on_live` występuje **wyłącznie per kanał** w obiekcie
+  `channels.<N>.on_live` (w `config.json` oraz w `graphics.json` przez
+  `PUT /api/live/graphics`). Nie ma globalnego `on_live`. Składnia komend jest
+  taka sama jak w `on_clip` (wiersze, `#` jako komentarz), natomiast symbole
+  ramówki `{…}` są puste, ponieważ przejęcie nie ma pozycji harmonogramu.
+- **Kiedy zachodzi przejęcie**: kanał ma sygnał live (dostępny, niewstrzymany
+  przez `hold`/ZDEJMIJ), a nakładka czyta go w przebiegu live
+  (`GET /ingest?channel=N&take=…`), bądź taki przebieg zakończył się nie dawniej
+  niż 15 s temu (`TAKEOVER_GRACE` – przerwa między kolejnymi kawałkami
+  ErsatzTV). Sidecar monitoruje ten stan co 250 ms (wątek `takeovers`). Bez
+  nakładki z `VIZRS_FFMPEG_INGEST` przejęcie nie występuje, więc grafika nie ulega
+  zmianie. **Audycje LIVE z ramówki** (sloty `live_shows`, Remote Stream
+  `/ingest?slot=1`) **nie są przejęciem** – tam grafiką sterują standardowe reguły
+  (np. `shows` dopasowane do tytułu audycji).
+- **Początek przejęcia**: sidecar wykonuje `STATE` → `OUT` wszystkich warstw
+  kanału w VizRS (zapamiętując aktywne strony), a następnie wysyła komendy
+  `on_live` danego kanału (np. `TAKE 7510`). Bez zdefiniowanego `on_live` grafika
+  ramówki i tak jest wstrzymywana na czas przejęcia (antena zostaje czysta, nic nie
+  wchodzi w jej miejsce).
+- **W trakcie przejęcia**: komendy ramówki (start pozycji, `on_end`, reklamy, czasy
+  wejścia i wyjścia stron) nie trafiają do VizRS – sidecar śledzi w pamięci,
+  które strony ramówki byłyby aktualnie na antenie. Ręczne komendy
+  TAKE / CONTINUE / OUT z VizRS Live (`/api/live/channels/<n>/take…`) działają
+  normalnie także w trakcie przejęcia.
+- **Koniec przejęcia** (odłączenie nadawcy, cisza powyżej `ingest_idle_seconds`
+  lub ZDEJMIJ studia): sidecar zdejmuje strony z `on_live` (`OUT`), po czym
+  wysyła jedno `TAKE` dla stron ramówki, które w tym momencie powinny być na
+  antenie według śledzonych komend ramówki.
+- **ZDEJMIJ / PRZYWRÓĆ GRAFIKĘ**: `POST /api/live/graphics/off` w trakcie
+  przejęcia zdejmuje również grafikę live (`on_live`). Przywrócenie grafiki
+  w trakcie trwania przejęcia przywraca grafikę live, a nie ramówkę. Jeżeli
+  przejęcie zakończy się przy zdjętej grafice, po jej przywróceniu powraca
+  aktualna ramówka.
+- **Strefy grafiki (`area: auto`)**: gdy kanał ma sygnał live, strony z `on_live`
+  są uwzględniane w strefach przebiegu nakładki (logo live nie zostanie ucięte).
+- **Logi sidecara**: zdarzenia odnotowywane są wpisami `channel N: live takeover:
+  schedule graphics held, live graphics: TAKE 7510`, `channel N: live takeover
+  over: schedule graphics back`, a odpowiedzi VizRS na komendy przejęcia mają
+  dopisek `(live takeover)`.
+
 ### Audycje na żywo w ramówce (`live_shows`)
 
 Studio może mieć w ramówce ErsatzTV własne pozycje: audycja na żywo ma tytuł
@@ -1248,7 +1298,8 @@ być publiczny – tylko sieć wewnętrzna z VizRS Live.
 **Kanały.** `/api/live/state` daje każdy kanał (kanały ErsatzTV, kanały
 z sygnałem i z audycjami): sygnał (kodek, dźwięk, czas trwania), `on_air`
 (sygnał, nie wstrzymany, a kanał przyjmuje studio teraz: „poza audycjami”
-albo trwa audycja LIVE), `hold`, `anytime`, bieżącą i najbliższą audycję LIVE
+albo trwa audycja LIVE), `takeover` (bool: czy kanał jest w tej chwili przejęty
+przez live ingest), `hold`, `anytime`, bieżącą i najbliższą audycję LIVE
 z EPG, `inputs` (niżej), ramówkę po kanałach i zdarzenia.
 
 - **hold** (ZDEJMIJ w VizRS Live) wstrzymuje studio na kanale:
@@ -1265,7 +1316,7 @@ z EPG, `inputs` (niżej), ramówkę po kanałach i zdarzenia.
 listę `features` – VizRS Live pokazuje tylko to, co sidecar zgłosi, więc
 starsza wersja sidecara nie psuje nowszego panelu (brak pola = brak elementu
 w UI). Dziś: `layers` (warstwy na antenie), `take` (ręczne TAKE / CONTINUE /
-OUT), `asrun` (dziennik emisji), `encoder` (koder nakładki: presety x264/NVENC/QSV, profil H.264, opcje x264, klatki B, `/api/live/encoder`), `thumbs` (miniatury stron VizRS, `/api/live/thumbs/<numer>.png`) i `webhook` – ten ostatni tylko, gdy ustawiony
+OUT), `asrun` (dziennik emisji), `encoder` (koder nakładki: presety x264/NVENC/QSV, profil H.264, opcje x264, klatki B, `/api/live/encoder`), `thumbs` (miniatury stron VizRS, `/api/live/thumbs/<numer>.png`), `on_live` (grafika podczas przejęcia kanału przez live ingest) i `webhook` – ten ostatni tylko, gdy ustawiony
 jest `alert_webhook`. Kontrakt uzgodniony z VizRS Live (jego DOKUMENTACJA §3,
 punkty K12–K17 planu PLAN-mcr).
 
@@ -1297,7 +1348,9 @@ i `item_end` (pozycja kanału weszła na antenę i zeszła – z danych szablonu
 ErsatzTV), `take`, `continue`, `out` (ręczne komendy), `hold` i `release`
 (ZDEJMIJ / WPUŚĆ studia), `live_on` i `live_off` (nadawca połączony,
 sygnał zakończony), `graphics_off` i `graphics_on` (cała grafika zdjęta
-i przywrócona). Bez `etv_config` nie ma gdzie pisać i dziennika nie ma
+i przywrócona), `live_graphics_on` i `live_graphics_off` (grafika ramówki
+wstrzymana na czas przejęcia przez live ingest / przywrócona; nie są
+alarmami, webhook ich nie dostaje). Bez `etv_config` nie ma gdzie pisać i dziennika nie ma
 (`store: false`), ale alarmy niżej i tak wychodzą.
 
 **Logi emisji (`logs`).** `GET /api/live/logs?source=<cg|ingest|takeover>&channel=<n>&day=<RRRR-MM-DD>`
@@ -1522,6 +1575,9 @@ zostaje z ustawień głównych:
 
 ```json
 "channels": {
+  "1": {
+    "on_live": "TAKE 7510"
+  },
   "2": {
     "on_clip": "TAKE 4001 headline={title}",
     "on_ad": "",
@@ -1542,6 +1598,10 @@ zostaje z ustawień głównych:
   elementy (§3). Numer zajęty przez inny kanał dostaje plik `page-<ID>-ch<N>.yml`.
 - `shows` podane w kanale zastępuje całą główną listę `shows` dla tego kanału;
   bez niego obowiązuje lista główna. `ad_match` poza `shows` jest wspólne.
+- `on_live` (opcjonalne, np. `"on_live": "TAKE 7510"`) – komendy grafiki wysyłane
+  w chwili przejęcia kanału przez live ingest (§1, [Grafika podczas przejęcia (`on_live`)](#grafika-podczas-przejęcia-on_live)).
+  Pole występuje **wyłącznie per kanał** (nie ma globalnego `on_live`); w trakcie
+  przejęcia grafika ramówki zostaje wstrzymana.
 
 ### Elementy graficzne per audycja (`shows`)
 
@@ -2229,7 +2289,9 @@ Opcje `etv_config`, `etv_url`, `client_source`, `client_dir`, `sync_seconds`
 `VIZRS_SYNC_SECONDS`): synchronizacja z ErsatzTV (§4).
 
 Obiekt `channels` (opcjonalny, env `VIZRS_CHANNELS` z tym samym JSON-em; błędny
-JSON w env trafia do logu i jest pomijany) daje kanałowi własny VizRS (§3).
+JSON w env trafia do logu i jest pomijany) daje kanałowi własny VizRS, własne reguły
+grafiki oraz pole `on_live` (komendy grafiki na czas przejęcia kanału przez live
+ingest, §1, §3; `on_live` występuje wyłącznie w obiekcie kanału, bez osobnej zmiennej środowiskowej).
 
 Tablica `shows` (opcjonalna) pozwala nadpisać `on_clip`, `on_ad`, `ad_match`,
 `on_end` i `end_seconds` dla wybranych audycji (§3, Elementy graficzne per audycja).

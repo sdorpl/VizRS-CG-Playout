@@ -2,7 +2,8 @@
 // hand-made MPEG-TS, and the whole path with a real ffmpeg (VIZRS_TEST_FFMPEG
 // or ffmpeg on PATH; skipped without one): an RTMP publisher on the listener
 // (`vizrs-ffmpeg vizrs-ingest`) takes a piece over that the overlay plays to
-// HLS with the graphics of the sidecar, and the piece goes on after it.
+// HLS with the graphics of the sidecar, and the piece goes on after it; meanwhile
+// the schedule's graphics are held and the channel's `on_live` is on air.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -15,6 +16,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { fakeVizrs } from "./helpers.mjs";
 import { CLIENT, startSidecar } from "./sidecar.mjs";
 
 const WRAPPER = process.env.VIZRS_FFMPEG_BIN || fileURLToPath(new URL("../../target/release/vizrs-ffmpeg", import.meta.url));
@@ -178,7 +180,7 @@ function pixel(file, x, y) {
   return [...raw.subarray(0, 3)];
 }
 
-test("live takes a piece over: RTMP listener, overlay with graphics, the piece goes on after it", { skip: !FFMPEG && "no ffmpeg" }, async (t) => {
+test("live takes a piece over: RTMP listener, overlay with graphics, live graphics instead of the schedule's, the piece goes on after it", { skip: !FFMPEG && "no ffmpeg" }, async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "vizrs-ingest-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const media = path.join(dir, "news.mp4");
@@ -191,9 +193,14 @@ test("live takes a piece over: RTMP listener, overlay with graphics, the piece g
 
   // The sidecar lists the listeners for the listener service (GET /ingest/listeners): the same VIZRS_INGEST.
   const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  const vizrs = await fakeVizrs([{ layer: "main", page: { number: 4001 } }]);
+  t.after(vizrs.close);
   const cg = await sidecar(
     t,
-    { ingest_token: TOKEN, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1 },
+    {
+      ingest_token: TOKEN, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1,
+      vizrs: { address: vizrs.address, token: "" }, panel_token: "panel-test", on_clip: "TAKE 4001", channels: { 1: { on_live: "TAKE 7510" } },
+    },
     { VIZRS_INGEST: `1=${rtmp}` },
   );
 
@@ -252,6 +259,18 @@ test("live takes a piece over: RTMP listener, overlay with graphics, the piece g
     await sleep(100);
   }
   assert.ok(seen, `the channel went live\n${Buffer.concat(listenerLog)}`);
+  // The overlay's live run reads the source: the schedule's graphics out (kept), the live logo in.
+  let logo = -1;
+  for (let i = 0; i < 80 && logo < 0; i++) {
+    logo = vizrs.received.indexOf("TAKE 7510");
+    await sleep(100);
+  }
+  assert.ok(logo > 0, `on_live on air during the takeover: ${JSON.stringify(vizrs.received)}\n${cg.logs()}`);
+  assert.deepEqual(vizrs.received.slice(logo - 2, logo), ["STATE", "OUT main"], "the schedule's graphics out first");
+  // VizRS Live sees the takeover on the channel.
+  const live = await (await fetch(`${cg.url}/api/live/state`, { headers: { "X-Panel-Token": "panel-test" } })).json();
+  assert.ok(live.features.includes("on_live"));
+  assert.equal(live.channels.find((c) => c.number === "1")?.takeover, true, JSON.stringify(live.channels));
 
   const code = await pieceExit;
   const log = Buffer.concat(pieceLog).toString();
@@ -282,6 +301,15 @@ test("live takes a piece over: RTMP listener, overlay with graphics, the piece g
   const last = grey.lastIndexOf(true);
   assert.ok(first > 0 && last < grey.length - 1, `live in the middle: ${JSON.stringify(colours)}\n${log}\n${Buffer.concat(listenerLog)}\n${playlist}\n${cg.logs()}`);
   assert.ok(grey.slice(first, last + 1).every(Boolean), "one live stretch");
+
+  // The studio gone: the logo out and the schedule's page back.
+  let back = false;
+  for (let i = 0; i < 100 && !back; i++) {
+    back = vizrs.received.slice(logo).join("|").includes("OUT 7510|TAKE 4001");
+    await sleep(100);
+  }
+  assert.ok(back, `the schedule's graphics back after the takeover: ${JSON.stringify(vizrs.received)}`);
+  assert.equal(vizrs.received.slice(logo + 1).filter((l) => l === "TAKE 4001").length, 1, "no schedule TAKE during the takeover");
 });
 
 /** Segments of a playlist: names, lengths and the colour at 10,10 of their first frame. */

@@ -72,6 +72,9 @@ pub struct ChannelOverride {
     pub on_end: Option<String>,
     pub end_seconds: Option<f64>,
     pub shows: Option<Vec<ShowOverride>>,
+    /// Graphics of a live takeover of this channel (e.g. `TAKE 7510`, a LIVE logo);
+    /// the schedule's graphics are held while the live is on (DOKUMENTACJA §1).
+    pub on_live: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -120,6 +123,9 @@ pub struct Config {
     /// The end `on_end` counts from: "programme" (the guide entry, over the
     /// parts of an item cut by breaks) or "item" (`MediaItem_Stop`).
     pub end_ref: String,
+    /// Commands of a live takeover of the channel (only per channel, `channels.N.on_live`;
+    /// set by `for_channel`): the schedule's graphics are held meanwhile.
+    pub on_live: String,
     /// How far the packet stream may run ahead of real time (ErsatzTV burst).
     pub lead_seconds: f64,
     /// Size Chromium renders /output at: "" = channel size, "720p", "1280x720".
@@ -198,6 +204,7 @@ impl Default for Config {
             in_seconds: 5.0,
             out_seconds: 5.0,
             on_end: String::new(),
+            on_live: String::new(),
             end_seconds: 60.0,
             end_out_seconds: 5.0,
             end_ref: "programme".into(),
@@ -313,6 +320,7 @@ fn channel_overrides(value: &Value) -> Result<Vec<ChannelOverride>, String> {
             on_end: field(item.get("on_end"), "on_end")?,
             end_seconds: item.get("end_seconds").map(|v| seconds(v, &format!("{prefix}.end_seconds"))).transpose()?,
             shows: item.get("shows").map(|v| show_overrides(v, &format!("{prefix}.shows"))).transpose()?,
+            on_live: field(item.get("on_live"), "on_live")?,
         });
     }
     Ok(channels)
@@ -650,6 +658,7 @@ impl Config {
                 (&own.on_clip, &mut config.on_clip),
                 (&own.on_ad, &mut config.on_ad),
                 (&own.on_end, &mut config.on_end),
+                (&own.on_live, &mut config.on_live),
             ];
             for (value, target) in fields {
                 if let Some(value) = value {

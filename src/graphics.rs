@@ -1,5 +1,6 @@
 // Graphics rules (on_clip, on_ad, ad_match, on_end, end_seconds, shows and
-// their per-channel overrides) that the live API reads and replaces:
+// their per-channel overrides, and on_live – only per channel) that the live API
+// reads and replaces:
 //
 //   GET /api/live/graphics   {"rules": {…}, "source": "config"|"file", "store": bool}
 //   PUT /api/live/graphics   {…} – the whole rules document, as in config.json
@@ -30,6 +31,8 @@ pub struct ChannelRules {
     pub on_end: Option<String>,
     pub end_seconds: Option<f64>,
     pub shows: Option<Vec<ShowOverride>>,
+    /// Graphics of a live takeover of the channel (a LIVE logo); held schedule meanwhile.
+    pub on_live: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -56,7 +59,14 @@ impl Rules {
             channels: config
                 .channels
                 .iter()
-                .filter(|c| c.on_clip.is_some() || c.on_ad.is_some() || c.on_end.is_some() || c.end_seconds.is_some() || c.shows.is_some())
+                .filter(|c| {
+                    c.on_clip.is_some()
+                        || c.on_ad.is_some()
+                        || c.on_end.is_some()
+                        || c.end_seconds.is_some()
+                        || c.shows.is_some()
+                        || c.on_live.is_some()
+                })
                 .map(|c| ChannelRules {
                     channel: c.channel.clone(),
                     on_clip: c.on_clip.clone(),
@@ -64,6 +74,7 @@ impl Rules {
                     on_end: c.on_end.clone(),
                     end_seconds: c.end_seconds,
                     shows: c.shows.clone(),
+                    on_live: c.on_live.clone(),
                 })
                 .collect(),
         }
@@ -83,6 +94,7 @@ impl Rules {
             own.on_end = None;
             own.end_seconds = None;
             own.shows = None;
+            own.on_live = None;
         }
         for rules in &self.channels {
             let own = match config.channels.iter().position(|c| c.channel == rules.channel) {
@@ -97,6 +109,7 @@ impl Rules {
             own.on_end.clone_from(&rules.on_end);
             own.end_seconds = rules.end_seconds;
             own.shows.clone_from(&rules.shows);
+            own.on_live.clone_from(&rules.on_live);
         }
     }
 
@@ -138,6 +151,7 @@ impl Rules {
                         on_end: field("on_end")?,
                         end_seconds: item.get("end_seconds").map(|v| config::seconds(v, &format!("{prefix}.end_seconds"))).transpose()?,
                         shows: item.get("shows").map(|v| config::show_overrides(v, &format!("{prefix}.shows"))).transpose()?,
+                        on_live: field("on_live")?,
                     });
                 }
             }
@@ -181,7 +195,7 @@ impl Rules {
             .iter()
             .map(|c| {
                 let mut members = Vec::new();
-                for (name, v) in [("on_clip", &c.on_clip), ("on_ad", &c.on_ad), ("on_end", &c.on_end)] {
+                for (name, v) in [("on_clip", &c.on_clip), ("on_ad", &c.on_ad), ("on_end", &c.on_end), ("on_live", &c.on_live)] {
                     if v.is_some() {
                         members.push((name.to_owned(), opt(v)));
                     }
@@ -315,7 +329,7 @@ mod tests {
         let doc = json::parse(
             r#"{"on_clip":"TAKE 4001 headline={title}","ad_match":{"path":"/reklamy/","title":""},"on_end":"TAKE 1405","end_seconds":30,
                "shows":[{"show_title":"^Wiad","on_clip":"TAKE 1001","end_seconds":10}],
-               "channels":{"2":{"on_clip":"TAKE 7","shows":[{"show_title":"x","on_end":""}]}}}"#,
+               "channels":{"2":{"on_clip":"TAKE 7","on_live":"TAKE 7510","shows":[{"show_title":"x","on_end":""}]}}}"#,
         )
         .unwrap();
         let rules = Rules::parse(&doc).unwrap();
@@ -332,6 +346,7 @@ mod tests {
         assert_eq!(config.end_seconds, 30.0);
         assert_eq!(config.for_channel("2").on_clip, "TAKE 7");
         assert_eq!(config.for_channel("2").shows[0].on_end.as_deref(), Some(""));
+        assert_eq!((config.for_channel("2").on_live.as_str(), config.for_channel("1").on_live.as_str()), ("TAKE 7510", ""));
         let three = config.for_channel("3");
         assert_eq!((three.vizrs.address.as_str(), three.on_ad.as_str()), ("v3:6100", ""));
         assert_eq!(Rules::of(&config), rules);

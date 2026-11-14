@@ -509,6 +509,45 @@ pub struct Ingest {
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
     control: Mutex<HashMap<String, ChannelControl>>,
     events: Mutex<VecDeque<Event>>,
+    /// The overlay's live runs (`take=`) of each channel: how many read now, when the last ended.
+    takes: Arc<Mutex<HashMap<String, Takes>>>,
+}
+
+/// Live runs of the overlay reading a channel: the channel is taken over.
+#[derive(Clone, Copy, Debug)]
+struct Takes {
+    reading: usize,
+    last: Instant,
+}
+
+/// The overlay starts a live run per ErsatzTV piece: between two runs of one
+/// takeover the channel stays taken over this long (its graphics stay held).
+pub const TAKEOVER_GRACE: Duration = Duration::from_secs(15);
+
+/// A live run reading: counted in `Ingest::takes` until it ends.
+struct TakeReader {
+    takes: Arc<Mutex<HashMap<String, Takes>>>,
+    channel: String,
+}
+
+impl TakeReader {
+    fn new(takes: &Arc<Mutex<HashMap<String, Takes>>>, channel: &str) -> TakeReader {
+        let mut all = takes.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = all.entry(channel.to_owned()).or_insert(Takes { reading: 0, last: Instant::now() });
+        entry.reading += 1;
+        entry.last = Instant::now();
+        TakeReader { takes: Arc::clone(takes), channel: channel.to_owned() }
+    }
+}
+
+impl Drop for TakeReader {
+    fn drop(&mut self) {
+        let mut all = self.takes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = all.get_mut(&self.channel) {
+            entry.reading = entry.reading.saturating_sub(1);
+            entry.last = Instant::now();
+        }
+    }
 }
 
 impl Ingest {
@@ -526,6 +565,7 @@ impl Ingest {
             feeds: Mutex::new(HashMap::new()),
             control: Mutex::new(HashMap::new()),
             events: Mutex::new(VecDeque::new()),
+            takes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -617,6 +657,21 @@ impl Ingest {
     /// The channel's source is live and not held: the studio is on the channel.
     pub fn is_live(&self, channel: &str) -> bool {
         self.feed(channel).is_some_and(|feed| feed.is_live()) && !self.control(channel).hold
+    }
+
+    /// Channels the overlay has taken over now: live and not held, with a live
+    /// run reading it or one that ended within `grace` (the next piece's run comes).
+    /// The rest of the channels a live run ever read, as not taken over.
+    pub fn takeovers(&self, grace: Duration) -> Vec<(String, bool)> {
+        let takes: Vec<(String, Takes)> =
+            self.takes.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(c, t)| (c.clone(), *t)).collect();
+        takes
+            .into_iter()
+            .map(|(channel, t)| {
+                let on = self.is_live(&channel) && (t.reading > 0 || t.last.elapsed() < grace);
+                (channel, on)
+            })
+            .collect()
     }
 
     /// `/health`: the channels with a source.
@@ -756,6 +811,8 @@ impl Ingest {
         stream.write_all(head.as_bytes())?;
         // A live run of the overlay (`take`) goes on from where the one before stopped.
         let take = request.param("take").and_then(|t| t.parse::<f64>().ok()).filter(|t| t.is_finite() && *t > 0.0);
+        // Counted while it reads: the channel is taken over (its graphics, src/server.rs).
+        let _reader = take.map(|_| TakeReader::new(&self.takes, channel));
         let mut from = match take {
             Some(take) => {
                 let (from, behind, dropped) = feed.follow(take);

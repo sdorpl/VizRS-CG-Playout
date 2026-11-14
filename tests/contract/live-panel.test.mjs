@@ -7,11 +7,11 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { fakeVizrs } from "./helpers.mjs";
 import { startSidecar } from "./sidecar.mjs";
 
 const TOKEN = "panel-test";
@@ -288,43 +288,13 @@ test("the panel tells publishers where to send: RTMP server and key, SRT address
 // K12–K17 of VizRS Live's PLAN-mcr: the layers on air, TAKE / CONTINUE / OUT by
 // hand, the as-run log and the alarm webhook. `features` of the state says which
 // of them this build has, so an older sidecar never breaks a newer panel.
-async function fakeVizrs(layers = []) {
-  const received = [];
-  const sockets = new Set();
-  const server = net.createServer((socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-    socket.setEncoding("utf8");
-    let buffer = "";
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      let index;
-      while ((index = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
-        received.push(line);
-        socket.write(line.endsWith("STATE") ? `OK ${JSON.stringify({ layers })}\n` : "OK {}\n");
-      }
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return {
-    received,
-    address: `127.0.0.1:${server.address().port}`,
-    close: () => {
-      for (const socket of sockets) socket.destroy();
-      server.close();
-    },
-  };
-}
-
 test("the state carries the layers on air and what this build can do", async (t) => {
   const vizrs = await fakeVizrs([{ layer: "main", page: { number: 101, name: "belka" } }, { layer: "bug", page: "4001" }]);
   t.after(vizrs.close);
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -423,7 +393,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

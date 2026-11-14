@@ -78,6 +78,9 @@ pub const LIVE_ON: &str = "live_on";
 pub const LIVE_OFF: &str = "live_off";
 pub const GRAPHICS_OFF: &str = "graphics_off";
 pub const GRAPHICS_ON: &str = "graphics_on";
+/// A live takeover holds the schedule's graphics (and puts `on_live` on air) · gives them back.
+pub const LIVE_GRAPHICS_ON: &str = "live_graphics_on";
+pub const LIVE_GRAPHICS_OFF: &str = "live_graphics_off";
 
 /// One line of the log; empty fields are left out.
 #[derive(Clone, Debug, Default, PartialEq)]
