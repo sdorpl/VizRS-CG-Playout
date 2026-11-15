@@ -12,6 +12,7 @@
     <AssemblyName>VizRS.Bridge</AssemblyName>
     <RootNamespace>VizRS.Bridge</RootNamespace>
     <Version>26.11.10</Version>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <LegacyDir Condition="'$(LegacyDir)' == ''">../legacy-lib</LegacyDir>

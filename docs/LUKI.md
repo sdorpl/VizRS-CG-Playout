@@ -11,7 +11,6 @@ Ograniczenia samego legacy, których panel nie obejdzie bez zmiany legacy (np. j
 | 1 | Brak TLS w panelu i w proxy dla widzów | zamierzone (serwer bez zależności); LAN/VPN albo zewnętrzne proxy TLS – RUNBOOK; ciasteczko dostaje `Secure` przy `X-Forwarded-Proto: https` (DOKUMENTACJA §9) |
 | 3 | Sloty na żywo nie sprawdzone z prawdziwym sygnałem (OBS → CG Playout), Plex nie sprawdzony z prawdziwym kontem | e2e na atrapach; `tests/real.sh` sprawdził Jellyfin, Emby i reguły grafiki na prawdziwym CG (DOKUMENTACJA §7); krok ręczny przed wdrożeniem – STATUS; PLAN-mcr Q1 (ręcznie) |
 | 5 | Panel nie bierze blokady biblioteki legacy (`IEntityLocker`, poza MediatR) | drugie zlecenie synchronizacji tej samej biblioteki trafia do kolejki (DOKUMENTACJA §4, R8) |
-| 22 | Na antenie bez warstw grafiki VizRS (pigułki „W10 belka 101” z makiety) | panel gotowy (K12, 2026-11-09) – pokaże warstwy, gdy CG Playout wystawi `layers` i `features` w `/api/live/state` (kontrakt DOKUMENTACJA §3); krok ręczny w CG Playout |
 
 ## G2 – wierność wobec web GUI legacy
 

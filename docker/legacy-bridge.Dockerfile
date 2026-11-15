@@ -16,6 +16,12 @@ COPY bridge/VizRS.Bridge.csproj bridge/Bridge.cs /src/
 RUN dotnet build /src/VizRS.Bridge.csproj -c Release -o /out -p:LegacyDir=/legacy-lib --nologo -v q
 
 FROM ${LEGACY_IMAGE}
+# Zmieniona dystrybucja ErsatzTV legacy (licencja zlib: zmiana wyraźnie oznaczona): oficjalny obraz bez zmian
+# + VizRS.Bridge.dll i commands.txt w /vizrs-bridge (MIT). ErsatzTV i ffmpeg w obrazie – THIRD-PARTY.md.
+LABEL org.opencontainers.image.title="vizrs-live-legacy" \
+      org.opencontainers.image.description="Oficjalny obraz ErsatzTV legacy (zlib; https://github.com/ErsatzTV/legacy) bez zmian + VizRS Bridge (MIT) w /vizrs-bridge. Zawiera ffmpeg z obrazu ErsatzTV (GPL/LGPL; źródła: https://ffmpeg.org). Powered by ErsatzTV." \
+      org.opencontainers.image.licenses="MIT AND Zlib" \
+      org.opencontainers.image.source="https://github.com/sdorpl/VizRS-Live-Playout"
 COPY --from=build /out/VizRS.Bridge.dll /vizrs-bridge/VizRS.Bridge.dll
 COPY bridge/commands.txt /vizrs-bridge/commands.txt
 # DOTNET_gcServer=0: workstation GC – ok. połowa RAM legacy (DOKUMENTACJA §7). Bez limitu sterty

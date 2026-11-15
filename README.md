@@ -2,7 +2,7 @@
 
 Część rodziny **VizRS**. Polski panel do prowadzenia kanałów telewizyjnych **ErsatzTV**: kanały, ramówka, playouty, EPG, diagnostyka – bez używania web GUI ErsatzTV legacy. Logika (baza, skaner, planowanie, nadawanie przez ErsatzTV Next) zostaje w legacy; VizRS Live ją pokazuje i nią steruje.
 
-> **Stan: 1.2.3** (najnowsze ErsatzTV legacy, sprawdzone z v26.12.0; operator: [docs/INSTRUKCJA.md](docs/INSTRUKCJA.md), administrator: [docs/RUNBOOK.md](docs/RUNBOOK.md)). Działa end-to-end: pełna edycja kanałów, harmonogramów (ramówka klasyczna z pozycjami), playoutów (wszystkie rodzaje, harmonogramy zastępcze, kalendarz tygodnia playoutu blokowego), bloków i szablonów dnia, deco i szablonów deco, bibliotek i mediów (przeglądarka, kosz), kolekcji (zwykłe, inteligentne, wielo-, powtórki), playlist z podglądem, profili kodowania, znaków wodnych, wypełniaczy i logo kanału, ustawień legacy; logi, konserwacja, test odtwarzania i podgląd strumienia kanału, podgląd ramówki i EPG, diagnostyka, konsola komend. Grafika VizRS i sloty na żywo (przez VizRS CG Playout); web GUI legacy zamknięte za proxy (R10, sprawdzone też z legacy v26.12.0); stan prac: [docs/STATUS.md](docs/STATUS.md). Plan: [PLAN-vizrs-live.md](../VizRS%20CG%20System/docs/plany/PLAN-vizrs-live.md) w VizRS CG System.
+> **Stan: 26.11.10** (najnowsze ErsatzTV legacy, sprawdzone z v26.12.0; operator: [docs/INSTRUKCJA.md](docs/INSTRUKCJA.md), administrator: [docs/RUNBOOK.md](docs/RUNBOOK.md)). Działa end-to-end: pełna edycja kanałów, harmonogramów (ramówka klasyczna z pozycjami), playoutów (wszystkie rodzaje, harmonogramy zastępcze, kalendarz tygodnia playoutu blokowego), bloków i szablonów dnia, deco i szablonów deco, bibliotek i mediów (przeglądarka, kosz), kolekcji (zwykłe, inteligentne, wielo-, powtórki), playlist z podglądem, profili kodowania, znaków wodnych, wypełniaczy i logo kanału, ustawień legacy; logi, konserwacja, test odtwarzania i podgląd strumienia kanału, podgląd ramówki i EPG, diagnostyka, konsola komend. Grafika VizRS i sloty na żywo (przez VizRS CG Playout); web GUI legacy zamknięte za proxy (R10, sprawdzone też z legacy v26.12.0); stan prac: [docs/STATUS.md](docs/STATUS.md). Plan: [PLAN-vizrs-live.md](../VizRS%20CG%20System/docs/plany/PLAN-vizrs-live.md) w VizRS CG System. Plan: VizRS Live zostanie połączony z VizRS CG Playout w jeden produkt „VizRS CG Playout” ([sdorpl/VizRS](https://github.com/sdorpl/VizRS)).
 
 ## Pakiet VizRS
 
@@ -55,4 +55,5 @@ Programiści i agenci: [CLAUDE.md](CLAUDE.md) (zasady, struktura, testy, commity
 
 ## Licencja
 
-MIT. ErsatzTV legacy (zlib) i ErsatzTV Next (MIT) to osobne projekty; VizRS Live ich nie zmienia ani nie rozpowszechnia ich kodu – obraz `vizrs-live-legacy` dokłada tylko plik `VizRS.Bridge.dll` do oficjalnego obrazu.
+MIT – [LICENSE](LICENSE). Składniki zewnętrzne (fonty, biblioteki, obrazy): [THIRD-PARTY.md](THIRD-PARTY.md). Opis całego pakietu VizRS: [sdorpl/VizRS](https://github.com/sdorpl/VizRS).
+Współpracuje z [ErsatzTV](https://ersatztv.org) (legacy: Zlib, Next: MIT) bez zmian w jego kodzie – powered by ErsatzTV. Obraz `vizrs-live-legacy` dokłada tylko plik `VizRS.Bridge.dll` do oficjalnego obrazu.

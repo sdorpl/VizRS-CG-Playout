@@ -85,12 +85,12 @@ Przebieg łączy [LUKI.md](../LUKI.md) i punkty z §2–§3 w jedną kolejkę: n
 | K10 | Mozaika kanałów (multiview) w Na antenie (Vizrt J) | K9 | zrobione (2026-11-09) |
 | K11 | Import ramówki z pliku CSV/XML do playlisty legacy (Vizrt E) | – | zrobione (2026-11-09) |
 | Q1 | Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3, G1) | – | ręcznie (z użytkownikiem) |
-| K12 | Warstwy i strony VizRS na antenie w karcie kanału (LUKI #22, Vizrt D; CG) | – | panel gotowy (2026-11-09); czeka na CG Playout |
-| K13 | Ręczne TAKE / CONTINUE / OUT pojedynczej strony (Vizrt H; CG) | K12 | panel gotowy (2026-11-09); czeka na CG Playout |
-| K14 | Dziennik emisji (as-run) z eksportem CSV (Vizrt C; CG) | K12 | panel gotowy (2026-11-09); czeka na CG Playout |
+| K12 | Warstwy i strony VizRS na antenie w karcie kanału (LUKI #22, Vizrt D; CG) | – | zrobione (panel + CG Playout 26.11.x) |
+| K13 | Ręczne TAKE / CONTINUE / OUT pojedynczej strony (Vizrt H; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
+| K14 | Dziennik emisji (as-run) z eksportem CSV (Vizrt C; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
 | K15 | Zdarzenia wtórne przypięte do audycji/kolekcji, oś pozycji z grafiką (Vizrt A; CG) | K12 | kontrakt opisany (2026-11-09); czeka na CG Playout |
 | K16 | Ważność (od–do) i zatwierdzanie stron promo (Vizrt G; CG) | K15 | kontrakt opisany (2026-11-09); czeka na CG Playout |
-| K17 | Alarmy: banner, dźwięk, webhook (Vizrt I; webhook w CG) | K9, K14 | panel zrobiony (2026-11-09); webhook czeka na CG Playout |
+| K17 | Alarmy: banner, dźwięk, webhook (Vizrt I; webhook w CG) | K9, K14 | zrobione (panel + CG Playout 26.11.x) |
 | K18 | Podgląd kanału: HEVC w `mux.js`, dźwięk inny niż AAC – sprawdzić wykonalność (LUKI #21, G3) | – | zrobione (2026-11-09) |
 
 **Poza przebiegiem** (wiersze zostają w LUKI):

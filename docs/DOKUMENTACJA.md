@@ -10,11 +10,11 @@ Instrukcja operatora: [INSTRUKCJA.md](INSTRUKCJA.md). Wdrożenie, kopie, aktuali
 2. [Most (VizRS Bridge)](#2-most-vizrs-bridge) – wpięcie, API, konfiguracja
 3. [Panel (vizrs-live)](#3-panel-vizrs-live) – opcje, API panelu, UI
 4. [Ekrany](#4-ekrany) – tabela ekranów i komend, szczegóły i decyzje
-5. [Znane ograniczenia (legacy)](#5-znane-ograniczenia-legacy-v26116)
+5. [Znane ograniczenia (legacy)](#5-znane-ograniczenia-legacy-v26120)
 6. [Aktualizacja legacy](#6-aktualizacja-legacy)
 7. [Testy](#7-testy)
 8. [Zamknięcie web GUI legacy (R10)](#8-zamknięcie-web-gui-legacy-r10) – proxy, lista pokrycia
-9. [Wydanie 1.0 (R11)](#9-wydanie-10-r11) – obrazy, przegląd bezpieczeństwa
+9. [Wydania](#9-wydania) – obrazy, przegląd bezpieczeństwa
 
 ## 1. Składniki
 
@@ -279,7 +279,7 @@ Na białej liście są też komendy bez ekranu, używane przez `tests/stack.sh s
 
 **Profile, znaki wodne, wypełniacze – szczegóły (R5).** Profil: panel pokazuje pola silnika Next; pola tylko starego silnika legacy (wątki, tryb pasów, profil i preset H.264, B-klatki, wyświetlacz VAAPI, dodatkowe ramki QSV, normalizacja kolorów) zostają bez zmian – przy nowym profilu z `NewFFmpegProfile`. Informacja o sprzęcie to lista z `GetSupportedHardwareAccelerationKinds` (co zgłasza ffmpeg legacy); dokładniejszy stan wg Next (`GetNextProbe`, legacy ≥ 26.12.0) – podpowiedź K5 w tabeli §4. Akcelerację V4L2 panel pomija (legacy jej nie włącza). Znak wodny: obraz zapisany w legacy panel pokazuje przez `--stream-url` (`/artwork/watermarks/…`); bez tej opcji widać tylko świeżo wgrany plik. Makieta kadru jest przybliżona (rozmiar oryginalny liczony względem 1920 px). Usunięcie znaku: legacy odpina go od kanałów. Wypełniacz: jak w legacy – miejsca nie da się zmienić po założeniu, ogon i zapasowy nie mają trybu ani playlisty, playlista wymusza tryb „liczba”, wartości spoza trybu są wysyłane jako `null`. Wgrany, a niezapisany obraz zostaje w pamięci obrazów legacy; sprząta go „Usuń osierocone grafiki” (Diagnostyka → Konserwacja; `DeleteOrphanedArtwork` usuwa z katalogu pamięci obrazów pliki, do których nie odwołuje się żadna pozycja ani znak wodny).
 
-## 5. Znane ograniczenia (legacy v26.11.6)
+## 5. Znane ograniczenia (legacy v26.12.0)
 
 - `AddProgramScheduleItem` zapisuje pozycję, ale legacy rzuca wyjątek przy budowaniu odpowiedzi (`Mapper.ProjectToViewModel`, niezaładowane znaki wodne pozycji). Nie ma jej na białej liście; panel używa `ReplaceProgramScheduleItems`, jak UI legacy.
 - `ReplaceProgramScheduleItems` zwraca leniwą projekcję, której nie da się zserializować – most zgłasza sukces z ostrzeżeniem (`warning`); panel traktuje to jako sukces i przeładowuje pozycje.
@@ -383,7 +383,9 @@ Operatorzy pracują wyłącznie w panelu. Legacy nie ma portu na zewnątrz (`exp
 3. CI zacznie działać po wypchnięciu `.github/workflows/` na GitHub (sesja automatu nie robi push); w ustawieniach repozytorium Actions muszą być włączone. `legacy-latest.yml` nie wymaga sekretów (obraz legacy jest publiczny). Krok `tests/hwaccel.sh` w `ci.yml` i `release.yml` weryfikuje akcelerację sprzętową w obrazie legacy przed publikacją.
 
 
-## 9. Wydanie 1.0 (R11)
+## 9. Wydania
+
+Bieżące wydanie: 26.11.10 (CHANGELOG.md).
 
 ### Obrazy i wersje
 

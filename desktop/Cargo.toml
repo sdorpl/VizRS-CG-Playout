@@ -12,6 +12,7 @@
 [package]
 name = "vizrs-live-desktop"
 version = "26.11.10"
+license = "MIT"
 edition = "2021"
 description = "VizRS Live – aplikacja panelu kanału (Tauri 2)"
 repository = "https://github.com/sdorpl/VizRS-Live"
