@@ -10,7 +10,10 @@ set -e
 CHECK=
 [ "$1" = --check ] && { CHECK=1; shift; }
 TOP="$(cd "$(dirname "$0")/.." && pwd)"
-CG="$(cd "${1:-$TOP/../VizRS CG System}" 2>/dev/null && pwd)" || { echo "Brak źródła CG System: ${1:-$TOP/../VizRS CG System}" >&2; exit 2; }
+DEF="$TOP/../VizRS CG System"
+# w samym VizRS CG System (także w CI, bez katalogu obok) źródłem jest to repo
+grep -q '^name = "vizrs"$' "$TOP/source/Cargo.toml" 2>/dev/null && DEF="$TOP"
+CG="$(cd "${1:-$DEF}" 2>/dev/null && pwd)" || { echo "Brak źródła CG System: ${1:-$DEF}" >&2; exit 2; }
 BLOCKS="A S B C D"
 FILES="GEMINI.md docs/AGENCI.md tools/sync-zasady.sh"
 [ -f "$CG/CLAUDE.md" ] && [ -f "$CG/source/Cargo.toml" ] || { echo "To nie jest VizRS CG System: $CG" >&2; exit 2; }
