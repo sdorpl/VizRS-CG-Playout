@@ -1,6 +1,6 @@
 # Składniki zewnętrzne
 
-Kod VizRS CG Playout: MIT ([LICENSE](LICENSE)). Współpracuje z [ErsatzTV](https://ersatztv.org) (legacy: Zlib, Next: MIT) bez zmian w jego kodzie i bez kopiowania go – powered by ErsatzTV.
+Kod VizRS CG Playout (sidecar i panel `panel/`, dawny VizRS Live): MIT ([LICENSE](LICENSE)). Współpracuje z [ErsatzTV](https://ersatztv.org) (legacy: Zlib, Next: MIT) bez zmian w jego kodzie i bez kopiowania go – powered by ErsatzTV.
 
 | Składnik | Gdzie | Licencja |
 |---|---|---|
@@ -9,3 +9,7 @@ Kod VizRS CG Playout: MIT ([LICENSE](LICENSE)). Współpracuje z [ErsatzTV](http
 | Chromium headless shell, fonty DejaVu i Noto, tzdata, biblioteki Debiana | obraz `ghcr.io/sdorpl/vizrs-cg` (pakiety Debian bookworm) | BSD-3-Clause i inne licencje Chromium; fonty: licencja Bitstream Vera/DejaVu, SIL OFL 1.1; pozostałe – wg pakietów Debiana (`/usr/share/doc/*/copyright` w obrazie) |
 | ffmpeg | obraz ErsatzTV (nie rozpowszechniamy go w obrazie `vizrs-cg`); kontener `ingest` używa obrazu ErsatzTV legacy | GPL / LGPL – źródła: https://ffmpeg.org, obraz: https://github.com/ErsatzTV/legacy |
 | dane startowe `seed/media` | obraz `vizrs-seed` | wg plików w `seed/` |
+| ErsatzTV legacy (oficjalny obraz `ghcr.io/ersatztv/legacy`, bez zmian) | obraz `ghcr.io/sdorpl/vizrs-live-legacy` = obraz upstream + `VizRS.Bridge.dll` i `commands.txt` w `/vizrs-bridge` (zmiana oznaczona etykietą OCI, `panel/docker/legacy-bridge.Dockerfile`) | Zlib – https://github.com/ErsatzTV/legacy |
+| ASP.NET Core, MediatR (biblioteki, względem których kompiluje się most) | brane z obrazu legacy przy budowie, nie dołączane do `VizRS.Bridge.dll` | MIT / Apache-2.0 |
+| Caddy (`caddy:alpine`, bez zmian) | usługa `proxy` w nakładce panelu (obraz upstream) | Apache-2.0 |
+| crate'y aplikacji okna panelu (`panel/desktop/`): tauri, tauri-plugin-dialog, tauri-plugin-single-instance, serde_json, ureq (rustls), getrandom, webkit2gtk (+ zależności przechodnie) | AppImage i paczki okna | MIT / Apache-2.0 (rustls też ISC; wersje: `panel/desktop/Cargo.lock`) |

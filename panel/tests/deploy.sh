@@ -10,13 +10,13 @@
 #   4. tests/prod-smoke.cjs – przejście po wszystkich ekranach tylko do odczytu
 #   Błąd w 3. albo 4. = automatyczny powrót do vizrs-live:poprzedni.
 #
-# Zmienne (albo tests/local.env): VIZRS_CG_DIR – katalog stosu CG Playout (domyślnie ../VirtRS CG Playout),
+# Zmienne (albo tests/local.env): VIZRS_CG_DIR – katalog stosu CG Playout (domyślnie korzeń tego repozytorium),
 # DEPLOY_SHOTS – katalog na zrzuty ekranów (poza repo), DEPLOY_NO_SMOKE=1 – bez przejścia po ekranach.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 step() { printf '\n== %s\n' "$*"; }
 [ -f tests/local.env ] && set -a && . tests/local.env && set +a
-CG_DIR="${VIZRS_CG_DIR:-$(cd .. && pwd)/VirtRS CG Playout}"
+CG_DIR="${VIZRS_CG_DIR:-$(cd .. && pwd)}"
 [ -f "$CG_DIR/.env" ] || { echo "deploy: brak $CG_DIR/.env – ustaw VIZRS_CG_DIR" >&2; exit 2; }
 envval() { { grep -E "^$1=" "$CG_DIR/.env" || true; } | tail -1 | cut -d= -f2- | sed 's/^"//; s/"$//'; }
 IMAGE="$(envval LIVE_IMAGE)"; IMAGE="${IMAGE:-vizrs-live:local}"
@@ -26,7 +26,7 @@ PREV="${IMAGE%:*}:poprzedni"
 
 step "zgodność wdrożenia z CG Playout (Caddyfile, usługa live, VAAPI)"
 scripts/check-cg-overlay.sh "$CG_DIR"
-if [ -d "../VizRS CG System" ]; then scripts/sync-ui.sh --check; else echo "deploy: brak ../VizRS CG System – pomijam kontrolę vizrs-ui.css"; fi
+if [ -d "../../VizRS CG System" ]; then scripts/sync-ui.sh --check; else echo "deploy: brak ../../VizRS CG System – pomijam kontrolę vizrs-ui.css"; fi
 
 step "szybkie testy: cargo fmt, clippy, test; składnia JS"
 (cd server && cargo fmt --check && cargo clippy --all-targets -q -- -D warnings && cargo test -q)

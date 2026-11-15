@@ -1,7 +1,7 @@
-# CI VizRS Live (R10): serwer (fmt, clippy, testy), oba obrazy, stos testowy z proxy, e2e z Playwright.
-# Te same kroki co tests/gate.sh. Niczego nie publikuje (obrazy tylko lokalnie na maszynie CI), binarka panelu jako artefakt.
+# CI panelu VizRS CG Playout (dawny VizRS Live, katalog panel/): serwer (fmt, clippy, testy), oba obrazy, stos testowy z proxy, e2e z Playwright.
+# Te same kroki co panel/tests/gate.sh. Niczego nie publikuje (obrazy tylko lokalnie na maszynie CI), binarka panelu jako artefakt.
 # Obrazy na ghcr i wydanie: release.yml (znacznik v* albo ręcznie).
-name: CI
+name: CI panelu
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: panel-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
       # wspólny rdzeń wyglądu (vizrs-ui.css) = kopia z VizRS CG System w wersji z server/web/CG_SYSTEM
       - name: Wersja CG System dla vizrs-ui.css
         id: cg
-        run: echo "ref=$(cat server/web/CG_SYSTEM)" >> "$GITHUB_OUTPUT"
+        run: echo "ref=$(cat panel/server/web/CG_SYSTEM)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: sdorpl/VizRS-CG-System
@@ -33,30 +33,13 @@ jobs:
           sparse-checkout: source/web/vizrs-ui.css
           sparse-checkout-cone-mode: false
       - name: vizrs-ui.css zgodny z CG System
-        run: scripts/sync-ui.sh --check cg
-      # zasady pakietu (CLAUDE.md – bloki pakiet:*, GEMINI.md, docs/AGENCI.md) = CG System w wersji z docs/ZASADY_CG_SYSTEM
-      - name: Wersja CG System dla zasad pakietu
-        id: zasady
-        run: echo "ref=$(cat docs/ZASADY_CG_SYSTEM)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: sdorpl/VizRS-CG-System
-          ref: ${{ steps.zasady.outputs.ref }}
-          path: cg-zasady
-          sparse-checkout: |
-            CLAUDE.md
-            GEMINI.md
-            docs/AGENCI.md
-            tools/sync-zasady.sh
-            source/Cargo.toml
-          sparse-checkout-cone-mode: false
-      - name: Zasady pakietu zgodne z CG System
-        run: tools/sync-zasady.sh --check cg-zasady
+        working-directory: panel
+        run: scripts/sync-ui.sh --check ../cg
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: cargo fmt / clippy / test / build
-        working-directory: server
+        working-directory: panel/server
         run: |
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
@@ -67,10 +50,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vizrs-live-linux-x86_64
-          path: server/target/release/vizrs-live
+          path: panel/server/target/release/vizrs-live
       # release.yml buduje obrazy na amd64 i arm64 – tu kontrola, że oba Dockerfile budują się krzyżowo (bez publikacji)
       - uses: docker/setup-buildx-action@v3
       - name: obrazy arm64 (budowa krzyżowa)
+        working-directory: panel
         run: |
           docker buildx build --platform linux/arm64 -f docker/live.Dockerfile .
           docker buildx build --platform linux/arm64 -f docker/legacy-bridge.Dockerfile --build-arg LEGACY_IMAGE="$(sed -n 's#^LEGACY_IMAGE=##p' .env.example)" .
@@ -94,10 +78,13 @@ jobs:
           npm install --no-audit --no-fund playwright@1.58.2
           npx playwright install --with-deps chromium
       - name: obraz panelu
+        working-directory: panel
         run: docker build -f docker/live.Dockerfile -t vizrs-live:ci .
       - name: bramka (serwer, obraz legacy z mostem, stos z proxy, seed, e2e)
+        working-directory: panel
         run: tests/gate.sh
       - name: akceleracja sprzętowa w obrazie legacy (Intel VAAPI/QSV, AMD VAAPI, NVIDIA NVENC)
+        working-directory: panel
         run: tests/hwaccel.sh vizrs-live-legacy:dev
       - name: dziennik przy błędzie
         if: failure()
@@ -121,15 +108,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev xvfb
       - name: cargo fmt / clippy / test / build
-        working-directory: desktop
+        working-directory: panel/desktop
         shell: bash
         run: |
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
           cargo build --release --locked
-      - name: test aplikacji w działaniu (panel lokalny, zdalny przez pośrednika, okno połączenia)
+      - name: test aplikacji w działaniu (start bez panelu, panel przez pośrednika, okno połączenia)
         if: runner.os == 'Linux'
+        working-directory: panel
         run: |
           (cd server && cargo build --release --locked)
           xvfb-run -a node desktop/tests/okno.cjs

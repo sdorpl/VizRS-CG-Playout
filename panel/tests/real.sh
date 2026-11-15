@@ -3,7 +3,7 @@
 #   Jellyfin  127.0.0.1:18196   (w sieci stosu: http://vizrs-live-test-jellyfin:8096)
 #   Emby      127.0.0.1:18896   (http://vizrs-live-test-emby:8096)
 #   Plex      127.0.0.1:18324   (http://vizrs-live-test-plex:32400; logowanie PIN przez plex.tv – ręcznie)
-#   VizRS CG Playout 127.0.0.1:18701 (binarka z ../VirtRS CG Playout, live API z tokenem, etv_config = dane stosu)
+#   VizRS CG Playout 127.0.0.1:18701 (binarka z korzenia repozytorium VizRS CG Playout, live API z tokenem, etv_config = dane stosu)
 #   drugi panel VizRS Live 127.0.0.1:18092 podłączony do prawdziwego CG Playout (panel 18090 zostaje na atrapie e2e)
 #
 #   tests/stack.sh up && tests/stack.sh seed   # najpierw stos (legacy, wideo testowe)
@@ -27,7 +27,7 @@ MEDIA="$DIR/config/media/info24"
 JELLYFIN_IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:10.10.7}"
 EMBY_IMAGE="${EMBY_IMAGE:-emby/embyserver:4.8.11.0}"
 PLEX_IMAGE="${PLEX_IMAGE:-plexinc/pms-docker:latest}"
-CG_REPO="${CG_REPO:-../VirtRS CG Playout}"
+CG_REPO="${CG_REPO:-..}"
 CG_TOKEN="real-cg-token-0123456789"
 TOKEN="test-token-0123456789"
 USER_NAME="vizrs"

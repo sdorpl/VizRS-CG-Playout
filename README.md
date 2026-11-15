@@ -60,6 +60,22 @@ i `VIZRS_OUTPUT_TOKEN`.
 | [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) | działanie, konfiguracja, symbole zastępcze, Docker (Ampere A1, NVENC, VAAPI), awarie, testy, benchmark przechwytywania grafiki (Portainer) |
 | [CLAUDE.md](CLAUDE.md) | dla programistów i agentów: zasady, struktura, testy, commity |
 
+## Panel (`panel/`, dawny VizRS Live)
+
+Od 2026-11-15 w tym repo jest też **panel kanału** – do tej pory osobne repo [VizRS-Live-Playout](https://github.com/sdorpl/VizRS-Live-Playout) (plan połączenia: [sdorpl/VizRS](https://github.com/sdorpl/VizRS) §3). Polski panel nad **ErsatzTV legacy**: kanały, ramówka, playouty, media, EPG, mozaika, alarmy, dziennik emisji, grafika kanału i sloty na żywo – bez web GUI ErsatzTV.
+
+```
+ przeglądarka / okno ──► vizrs-live (Rust, :8090) ──► ErsatzTV legacy (sieć wewnętrzna Dockera)
+                         UI panelu + pośrednik          └─ VizRS Bridge (C#, w procesie legacy)
+                               └─ /api/cg/* ──► sidecar `cg` (:7700, Live API)
+ widzowie ──► proxy (Caddy, :8409) ──► legacy: tylko /iptv/*, /artwork/*, HDHomeRun (reszta 403)
+```
+
+- **VizRS Bridge** (`panel/bridge/`, C#): wtyczka ładowana do niezmienionego legacy (`DOTNET_STARTUP_HOOKS`), dyspozytor komend MediatR z białą listą `panel/bridge/commands.txt`.
+- **vizrs-live** (`panel/server/`, Rust bez zależności): UI panelu i pośrednik do mostu i Live API sidecara; tokeny nie trafiają do przeglądarki.
+- **Okno panelu** (`panel/desktop/`, Tauri 2, AppImage): natywny klient panelu na serwerze – adres panelu (np. przez proxy z TLS) i token.
+- Wdrożenie: nakładka `docker-compose.live.yml` (Portainer) albo `panel/compose.cg-playout.yml`. Dokumentacja panelu: [docs/panel/](docs/panel/README.md) (DOKUMENTACJA, INSTRUKCJA operatora, RUNBOOK).
+
 ## Licencja
 
 MIT – [LICENSE](LICENSE). Składniki zewnętrzne (fonty, biblioteki, obrazy): [THIRD-PARTY.md](THIRD-PARTY.md). Opis całego pakietu VizRS: [sdorpl/VizRS](https://github.com/sdorpl/VizRS). Współpracuje z [ErsatzTV](https://ersatztv.org) (legacy: Zlib, Next: MIT) bez zmian w jego kodzie – powered by ErsatzTV.

@@ -8,10 +8,10 @@
 #   4. wolumeny usługi `live` (media dla odtwarzania bez legacy): compose.cg-playout.yml  =  docker-compose.live.yml CG Playout
 #
 # Źródłem jest to repo (VizRS Live): rozjazd poprawia się po stronie CG Playout, chyba że zmiana wyszła stamtąd.
-# Użycie: scripts/check-cg-overlay.sh [katalog CG Playout]   (domyślnie VIZRS_CG_DIR albo ../VirtRS CG Playout)
+# Użycie: scripts/check-cg-overlay.sh [katalog CG Playout]   (domyślnie VIZRS_CG_DIR albo korzeń tego repozytorium – panel/ jest w VizRS CG Playout)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CG_DIR="${1:-${VIZRS_CG_DIR:-$(cd .. && pwd)/VirtRS CG Playout}}"
+CG_DIR="${1:-${VIZRS_CG_DIR:-$(cd .. && pwd)}}"
 CG_LIVE="$CG_DIR/docker-compose.live.yml"
 [ -f "$CG_LIVE" ] || { echo "check-cg-overlay: brak $CG_LIVE – pomijam" >&2; exit 0; }
 fail=0

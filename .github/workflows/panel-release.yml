@@ -12,9 +12,9 @@ name: Release
 #   wydanie na GitHubie z sumami SHA256SUMS.txt
 # Wersja = server/Cargo.toml (znacznik musi się zgadzać). Z łącznikiem (v1.2.0-rc1) = wydanie wstępne, bez :latest.
 # Kroki opiekuna: docs/RUNBOOK.md §7.
+# Po połączeniu z VizRS CG Playout (katalog panel/) – do scalenia z release.yml (etap P2) tylko ręcznie,
+# żeby znacznik v* nie robił dwóch wydań.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
@@ -26,8 +26,12 @@ permissions:
   packages: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: panel-release-${{ github.ref }}
   cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: panel
 
 jobs:
   wersja:
@@ -106,7 +110,7 @@ jobs:
         with:
           targets: ${{ matrix.musl }}
       - run: RUSTFLAGS="${{ matrix.rustflags }}" cargo build --release --locked --target ${{ matrix.musl }}
-        working-directory: server
+        working-directory: panel/server
       - name: Paczka
         env:
           V: ${{ needs.wersja.outputs.v }}
@@ -119,7 +123,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.name }}
-          path: dist/*
+          path: panel/dist/*
 
   appimage:
     needs: wersja
@@ -132,7 +136,7 @@ jobs:
           node-version: 22
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file desktop-file-utils
       - name: AppImage (bundler Tauri)
-        working-directory: desktop
+        working-directory: panel/desktop
         env:
           # linuxdeploy / appimagetool to AppImage – na runnerze bez FUSE rozpakowują się same
           APPIMAGE_EXTRACT_AND_RUN: "1"
@@ -150,7 +154,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bin-appimage
-          path: dist/*
+          path: panel/dist/*
 
   docker:
     needs: [wersja, bramka]
@@ -173,8 +177,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
-          context: .
-          file: docker/live.Dockerfile
+          context: panel
+          file: panel/docker/live.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha,scope=live
@@ -184,8 +188,8 @@ jobs:
             ${{ env.LATEST == 'true' && format('{0}/vizrs-live:latest', env.IMG) || '' }}
       - uses: docker/build-push-action@v6
         with:
-          context: .
-          file: docker/legacy-bridge.Dockerfile
+          context: panel
+          file: panel/docker/legacy-bridge.Dockerfile
           platforms: linux/amd64,linux/arm64
           pull: true
           push: true
@@ -197,6 +201,9 @@ jobs:
   release:
     needs: [wersja, bin, appimage, docker]
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: .
     steps:
       - uses: actions/download-artifact@v4
         with:
