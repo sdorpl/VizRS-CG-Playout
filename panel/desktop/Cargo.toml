@@ -1,0 +1,40 @@
+# vizrs-live-desktop – aplikacja VizRS Live na Tauri 2 (WebView systemowy: WebKitGTK / WebView2 / WKWebView).
+#
+# Osobny workspace z własnym Cargo.lock: serwer panelu (`../server`, `vizrs-live`) zostaje BEZ zależności,
+# obraz Docker i jego CI nie widzą tego katalogu. Aplikacja nie wkompilowuje panelu – uruchamia `vizrs-live`
+# na 127.0.0.1 (panel lokalny) albo łączy się z panelem zdalnym przez pośrednika z tokenem.
+#
+# Dozwolone zależności (wyjątek od zasady „zero zależności” tylko w tym katalogu; te same co VizRS CG Artist,
+# decyzja użytkownika 2026-11-12, plan VizRS CG System PLAN-wyglad-live-i-tauri.md T2):
+#   tauri (okna, WebView, menu), tauri-plugin-dialog, tauri-plugin-single-instance, serde_json,
+#   ureq (rustls – pośrednik do panelu https), getrandom (sekret pośrednika),
+#   webkit2gtk (tylko Linux, już zależność Tauri: pisownia polska); tauri-build przy budowie.
+[package]
+name = "vizrs-live-desktop"
+version = "26.11.10"
+license = "MIT"
+edition = "2021"
+description = "VizRS Live – aplikacja panelu kanału (Tauri 2)"
+repository = "https://github.com/sdorpl/VizRS-Live"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+getrandom = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 4

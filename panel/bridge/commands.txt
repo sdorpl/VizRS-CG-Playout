@@ -1,0 +1,305 @@
+# Biała lista mostu VizRS ↔ ErsatzTV legacy: jedna komenda albo zapytanie legacy (nazwa rekordu MediatR) w wierszu.
+# Komendy spoza listy most odrzuca (403). Nazwy nieznane w danej wersji legacy pokazuje /vizrs-bridge/health ("commandsMissing").
+# Nowa funkcja panelu = nowy wiersz tutaj, bez zmiany kodu C#.
+
+# --- kanały
+GetAllChannels
+GetChannelById
+CreateChannel
+UpdateChannel
+DeleteChannel
+# numeracja wielu kanałów naraz (K3, ekran legacy /channels/numbers)
+GetAllChannelsForSort
+UpdateChannelNumbers
+GetAllLanguageCodes
+
+# --- profile kodowania, znaki wodne, rozdzielczości (R5)
+GetAllFFmpegProfiles
+GetFFmpegProfileById
+NewFFmpegProfile
+CreateFFmpegProfile
+UpdateFFmpegProfile
+CopyFFmpegProfile
+DeleteFFmpegProfile
+# klatkaż kanału, który legacy przekaże silnikowi (z nadpisaniem mostu – „Klatkaż” w profilu kodowania)
+GetChannelFramerate
+GetAllResolutions
+# własne rozdzielczości (K4, Settings → FFmpeg w legacy; usuwać można tylko IsCustom)
+CreateCustomResolution
+DeleteCustomResolution
+# silnik Next (K5, legacy ≥ 26.12.0; starsze – commandsMissing, panel chowa kartę)
+GetNextVersion
+GetNextDescribe
+GetNextProbe
+RefreshNextProbe
+GetSupportedHardwareAccelerationKinds
+GetAllWatermarks
+GetWatermarkById
+CreateWatermark
+UpdateWatermark
+CopyWatermark
+DeleteWatermark
+# obrazy (logo kanału, znak wodny): tylko przez POST /vizrs-bridge/upload/{Logo|Watermark} – Stream, nie JSON
+SaveArtworkToDisk
+
+# --- media i listy
+GetAllLocalLibraries
+GetLocalLibraryById
+GetLocalLibraryPaths
+CreateLocalLibrary
+UpdateLocalLibrary
+MoveLocalLibraryPath
+DeleteLocalLibrary
+CountMediaItemsByLibrary
+CountMediaItemsByLibraryPath
+QueueLibraryScanByLibraryId
+QueueShowScanByLibraryId
+GetLibraryRefreshInterval
+# przeglądarka mediów i wyszukiwarka (R3)
+QuerySearchIndexAllItems
+QuerySearchIndexMovies
+QuerySearchIndexShows
+QuerySearchIndexSeasons
+QuerySearchIndexEpisodes
+QuerySearchIndexOtherVideos
+QuerySearchIndexSongs
+QuerySearchIndexMusicVideos
+QuerySearchIndexArtists
+QuerySearchIndexImages
+QuerySearchIndexRemoteStreams
+QuerySearchTargets
+GetMediaItemInfo
+GetMovieById
+GetTelevisionShowById
+GetTelevisionSeasonById
+GetRemoteStreamById
+GetImageFolders
+UpdateImageFolderDuration
+# kosz (R3)
+# RemoveMediaItems – wewnętrzna komenda indeksu wyszukiwania (SearchIndexService), nie dla operatora
+EmptyTrash
+DeleteItemsFromDatabase
+# kolekcje (R4)
+GetAllCollections
+GetCollectionById
+GetCollectionCards
+CreateCollection
+UpdateCollection
+DeleteCollection
+AddItemsToCollection
+RemoveItemsFromCollection
+GetAllSmartCollections
+GetSmartCollectionById
+CreateSmartCollection
+UpdateSmartCollection
+DeleteSmartCollection
+GetAllMultiCollections
+GetMultiCollectionById
+CreateMultiCollection
+UpdateMultiCollection
+DeleteMultiCollection
+GetPagedRerunCollections
+GetRerunCollectionById
+SearchRerunCollections
+CreateRerunCollection
+UpdateRerunCollection
+DeleteRerunCollection
+# Add{Movie,Show,…}ToCollection – zbędne: AddItemsToCollection przyjmuje listy id wszystkich rodzajów
+# UpdateCollectionCustomOrder (własna kolejność – legacy pozwala tylko w kolekcjach z samych filmów) – nie wdrożone
+# Trakt (AddTraktList…) – opcjonalne, nie wdrożone (wymaga klucza API Trakt)
+# playlisty (R4)
+GetAllPlaylistGroups
+GetPlaylistsByPlaylistGroupId
+GetPlaylistById
+GetPlaylistItems
+CreatePlaylistGroup
+DeletePlaylistGroup
+CreatePlaylist
+DeletePlaylist
+ReplacePlaylistItems
+AddItemsToPlaylist
+PreviewPlaylistPlayout
+GetAllFillerPresets
+# wypełniacze (R5)
+GetFillerPresetById
+CreateFillerPreset
+UpdateFillerPreset
+DeleteFillerPreset
+
+# napisy osadzone (K8; zadania w tle legacy)
+ExtractEmbeddedSubtitles
+ExtractEmbeddedShowSubtitles
+
+# --- wybór treści (komponent w parts.js; pusty tekst = pierwsze 10 wyników)
+SearchCollections
+SearchSmartCollections
+SearchMultiCollections
+SearchTelevisionShows
+SearchTelevisionSeasons
+SearchArtists
+
+# --- ramówka
+GetAllProgramSchedules
+GetProgramScheduleById
+CreateProgramSchedule
+UpdateProgramSchedule
+CopyProgramSchedule
+DeleteProgramSchedule
+GetProgramScheduleItems
+ReplaceProgramScheduleItems
+# AddProgramScheduleItem – legacy 26.11.6 zapisuje pozycję, ale zwraca błąd (Mapper.ProjectToViewModel); UI legacy używa ReplaceProgramScheduleItems
+
+# --- bloki, szablony dnia, deco, szablony deco (R6)
+# nazwę, długość i tryb zatrzymania bloku zapisuje ReplaceBlockItems (UpdateBlock nie istnieje); nazwę szablonu – ReplaceTemplateItems
+GetAllBlockGroups
+CreateBlockGroup
+DeleteBlockGroup
+GetAllBlocks
+GetBlocksByBlockGroupId
+GetBlockById
+CreateBlock
+CopyBlock
+DeleteBlock
+GetBlockItems
+ReplaceBlockItems
+PreviewBlockPlayout
+GetAllTemplateGroups
+CreateTemplateGroup
+DeleteTemplateGroup
+GetAllTemplates
+GetTemplatesByTemplateGroupId
+GetTemplateById
+CreateTemplate
+CopyTemplate
+DeleteTemplate
+GetTemplateItems
+ReplaceTemplateItems
+GetAllDecoGroups
+CreateDecoGroup
+DeleteDecoGroup
+GetDecosByDecoGroupId
+GetDecoById
+CreateDeco
+UpdateDeco
+DeleteDeco
+GetAllDecoTemplateGroups
+CreateDecoTemplateGroup
+DeleteDecoTemplateGroup
+GetDecoTemplatesByDecoTemplateGroupId
+GetDecoTemplateById
+CreateDecoTemplate
+DeleteDecoTemplate
+GetDecoTemplateItems
+ReplaceDecoTemplateItems
+# playout blokowy: kalendarz szablonów i deco domyślne
+GetPlayoutTemplates
+ReplacePlayoutTemplateItems
+GetDecoByPlayoutId
+UpdateDefaultDeco
+
+# --- playouty
+GetPagedPlayouts
+GetFuturePlayoutItemsById
+GetPlayoutIdByChannelNumber
+CreateClassicPlayout
+CreateBlockPlayout
+CreateSequentialPlayout
+CreateScriptedPlayout
+CreateExternalJsonPlayout
+UpdatePlayout
+UpdateSequentialPlayout
+UpdateScriptedPlayout
+UpdateExternalJsonPlayout
+DeletePlayout
+BuildPlayout
+ResetAllPlayouts
+ErasePlayoutItems
+ErasePlayoutHistory
+CheckForOverlappingPlayoutItems
+GetPlayoutWarningsCount
+GetPlayoutAlternateSchedules
+ReplacePlayoutAlternateScheduleItems
+# historia playoutu blokowego (K7, ekrany legacy Troubleshooting → Block Playout); wyniki to proste rekordy (bez obiektów wewnętrznych)
+GetAllBlockPlayouts
+GetAllBlocksForPlayout
+GetBlockPlayoutHistory
+DecodePlayoutHistory
+
+# --- grafika
+GetAllGraphicsElements
+RefreshGraphicsElements
+
+# --- system
+GetAllHealthCheckResults
+# ustawienia legacy (R7): każda sekcja to para Get…/Update… (Update przyjmuje cały obiekt sekcji)
+GetFFmpegSettings
+UpdateFFmpegSettings
+GetMpegTsScripts
+GetLoggingSettings
+UpdateLoggingSettings
+GetPlayoutSettings
+UpdatePlayoutSettings
+GetXmltvSettings
+UpdateXmltvSettings
+GetUiSettings
+UpdateUiSettings
+UpdateLibraryRefreshInterval
+GetHDHRTunerCount
+UpdateHDHRTunerCount
+GetHDHRUUID
+# logi, konserwacja, informacje (R7)
+GetRecentLogEntries
+DeleteOrphanedArtwork
+DeleteOrphanedSubtitles
+ReleaseMemory
+# RebuildSearchIndex – legacy 26.11.6 uruchamia ją tylko przy starcie; z kolejki skanera: „Unsupported request type” (DOKUMENTACJA §5)
+RefreshFFmpegCapabilities
+GetTroubleshootingInfo
+# test odtwarzania: PrepareTroubleshootingPlayback/StartTroubleshootingPlayback – patrz DOKUMENTACJA §5
+
+# --- źródła zewnętrzne (R8): Jellyfin, Emby, Plex
+# Sekrety (klucz API) panel tylko zapisuje: serwer panelu maskuje w każdej odpowiedzi pola apiKey/…token/password/secret.
+# Bez Get*ConnectionParameters (niosą nagłówek z kluczem/tokenem) i bez TryCompletePlexPinFlow (wewnętrzny PIN – StartPlexPinFlow sam ją kolejkuje).
+GetAllJellyfinMediaSources
+GetJellyfinMediaSourceById
+GetJellyfinSecrets
+SaveJellyfinSecrets
+DisconnectJellyfin
+SynchronizeJellyfinMediaSources
+SynchronizeJellyfinLibraries
+GetJellyfinLibrariesBySourceId
+UpdateJellyfinLibraryPreferences
+SynchronizeJellyfinLibraryByIdIfNeeded
+ForceSynchronizeJellyfinLibraryById
+SynchronizeJellyfinCollections
+GetJellyfinPathReplacementsBySourceId
+UpdateJellyfinPathReplacements
+GetAllEmbyMediaSources
+GetEmbyMediaSourceById
+GetEmbySecrets
+SaveEmbySecrets
+DisconnectEmby
+SynchronizeEmbyMediaSources
+SynchronizeEmbyLibraries
+GetEmbyLibrariesBySourceId
+UpdateEmbyLibraryPreferences
+SynchronizeEmbyLibraryByIdIfNeeded
+ForceSynchronizeEmbyLibraryById
+SynchronizeEmbyCollections
+GetEmbyPathReplacementsBySourceId
+UpdateEmbyPathReplacements
+GetAllPlexMediaSources
+GetPlexMediaSourceById
+StartPlexPinFlow
+SignOutOfPlex
+DeletePlexMediaSource
+SynchronizePlexMediaSources
+SynchronizePlexLibraries
+GetPlexLibrariesBySourceId
+UpdatePlexLibraryPreferences
+SynchronizePlexLibraryByIdIfNeeded
+ForceSynchronizePlexLibraryById
+SynchronizePlexNetworks
+SynchronizePlexCollections
+GetPlexPathReplacementsBySourceId
+UpdatePlexPathReplacements

@@ -1,0 +1,27 @@
+# Odwrotne proxy przed ErsatzTV legacy (R10): na zewnątrz tylko to, czego potrzebują widzowie.
+#   /iptv/*            strumienie (HLS, TS), M3U, XMLTV, logo kanałów, okładki dla EPG
+#   /artwork/*         obrazy legacy tylko do odczytu (znaki wodne, plakaty – podgląd w panelu)
+#   HDHomeRun          /discover.json, /device.xml, /lineup.json, /lineup_status.json
+# Wszystko inne (web GUI legacy, /api legacy, /vizrs-bridge/*) = 403. Panel i most rozmawiają
+# w wewnętrznej sieci Dockera (http://ersatztv:8409), z pominięciem proxy.
+# LEGACY_UPSTREAM: adres legacy w sieci Dockera (compose: ersatztv:8409).
+{
+	admin off
+	auto_https off
+}
+
+:8409 {
+	@public {
+		method GET HEAD
+		path /iptv/* /artwork/* /discover.json /device.xml /lineup.json /lineup_status.json
+	}
+	handle @public {
+		reverse_proxy {$LEGACY_UPSTREAM:ersatztv:8409} {
+			flush_interval -1
+		}
+	}
+	handle {
+		header Content-Type "text/plain; charset=utf-8"
+		respond "403: web GUI ErsatzTV legacy jest zamkniete - operatorzy pracuja w panelu VizRS Live." 403
+	}
+}

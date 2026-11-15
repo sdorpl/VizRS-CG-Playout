@@ -1,0 +1,17 @@
+# Akceleracja sprzętowa VAAPI / QSV dla ErsatzTV legacy – Intel (iGPU, Arc) i AMD (Radeon).
+# Obraz legacy ma już ffmpeg z VAAPI i QSV oraz sterowniki iHD, i965 i radeonsi (sprawdza tests/hwaccel.sh);
+# ta nakładka tylko przekazuje kartę do kontenera. Na hoście: sterownik jądra (i915/xe albo amdgpu).
+#
+#   docker compose -f compose.yml -f compose.vaapi.yml up -d
+#   (stos CG Playout: dołóż -f "$VIZRS_LIVE_DIR/compose.vaapi.yml" po compose.cg-playout.yml)
+#
+# Potem w panelu: Profile kodowania → Akceleracja: VAAPI (urządzenie /dev/dri/renderD128, sterownik:
+# iHD – Intel od Broadwell, i965 – starszy Intel, RadeonSI – AMD) albo QSV (Intel). RUNBOOK §2b.
+#
+# Kilka kart: VAAPI_DEVICE wybiera węzeł na hoście (ls -l /dev/dri/by-path); w kontenerze zawsze renderD128.
+# Legacy w kontenerze działa jako root (obraz upstream), więc grupa „render” nie jest potrzebna.
+
+services:
+  ersatztv:
+    devices:
+      - ${VAAPI_DEVICE:-/dev/dri/renderD128}:/dev/dri/renderD128

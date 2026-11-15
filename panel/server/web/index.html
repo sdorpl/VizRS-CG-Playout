@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VizRS Live</title>
+<link rel="stylesheet" href="/vizrs-ui.css">
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <button id="nav-toggle" class="icon" type="button" aria-label="Menu" aria-controls="side" title="Zwiń / rozwiń menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <div class="brand">Viz<b>RS</b><span>Live</span></div>
+    <select id="st-channel" aria-label="Kanał – filtr ekranów kanałowych" title="Na antenie, EPG, Playouty, Grafika kanału i Sloty pokazują tylko wybrany kanał" hidden></select>
+    <span class="grow"></span>
+    <span class="pill" id="st-bridge">most: …</span>
+    <span class="pill" id="st-legacy">legacy: …</span>
+    <a class="pill warn" id="st-warn" href="#playouty" title="Playouty, których legacy nie zbudował" hidden></a>
+    <a class="pill" id="st-studio" href="#live" title="Kanały ze studiem na antenie (VizRS CG Playout)" hidden></a>
+    <button id="st-monitor" title="Podgląd strumienia kanału – okno zostaje przy zmianie ekranów">Podgląd</button>
+    <button id="st-operator" title="Nazwa stanowiska – trafia do dziennika zdarzeń CG Playout">operator: –</button>
+    <span class="clock" id="clock">--:--:--</span>
+    <button id="logout" hidden>Wyloguj</button>
+  </header>
+
+  <nav class="side" id="side" aria-label="Menu">
+    <h3>Antena</h3>
+    <a href="#antena">Na antenie</a>
+    <a href="#epg">Przewodnik EPG</a>
+    <h3>Kanały</h3>
+    <a href="#kanaly">Kanały</a>
+    <a href="#profile">Profile kodowania</a>
+    <a href="#znaki">Znaki wodne</a>
+    <h3>Media</h3>
+    <a href="#media">Biblioteki</a>
+    <a href="#zrodla">Źródła zewnętrzne</a>
+    <a href="#przegladarka">Przeglądarka</a>
+    <a href="#kosz">Kosz</a>
+    <h3>Listy</h3>
+    <a href="#kolekcje">Kolekcje</a>
+    <a href="#playlisty">Playlisty</a>
+    <a href="#wypelniacze">Wypełniacze</a>
+    <h3>Ramówka</h3>
+    <a href="#harmonogramy">Harmonogramy</a>
+    <a href="#bloki">Bloki i szablony</a>
+    <a href="#deco">Wystrój (deco)</a>
+    <a href="#playouty">Playouty</a>
+    <h3>Grafika i live</h3>
+    <a href="#grafika" class="viz">Grafika kanału</a>
+    <a href="#live" class="viz">Sloty na żywo</a>
+    <a href="#audycje" class="viz">Audycje LIVE</a>
+    <a href="#asrun" class="viz">Dziennik emisji</a>
+    <h3>System</h3>
+    <a href="#ustawienia">Ustawienia</a>
+    <a href="#logi">Logi</a>
+    <a href="#diagnostyka">Diagnostyka</a>
+  </nav>
+
+  <main id="main" tabindex="-1">
+    <p class="dim">Ładowanie…</p>
+  </main>
+</div>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+    <h2 id="dlg-title"></h2>
+    <div id="dlg-body"></div>
+    <div class="bar end" id="dlg-buttons"></div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

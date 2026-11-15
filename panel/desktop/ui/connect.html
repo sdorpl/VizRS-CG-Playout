@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pl"><head><meta charset="utf-8"><title>Połącz z panelem</title>
+<style>
+:root { color-scheme: dark; --bg:#0e1015; --panel:#151820; --line:#262c37; --text:#e4e7ee; --dim:#8890a0; --acc:#f5a524; --err:#ff8f8a; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px system-ui, sans-serif; padding:20px; }
+h1 { font-size:18px; margin:0 0 4px; }
+.now { color:var(--dim); margin-bottom:16px; font-size:13px; }
+label { display:block; margin:12px 0 4px; color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+input[type=text], input[type=password] { width:100%; padding:8px 10px; background:var(--panel); border:1px solid var(--line); color:var(--text); border-radius:4px; font:inherit; }
+input:focus { outline:none; border-color:var(--acc); }
+.row { display:flex; gap:8px; align-items:center; }
+.check { display:flex; gap:8px; align-items:center; margin:10px 0 0; color:var(--text); text-transform:none; letter-spacing:0; font-size:13px; }
+button { padding:8px 14px; background:var(--panel); border:1px solid var(--line); color:var(--text); border-radius:4px; font:inherit; cursor:pointer; }
+button:hover { border-color:var(--acc); }
+button.primary { background:var(--acc); border-color:var(--acc); color:#1a1100; font-weight:600; }
+button:disabled { opacity:.5; cursor:default; }
+.actions { display:flex; gap:8px; margin-top:18px; }
+.actions .sp { flex:1; }
+#err { color:var(--err); min-height:1.3em; margin-top:12px; white-space:pre-wrap; }
+#list { margin-top:6px; border:1px solid var(--line); border-radius:4px; max-height:150px; overflow:auto; }
+#list:empty::after { content:'brak zapisanych paneli'; display:block; padding:8px 10px; color:var(--dim); }
+.srv { display:flex; align-items:center; padding:6px 10px; cursor:pointer; border-bottom:1px solid var(--line); }
+.srv:last-child { border-bottom:0; }
+.srv:hover { background:var(--panel); }
+.srv .u { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.srv .t { color:var(--dim); font-size:12px; margin:0 8px; }
+.srv .x { padding:0 6px; border:0; background:none; color:var(--dim); }
+.hint { color:var(--dim); font-size:12px; margin-top:6px; }
+</style></head><body>
+<h1>Połącz z panelem VizRS Live</h1>
+<div class="now" id="now"></div>
+<label for="url">Adres panelu</label>
+<input type="text" id="url" placeholder="https://live.example.pl" autocomplete="off" spellcheck="false">
+<label for="token">Token panelu</label>
+<div class="row"><input type="password" id="token" autocomplete="off" spellcheck="false"><button id="show" type="button" title="Pokaż token">👁</button></div>
+<div class="hint">Token z <code>--token</code> / <code>VIZRS_LIVE_TOKEN</code> panelu. Zostaje w programie – strona panelu go nie dostaje.</div>
+<label class="check"><input type="checkbox" id="keep"> zapamiętaj token na tym komputerze</label>
+<label class="check"><input type="checkbox" id="auto"> łącz z tym panelem przy uruchomieniu</label>
+<label>Zapisane panele</label>
+<div id="list"></div>
+<div id="err"></div>
+<div class="actions">
+  <span class="sp"></span>
+  <button id="cancel" type="button">Anuluj</button>
+  <button id="go" class="primary" type="button">Połącz</button>
+</div>
+<script>
+// okno programu: bez menu kontekstowego silnika (poza polami tekstowymi) i bez skrótów przeglądarki
+addEventListener('contextmenu', (e) => { if (!e.target.closest('input')) e.preventDefault(); });
+addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if (['F3', 'F5', 'F7', 'F12'].includes(e.key) || ((e.ctrlKey || e.metaKey) && k.length === 1 && 'fghjpr+=-0'.includes(k))) e.preventDefault();
+});
+const C = window.__vizrsConn || { servers: [] };
+const $ = (id) => document.getElementById(id);
+const send = (m) => (window.__vizrsPost || window.ipc.postMessage)(JSON.stringify(m));
+$('now').textContent = 'Teraz: ' + (C.current || 'nie połączono');
+if (C.remote) { $('url').value = C.current; $('token').value = C.token || ''; $('auto').checked = C.auto === C.current; }
+function fill(s) {
+  $('url').value = s.url; $('token').value = ''; $('keep').checked = s.hasToken;
+  $('token').placeholder = s.hasToken ? 'zapamiętany – zostaw puste' : '';
+  $('auto').checked = C.auto === s.url; $('err').textContent = '';
+}
+for (const s of C.servers) {
+  const d = document.createElement('div'); d.className = 'srv';
+  const u = document.createElement('span'); u.className = 'u'; u.textContent = s.url;
+  const t = document.createElement('span'); t.className = 't'; t.textContent = s.hasToken ? 'token zapisany' : '';
+  const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.title = 'Usuń z listy';
+  x.onclick = (e) => { e.stopPropagation(); send({ action: 'forget', url: s.url }); d.remove(); };
+  d.onclick = () => fill(s); d.ondblclick = () => { fill(s); go(); };
+  d.append(u, t, x); $('list').append(d);
+}
+function go() {
+  $('err').textContent = ''; $('go').disabled = true; $('go').textContent = 'Łączenie…';
+  send({ action: 'connect', url: $('url').value, token: $('token').value, keepToken: $('keep').checked, auto: $('auto').checked });
+}
+window.__vizrsConnError = (msg) => { $('err').textContent = msg; $('go').disabled = false; $('go').textContent = 'Połącz'; };
+$('go').onclick = go;
+$('cancel').onclick = () => send({ action: 'cancel' });
+$('show').onclick = () => { $('token').type = $('token').type === 'password' ? 'text' : 'password'; };
+document.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') send({ action: 'cancel' }); });
+($('url').value ? $('token') : $('url')).focus();
+</script></body></html>

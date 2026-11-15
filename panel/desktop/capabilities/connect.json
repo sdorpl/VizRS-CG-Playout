@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "connect",
+  "description": "Okno „Połącz z panelem” (strona okna ui/connect.html): most okna połączenia (komenda ipc). Strony panelu dostają uprawnienie w działaniu – tylko dla adresu bieżącego panelu (main.rs: allow_page).",
+  "windows": ["connect"],
+  "permissions": ["allow-ipc"]
+}

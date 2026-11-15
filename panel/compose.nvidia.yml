@@ -1,0 +1,24 @@
+# Akceleracja sprzętowa NVIDIA (NVENC/NVDEC, CUDA) dla ErsatzTV legacy.
+# Obraz legacy ma już ffmpeg z NVENC i CUDA (sprawdza tests/hwaccel.sh). Biblioteki sterownika
+# (libcuda, libnvidia-encode) muszą pasować do sterownika hosta, więc podaje je przy starcie
+# NVIDIA Container Toolkit – na hoście: sterownik NVIDIA + nvidia-container-toolkit.
+#
+#   docker compose -f compose.yml -f compose.nvidia.yml up -d
+#   (stos CG Playout: dołóż -f "$VIZRS_LIVE_DIR/compose.nvidia.yml" po compose.cg-playout.yml)
+#
+# Potem w panelu: Profile kodowania → Akceleracja: NVIDIA. RUNBOOK §2b.
+#
+# Karta przez CDI (/var/run/cdi/nvidia.yaml – nvidia-ctk cdi generate), bez runtime „nvidia” w Dockerze.
+# Sprawdzenie: nvidia-ctk cdi list. NVIDIA_GPU: all, numer (0) albo UUID (GPU-…).
+
+services:
+  ersatztv:
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: cdi
+              device_ids: ["nvidia.com/gpu=${NVIDIA_GPU:-all}"]
+              capabilities: [gpu]

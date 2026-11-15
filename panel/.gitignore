@@ -1,0 +1,11 @@
+/server/target/
+/bridge/bin/
+/bridge/obj/
+/legacy-lib/
+/etv-config/
+/media/
+.env
+*.png
+!desktop/icons/*.png
+tests/local.env
+/.plan-logs/

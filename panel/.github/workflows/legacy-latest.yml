@@ -1,0 +1,50 @@
+# Wczesne ostrzeżenie (R10): najnowsze ErsatzTV legacy (ghcr.io/ersatztv/legacy:latest) z mostem –
+# smoke (w tym commandsMissing = []), seed i e2e. Czerwone = legacy zmieniło komendy albo zachowanie;
+# procedura w docs/DOKUMENTACJA.md §6. Raz w tygodniu i ręcznie.
+name: Legacy latest
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      legacy_image:
+        description: "Obraz legacy"
+        default: "ghcr.io/ersatztv/legacy:latest"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LEGACY_IMAGE: ${{ inputs.legacy_image || 'ghcr.io/ersatztv/legacy:latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Playwright (Chromium)
+        run: |
+          # katalog poza repo; kontekst runner niedostępny w env joba – przez GITHUB_ENV dla kolejnych kroków
+          PLAYWRIGHT_DIR=$RUNNER_TEMP/pw; echo "PLAYWRIGHT_DIR=$PLAYWRIGHT_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1.58.2
+          npx playwright install --with-deps chromium
+      - name: pobierz najnowsze legacy
+        run: docker pull "$LEGACY_IMAGE"
+      - name: stos z najnowszym legacy, seed, e2e
+        run: |
+          tests/stack.sh up
+          curl -s -H "X-VizRS-Token: test-token-0123456789" http://127.0.0.1:18409/vizrs-bridge/health
+          tests/stack.sh seed
+          tests/stack.sh test
+      - name: dziennik przy błędzie
+        if: failure()
+        run: |
+          docker logs vizrs-live-test-legacy 2>&1 | tail -200 || true
+          cat "${VIZRS_LIVE_TEST_DIR:-$HOME/.cache/vizrs-live-test}/panel.log" || true

@@ -1,0 +1,17 @@
+[package]
+name = "vizrs-live"
+version = "26.11.10"
+edition = "2021"
+rust-version = "1.80"
+description = "VizRS Live – panel kanału nad ErsatzTV legacy (przez most VizRS Bridge)"
+license = "MIT"
+
+# Bez zależności, jak rdzeń VizRS: własny HTTP/1.1, klient mostu i JSON tylko tam, gdzie trzeba.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

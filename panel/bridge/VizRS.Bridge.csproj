@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    VizRS Bridge – most REST w procesie ErsatzTV legacy.
+    Ładowany bez zmiany kodu legacy: DOTNET_STARTUP_HOOKS + ASPNETCORE_HOSTINGSTARTUPASSEMBLIES.
+    Jedyne zależności: framework ASP.NET Core i MediatR z obrazu legacy (LegacyDir, nie NuGet),
+    więc wersja MediatR zawsze zgadza się z legacy. Komendy legacy wybiera się w czasie działania (refleksja).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>VizRS.Bridge</AssemblyName>
+    <RootNamespace>VizRS.Bridge</RootNamespace>
+    <Version>26.11.10</Version>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <LegacyDir Condition="'$(LegacyDir)' == ''">../legacy-lib</LegacyDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Reference Include="MediatR">
+      <HintPath>$(LegacyDir)/MediatR.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MediatR.Contracts">
+      <HintPath>$(LegacyDir)/MediatR.Contracts.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
