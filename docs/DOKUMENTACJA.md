@@ -1,9 +1,8 @@
 # VizRS CG Playout – dokumentacja
 
-> Do 2026-10-31 projekt nazywał się **VirtRS CG Playout** (repozytorium `sdorpl/VirtRS-CG-Playout`, GitHub przekierowuje stary adres). Nazwy techniczne zostają bez zmian: binarka `vizrs-cg`, obraz `ghcr.io/sdorpl/vizrs-cg`, zmienne `VIRTRS_*`.
+> Do 2026-10-31 projekt nazywał się **VirtRS CG Playout** (repozytorium `sdorpl/VirtRS-CG-Playout`, GitHub przekierowuje stary adres). Nazwy techniczne bez zmian – binarka `vizrs-cg`, obraz `ghcr.io/sdorpl/vizrs-cg`; zmienne środowiskowe `VIZRS_*`.
 
 1. [Jak to działa](#1-jak-to-działa) – w tym [pakiet VizRS i zgodność](#pakiet-vizrs--zgodność-aplikacji)
-2. [Odpowiedniki w VizRS ffPlayout System](#2-odpowiedniki-w-vizrs-ffplayout-system)
 3. [Komendy i symbole zastępcze](#3-komendy-i-symbole-zastępcze)
 4. [Uruchamianie w Dockerze](#4-uruchamianie-w-dockerze)
 5. [Uruchamianie bez Dockera, konfiguracja](#5-uruchamianie-bez-dockera-konfiguracja)
@@ -454,7 +453,7 @@ przerwy węższe niż 32 px zostają w jednym prostokącie). Niezmienione klatki
 prawie nic nie kosztuje. Animacje pod obciążeniem gubią klatki, ale nie
 zostają w tyle.
 
-Płynność animacji (rozwiązania z VizRS ffPlayout System):
+Płynność animacji:
 
 - **Przechwytywanie nie szybsze niż klatkaż kanału.** Chromium składa
   stronę 60 razy na sekundę; przy 24–30 fps screencast bierze co drugą
@@ -566,7 +565,7 @@ nie ograniczają, a `render_size` nie pomaga, bo płótno ErsatzTV zawsze ma
 rozmiar kanału.
 
 Nakładka `vizrs-ffmpeg` ([src/overlay.rs](../src/overlay.rs)) omija ten
-łańcuch, tak jak VizRS ffPlayout System mieszał grafikę we własnym ffmpeg. To
+łańcuch. To
 też statyczna binarka (musl), więc działa w obrazie ErsatzTV na amd64
 i arm64 bez względu na jego glibc; `seed` kładzie ją do `/vizrs` (§4). W ErsatzTV ustawia się ją jako ścieżkę FFmpeg
 (**Settings → FFmpeg → FFmpeg Path** = `/vizrs/vizrs-ffmpeg`); kod ErsatzTV
@@ -996,7 +995,7 @@ harmonogramu jest dużo krótsza, więc w trakcie emisji pauza nie występuje.
 
 ### Live ingest
 
-Jak w VizRS ffPlayout System, kanał można przełączyć z harmonogramu na
+Kanał można przełączyć z harmonogramu na
 przychodzący sygnał na żywo (RTMP albo SRT). ErsatzTV zostaje bez zmian:
 sygnał przyjmuje osobna usługa, sidecar trzyma jego stan, a podmianę obrazu
 robi nakładka ffmpeg.
@@ -1051,7 +1050,7 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    Sidecar trzyma ostatnie PAT i PMT oraz strumień od ostatniej klatki
    kluczowej (do 32 MB), więc czytelnik dołącza od razu od obrazu. Jeden sygnał
    na kanał: drugi, gdy pierwszy trwa, dostaje 409 (aktywne przejęcie nie jest
-   wywłaszczane, jak w ffPlayout). Bez `ingest_token` (`VIZRS_INGEST_TOKEN`)
+   wywłaszczane). Bez `ingest_token` (`VIZRS_INGEST_TOKEN`)
    ingest jest wyłączony, a `POST /ingest` odpowiada 404.
    `GET /ingest/state?channel=N` → `{"enabled":true,"anytime":true,"hold":false,
    "live":true,"audio":true,"video":"h264","seconds":12}`, `/health` → `ingest`
@@ -1132,8 +1131,8 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    zaczyna od bieżącej chwili i pisze ostrzeżenie `live run of … s from the
    live edge: the runs before left it … s behind`.
    Live zastępuje harmonogram, nie przesuwa go: program po powrocie idzie
-   od bieżącego miejsca, a ominięta część przepada (w ffPlayout program był
-   wstrzymywany). Kawałek, który zaczyna się w trakcie live, od razu idzie
+   od bieżącego miejsca, a ominięta część przepada.
+   Kawałek, który zaczyna się w trakcie live, od razu idzie
    z sygnału.
 
 Rozmiar kanału dla przebiegu live: najnowszy segment w katalogu playlisty
@@ -1262,7 +1261,7 @@ duration: "00:30:00"
    (plansza, stan sprawdzany dalej) i bez względu na `ingest_anytime`.
 
 `ingest_anytime` (`VIZRS_INGEST_ANYTIME`, domyślnie `true`): czy sygnał
-przejmuje kanał także poza audycjami na żywo, jak w ffPlayout (każdy
+przejmuje kanał także poza audycjami na żywo (każdy
 kawałek). `false` = studio wchodzi na antenę tylko w swoich pozycjach
 ramówki, a w pozostałym czasie jego sygnał niczego nie zmienia (`/ingest/state`:
 `"anytime"`). Przełącznik „poza audycjami” (live API, VizRS Live) nadpisuje to dla
@@ -1488,29 +1487,6 @@ Zasady zgodności:
 - **Styk zmienia się w obu repozytoriach naraz.** Zmiana API, pól odpowiedzi, parametrów lub zmiennych wspólnego stosu (`compose.cg-playout.yml`) po jednej stronie wymaga dostosowania drugiej strony i jej dokumentacji, zanim wejdzie do wydania. Opis styku jest po stronie dostawcy: dla API CG Playout (`/health`, `/etv/pages`, `/ingest/state`, `/api/live/*`) dostawcą jest ta aplikacja (§1 „Live API”), a dla protokołu VizRS (TCP 6100, `/output`) dostawcą jest VizRS CG System (`docs/API.md`).
 - **Starsza wersja sąsiada nie psuje aplikacji.** Rozszerzenia API w CG Playout zachowują kompatybilność wsteczną ze starszą wersją VizRS Live; z kolei przy współpracy z serwerem VizRS CG System brak nowych możliwości serwera grafiki nie może powodować błędu krytycznego ani przerywać emisji kanału.
 - **Wydania razem.** Przed wydaniem sprawdź z bieżącymi wersjami pozostałych aplikacji pakietu (VizRS CG System i VizRS Live); zmianę wymagającą nowszej wersji sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
-
-## 2. Odpowiedniki w VizRS ffPlayout System
-
-VizRS ffPlayout System jest od 2026-10-24 archiwum: nie jest rozwijany i
-zostaje jako wzorzec. Tabela pokazuje, skąd pochodzą opcje i jak przenieść
-szablony komend; nowe funkcje VizRS CG Playout nie mają już odpowiednika tam.
-
-| ffPlayout | ErsatzTV / VizRS CG Playout |
-|---|---|
-| Ustawienia → grafika VizRS: adres, token | `vizrs.address`, `vizrs.token` |
-| komendy klipu / reklamy | `on_clip` / `on_ad` |
-| URL wtapiania | `output_url` |
-| reklama = `"category": "advertisement"` | `ad_match.path` / `ad_match.title` (wyrażenia regularne na ścieżce i tytule) |
-| wtapianie w łańcuchu filtrów ffmpeg | nakładka ffmpeg (§1), bez niej element grafiki „script” ErsatzTV, `z_index: 100` |
-| reklama zaznaczona na pozycji | pozycja harmonogramu bez elementu **VizRS** (`ad_without_element`) |
-| lista `vizrs` na pozycji playlisty | brak (ErsatzTV nie ma pól na pozycję) |
-| `{next_*}` z playlisty | z wpisów EPG ErsatzTV (`epg_entries: 3`) |
-| przechwytywanie co n-tą klatkę Chromium, wtapianie aktualnej grafiki w każdą klatkę | to samo (§1, płynność animacji), plus zrzut stanu końcowego |
-| brak – grafika zawsze w rozmiarze kanału | `render_size` / `&render=` (rozmiar renderowania grafiki, §1) |
-| live ingest: odbiorniki RTMP/SRT kanału, przejęcie od pierwszej klatki obrazu, `idle_timeout_ms` (2 s) | `VIZRS_INGEST` (`kanał=URL`) usługi `ingest`, `VIZRS_INGEST_IDLE_MS` (15 s; live kończy się po `ingest_idle_seconds`, domyślnie 8 s ciszy w sidecarze); przejęcie w nakładce ffmpeg (`VIZRS_FFMPEG_INGEST`, §1, Live ingest) |
-| program wstrzymany na czas live | program idzie dalej według zegara (harmonogram ErsatzTV), część zastąpiona przez live przepada |
-| priorytety odbiorników kanału | brak: pierwszy sygnał kanału trzyma antenę do końca |
-| live tylko poza playlistą (przejęcie w dowolnej chwili) | także audycje na żywo w ramówce i EPG (`live_shows`, Remote Stream ErsatzTV), `ingest_anytime: false` = live tylko w nich |
 
 ## 3. Komendy i symbole zastępcze
 

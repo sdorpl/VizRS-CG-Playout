@@ -1,5 +1,5 @@
 name: Release
-# Wydanie po wypchnięciu znacznika v* (np. v2.0.6) albo ręcznie (Actions → Release → Run workflow).
+# Wydanie po wypchnięciu znacznika v* (np. v26.11.10) albo ręcznie (Actions → Release → Run workflow).
 #   binarka vizrs-cg (Rust) z client/ (vizrs-etv-client i vizrs-ffmpeg, statyczne musl) i etv/: Linux x86_64 i arm64 (.tar.gz)
 #   obraz Docker ghcr.io/<właściciel>/vizrs-cg:<wersja> i :latest (amd64 + arm64)
 #   obraz ghcr.io/<właściciel>/vizrs-seed:<wersja> i :latest (dane startowe i programy ErsatzTV; stosy s1 i s2)
