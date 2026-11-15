@@ -2,7 +2,8 @@
 
 ## Niewydane
 
-- **Wydanie:** AppImage okna klienta VizRS Live (`VizRS-Live-<wersja>-x86_64.AppImage`, okno z panelem `vizrs-live` w środku) buduje akcja Release na GitHubie (bundler Tauri, Ubuntu 22.04, krok sprawdza `--version`) – jak AppImage okna Trio w VizRS CG System. DOKUMENTACJA §3.
+- **Aplikacja VizRS Live – poprawka: AppImage nie działał.** Okno domyślnie uruchamiało „panel lokalny” (`vizrs-live` na tym komputerze), który bez ErsatzTV i tokenu mostu kończył się błędem „brak tokenu mostu”. Aplikacja jest teraz wyłącznie **natywnym klientem panelu na serwerze**: przy starcie łączy się z zapisanym panelem („łącz przy uruchomieniu”), a bez niego otwiera okno „Połącz z panelem” (adres i token). Usunięte: tryb `local`, opcje `--live`, `-- …`, `VIZRS_LIVE_BIN`, przycisk „Panel lokalny”, menu „Pokaż logi panelu lokalnego” i `vizrs-live` dołączany do paczek (AppImage mniejszy). DOKUMENTACJA §3.
+- **Wydanie:** AppImage okna klienta VizRS Live (`VizRS-Live-<wersja>-x86_64.AppImage`) buduje akcja Release na GitHubie (bundler Tauri, Ubuntu 22.04, krok sprawdza `--version`) – jak AppImage okna Trio w VizRS CG System. DOKUMENTACJA §3.
 
 ## 26.11.10 – wydanie (2026-11-14)
 

@@ -1,8 +1,8 @@
 // Test aplikacji VizRS Live w działaniu (otwiera okna): wzór – tests/e2e/shell.js VizRS CG System.
 //   node desktop/tests/okno.cjs [vizrs-live] [vizrs-live-desktop]
 // Domyślnie server/target/release/vizrs-live i desktop/target/release/vizrs-live-desktop; atrapa mostu: tests/mock-bridge.cjs.
-// Kroki: panel lokalny (okno uruchamia vizrs-live i zamyka go przy wyjściu), panel zdalny z tokenem przez pośrednika
-// (strona nie zna tokenu), okno „Połącz z panelem” – zły token (komunikat) i dobry (przełączenie na panel).
+// Kroki: start bez zapisanego panelu = okno „Połącz z panelem” (okno niczego nie uruchamia lokalnie), panel na serwerze
+// (tu: vizrs-live z tokenem) przez pośrednika (strona nie zna tokenu), okno połączenia – zły token i dobry.
 'use strict';
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
@@ -70,19 +70,16 @@ const run = (args, env = ENV, timeout = 60000) => {
     const bad = spawnSync(APP, ['--nieznana'], { encoding: 'utf8', timeout: 10000 });
     ok(bad.status === 2 && /nieznany argument/.test(bad.stderr), 'zły argument: kod 2 i komunikat (bez okna)', bad.status);
 
-    // 1. panel lokalny: okno uruchamia vizrs-live na 127.0.0.1 z opcjami po --, zamyka go przy wyjściu
+    // 1. start bez zapisanego panelu: okno połączenia, bez uruchamiania vizrs-live; dawny tryb lokalny = zły argument
     const before = new Set(spawnSync('pgrep', ['-x', 'vizrs-live'], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean));
-    const a = run(['local', '--live', LIVE, '--probe', probeFile(), '--', '--bridge', `http://127.0.0.1:${BPORT}`, '--bridge-token', BTOKEN]);
-    ok(a.res?.where === 'panel' && /^http:\/\/127\.0\.0\.1:\d+\/$/.test(a.res.href) && /OK/.test(a.res.pill) && a.res.status === 200 && a.res.shell && a.res.side > 10,
-      'panel lokalny: strona z vizrs-live, most OK, ekrany', a.res || a.stderr);
-    const port = Number((a.res?.href || '').split(':')[2]?.replace('/', ''));
-    await sleep(500);
-    ok(port && !(await up(port)), 'panel lokalny zamknięty razem z programem', port);
+    const a = run(['--probe', probeFile()]);
+    ok(a.res?.where === 'connect' && a.res.unexpected, 'start bez zapisanego panelu: okno „Połącz z panelem”', a.res || a.stderr);
     const after = spawnSync('pgrep', ['-x', 'vizrs-live'], { encoding: 'utf8' }).stdout.split('\n').filter((p) => p && !before.has(p));
-    ok(after.length === 0, 'bez osieroconych procesów vizrs-live', after);
-    ok(fs.existsSync(path.join(tmp, 'state/vizrs-live/panel.log')), 'log panelu lokalnego w katalogu stanu');
+    ok(after.length === 0, 'okno nie uruchamia vizrs-live', after);
+    const loc = spawnSync(APP, ['local'], { encoding: 'utf8', timeout: 10000 });
+    ok(loc.status === 2 && /nieznany argument/.test(loc.stderr), 'dawny tryb „local”: kod 2 (bez okna)', loc.status);
 
-    // 2. panel zdalny (tu: vizrs-live z tokenem) przez pośrednika – token zostaje w programie
+    // 2. panel na serwerze (tu: vizrs-live z tokenem) przez pośrednika – token zostaje w programie
     const PPORT = await freePort();
     const panel = spawn(LIVE, ['--bind', '127.0.0.1', '--port', String(PPORT), '--token', PTOKEN, '--bridge', `http://127.0.0.1:${BPORT}`, '--bridge-token', BTOKEN], { stdio: 'ignore' });
     kids.push(panel);

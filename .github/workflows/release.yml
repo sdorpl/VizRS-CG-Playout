@@ -7,7 +7,7 @@ name: Release
 #                          ghcr.io/<właściciel>/vizrs-live-legacy:<wersja>[-legacy<legacy>] i :latest
 #     (-legacy<wersja> tylko przy legacy przypiętym w .env.example, np. ghcr.io/ersatztv/legacy:v26.12.0)
 #   obraz legacy (amd64) z akceleracją Intel VAAPI/QSV, AMD VAAPI, NVIDIA NVENC – sprawdza tests/hwaccel.sh przed publikacją
-#   AppImage aplikacji VizRS Live (okno desktop/ z panelem vizrs-live w środku): VizRS-Live-<wersja>-x86_64.AppImage
+#   AppImage aplikacji VizRS Live (okno desktop/ – klient panelu na serwerze): VizRS-Live-<wersja>-x86_64.AppImage
 #     (bundler Tauri na Ubuntu 22.04 – starsza glibc, WebKitGTK 4.1)
 #   wydanie na GitHubie z sumami SHA256SUMS.txt
 # Wersja = server/Cargo.toml (znacznik musi się zgadzać). Z łącznikiem (v1.2.0-rc1) = wydanie wstępne, bez :latest.
@@ -131,17 +131,12 @@ jobs:
         with:
           node-version: 22
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file desktop-file-utils
-      - name: Panel vizrs-live obok okna (externalBin)
-        run: |
-          (cd server && cargo build --release --locked)
-          mkdir -p desktop/binaries
-          cp server/target/release/vizrs-live "desktop/binaries/vizrs-live-$(rustc -vV | sed -n 's/^host: //p')"
       - name: AppImage (bundler Tauri)
         working-directory: desktop
         env:
           # linuxdeploy / appimagetool to AppImage – na runnerze bez FUSE rozpakowują się same
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npx --yes @tauri-apps/cli@2 build --ci --config tauri.bundle.json --bundles appimage
+        run: npx --yes @tauri-apps/cli@2 build --ci --bundles appimage
       - name: Paczka
         env:
           V: ${{ needs.wersja.outputs.v }}
@@ -223,6 +218,6 @@ jobs:
           body: |
             **Docker (amd64 / arm64):** `ghcr.io/${{ needs.wersja.outputs.owner }}/vizrs-live:${{ needs.wersja.outputs.v }}` (panel) i `ghcr.io/${{ needs.wersja.outputs.owner }}/vizrs-live-legacy:${{ needs.wersja.outputs.v }}${{ needs.wersja.outputs.lv }}` (ErsatzTV legacy `${{ needs.wersja.outputs.legacy }}` z mostem) – wdrożenie: `cp .env.example .env && docker compose up -d` (docs/RUNBOOK.md §2), w stosie VizRS CG Playout: `compose.cg-playout.yml` (RUNBOOK §2a).
             **Akceleracja sprzętowa (amd64):** obraz legacy ma ffmpeg z Intel VAAPI/QSV, AMD VAAPI i NVIDIA NVENC (sprawdzone `tests/hwaccel.sh` przed publikacją); kartę przekazują nakładki `compose.vaapi.yml` (Intel, AMD) i `compose.nvidia.yml` (NVIDIA, NVIDIA Container Toolkit) – RUNBOOK §2b.
-            **Linux – aplikacja okienkowa:** `VizRS-Live-*-x86_64.AppImage` (okno z panelem `vizrs-live` w środku; wymaga WebKitGTK 4.1).
+            **Linux – aplikacja okienkowa:** `VizRS-Live-*-x86_64.AppImage` (natywny klient panelu na serwerze – adres i token panelu; wymaga WebKitGTK 4.1).
             **Linux x86_64 / arm64:** archiwum z panelem `vizrs-live` (statyczny, UI w binarce) – wymaga ErsatzTV legacy z mostem: `vizrs-live --bridge http://<legacy>:8409 --bridge-token …`.
             Zmiany: CHANGELOG.md.

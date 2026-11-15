@@ -41,7 +41,6 @@ button:disabled { opacity:.5; cursor:default; }
 <div id="list"></div>
 <div id="err"></div>
 <div class="actions">
-  <button id="local" type="button">Panel lokalny</button>
   <span class="sp"></span>
   <button id="cancel" type="button">Anuluj</button>
   <button id="go" class="primary" type="button">Połącz</button>
@@ -56,8 +55,7 @@ addEventListener('keydown', (e) => {
 const C = window.__vizrsConn || { servers: [] };
 const $ = (id) => document.getElementById(id);
 const send = (m) => (window.__vizrsPost || window.ipc.postMessage)(JSON.stringify(m));
-$('now').textContent = 'Teraz: ' + (!C.current ? 'nie połączono' : C.remote ? C.current : 'panel lokalny');
-if (!C.local) $('local').hidden = true;
+$('now').textContent = 'Teraz: ' + (C.current || 'nie połączono');
 if (C.remote) { $('url').value = C.current; $('token').value = C.token || ''; $('auto').checked = C.auto === C.current; }
 function fill(s) {
   $('url').value = s.url; $('token').value = ''; $('keep').checked = s.hasToken;
@@ -79,7 +77,6 @@ function go() {
 }
 window.__vizrsConnError = (msg) => { $('err').textContent = msg; $('go').disabled = false; $('go').textContent = 'Połącz'; };
 $('go').onclick = go;
-$('local').onclick = () => send({ action: 'local' });
 $('cancel').onclick = () => send({ action: 'cancel' });
 $('show').onclick = () => { $('token').type = $('token').type === 'password' ? 'text' : 'password'; };
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') send({ action: 'cancel' }); });

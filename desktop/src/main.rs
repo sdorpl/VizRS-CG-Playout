@@ -1,12 +1,11 @@
 //! VizRS Live – aplikacja panelu kanału na Tauri 2 (Linux, Windows, macOS).
 //!
-//!   vizrs-live-desktop [local|connect] [--connect URL] [--token T] [--live PLIK] [-- OPCJE vizrs-live]
+//!   vizrs-live-desktop [connect] [--connect URL] [--token T]
 //!
-//! Strona to ten sam panel co w przeglądarce (serwuje go `vizrs-live`). Dwa tryby:
-//! - **panel lokalny** – okno uruchamia `vizrs-live --bind 127.0.0.1` na wolnym porcie (konfiguracja: zmienne
-//!   `VIZRS_LIVE_*` i opcje po `--`) i zamyka go przy wyjściu;
-//! - **klient panelu zdalnego** – okno łączy się z panelem (np. na VPS) przez pośrednika na `127.0.0.1`
-//!   (`proxy`), który dokleja token: strona go nie zna.
+//! Natywna aplikacja sterowania: klient panelu działającego na serwerze w stosie (np. VPS, studio). Strona to ten
+//! sam panel co w przeglądarce (serwuje go `vizrs-live` na serwerze); okno łączy się z nim przez pośrednika na
+//! `127.0.0.1` (`proxy`), który dokleja token – strona go nie zna. Okno niczego nie uruchamia lokalnie: panel bez
+//! ErsatzTV i jego mostu nie ma czym sterować. Bez zapisanego panelu „przy uruchomieniu” – okno „Połącz z panelem”.
 //!
 //! Strona nie ma dostępu do systemu – tylko komunikaty z białej listy (`bridge`) przez komendę `ipc`, i tylko
 //! od strony bieżącego panelu (uprawnienie w działaniu: `allow_page`).
@@ -16,16 +15,13 @@
 mod bridge;
 mod connect;
 mod gpu;
-mod paths;
 mod proxy;
 mod scale;
 mod screen;
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -36,8 +32,7 @@ use tauri::webview::{NewWindowResponse, PageLoadEvent};
 #[cfg(not(target_os = "linux"))]
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Manager, RunEvent, Theme, UserAttentionType, WebviewUrl, WebviewWindowBuilder,
-    WindowEvent,
+    AppHandle, Manager, Theme, UserAttentionType, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
@@ -58,7 +53,6 @@ const IPC_SHIM: &str = r#"(() => {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Panel,
-    Local,
     Connect,
 }
 
@@ -66,24 +60,19 @@ struct Args {
     kind: Kind,
     connect: Option<String>,
     token: Option<String>,
-    live: Option<String>,
-    /// opcje dla `vizrs-live` (po `--`)
-    extra: Vec<String>,
     probe: Option<(PathBuf, PathBuf)>,
 }
 
 fn help() -> &'static str {
     "vizrs-live-desktop – aplikacja VizRS Live (Tauri 2)
 
-Użycie: vizrs-live-desktop [local|connect] [opcje] [-- opcje vizrs-live]
+Użycie: vizrs-live-desktop [connect] [opcje]
 
-  local           panel lokalny: uruchom vizrs-live na tym komputerze (domyślnie, gdy nie zapisano panelu zdalnego)
-  connect         najpierw okno „Połącz z panelem” (adres i token panelu zdalnego, lista zapisanych)
-  --connect URL   panel zdalny, np. https://live.example.pl (VIZRS_LIVE_CONNECT)
-  --token T       token panelu zdalnego (VIZRS_LIVE_TOKEN) – zostaje w programie, strona go nie dostaje
-  --live PLIK     program vizrs-live do panelu lokalnego (VIZRS_LIVE_BIN; domyślnie obok programu albo w PATH)
-  -- …            opcje panelu lokalnego, np. -- --bridge http://127.0.0.1:8409 --bridge-token …
-                  (albo zmienne VIZRS_LIVE_BRIDGE, VIZRS_LIVE_BRIDGE_TOKEN, VIZRS_LIVE_CG_URL… – jak vizrs-live --help)
+Klient panelu na serwerze. Bez opcji: zapisany panel „przy uruchomieniu”, a bez niego okno „Połącz z panelem”.
+
+  connect         najpierw okno „Połącz z panelem” (adres i token panelu, lista zapisanych)
+  --connect URL   panel na serwerze, np. https://live.example.pl albo http://serwer:8090 (VIZRS_LIVE_CONNECT)
+  --token T       token panelu (VIZRS_LIVE_TOKEN) – zostaje w programie, strona go nie dostaje
   --probe JS --probe-out JSON   narzędzie testowe: po wczytaniu strony wykonaj skrypt, zapisz wynik, zakończ
 
 Plik → Połącz z panelem… (Ctrl+Shift+K). Działa jedna instancja programu – kolejne uruchomienie wysuwa okno."
@@ -95,8 +84,6 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         kind: Kind::Panel,
         connect: env("VIZRS_LIVE_CONNECT"),
         token: None,
-        live: env("VIZRS_LIVE_BIN"),
-        extra: vec![],
         probe: None,
     };
     let (mut pj, mut po) = (None, None);
@@ -108,17 +95,11 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             argv.get(i).cloned().ok_or(format!("{flag}: brak wartości"))
         };
         match flag.as_str() {
-            "local" => a.kind = Kind::Local,
             "connect" => a.kind = Kind::Connect,
             "--connect" => a.connect = Some(val()?),
             "--token" => a.token = Some(val()?),
-            "--live" => a.live = Some(val()?),
             "--probe" => pj = Some(PathBuf::from(val()?)),
             "--probe-out" => po = Some(PathBuf::from(val()?)),
-            "--" => {
-                a.extra = argv[i + 1..].to_vec();
-                break;
-            }
             "--help" | "-h" => {
                 println!("{}", help());
                 std::process::exit(0);
@@ -137,7 +118,6 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         i += 1;
     }
     if a.connect.is_some() {
-        // token tylko dla panelu zdalnego; dla lokalnego VIZRS_LIVE_TOKEN czyta sam vizrs-live
         a.token = a.token.or_else(|| env("VIZRS_LIVE_TOKEN"));
         a.connect = Some(connect::normalize_url(
             a.connect.as_deref().unwrap_or_default(),
@@ -153,9 +133,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 /// Gdzie pracuje okno.
 enum Mode {
-    /// `vizrs-live` uruchomiony przez okno na `127.0.0.1`
-    Local { base: String },
-    /// panel zdalny przez pośrednika z tokenem
+    /// panel na serwerze przez pośrednika z tokenem
     Remote { url: String, proxy: proxy::Proxy },
     /// przed wyborem (okno połączenia)
     None,
@@ -163,10 +141,6 @@ enum Mode {
 
 struct App {
     mode: Mode,
-    /// panel lokalny uruchomiony przez okno (zamykany przy wyjściu)
-    child: Option<Child>,
-    live: Option<String>,
-    extra: Vec<String>,
     probe: Option<(String, PathBuf)>,
     wins: HashSet<String>,
     alert: HashMap<String, bool>,
@@ -179,7 +153,6 @@ impl App {
     /// Adres serwera strony okna i pierwszej strony.
     fn page(&self) -> Option<(String, String)> {
         match &self.mode {
-            Mode::Local { base } => Some((base.clone(), format!("{base}/"))),
             Mode::Remote { proxy, .. } => Some((proxy.base.clone(), proxy.start_url())),
             Mode::None => None,
         }
@@ -244,125 +217,12 @@ fn script() -> String {
         .replace("__OS__", std::env::consts::OS)
 }
 
-// ------------------------------------------------------------------ panel lokalny
-
-/// Program `vizrs-live`: wskazany, obok tego programu albo w `PATH`.
-fn find_live(over: Option<&str>) -> Option<PathBuf> {
-    if let Some(p) = over {
-        return Some(PathBuf::from(p)).filter(|p| p.is_file());
-    }
-    let name = if cfg!(windows) {
-        "vizrs-live.exe"
-    } else {
-        "vizrs-live"
-    };
-    let beside = std::env::current_exe().ok()?.parent()?.join(name);
-    if beside.is_file() {
-        return Some(beside);
-    }
-    std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join(name))
-            .find(|f| f.is_file())
-    })
-}
-
-fn health(port: u16) -> bool {
-    let Ok(mut s) =
-        TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(300))
-    else {
-        return false;
-    };
-    s.set_read_timeout(Some(Duration::from_secs(2))).ok();
-    if s.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return false;
-    }
-    let mut out = String::new();
-    s.read_to_string(&mut out).is_ok() && out.starts_with("HTTP/1.1 200")
-}
-
-/// Uruchamia `vizrs-live --bind 127.0.0.1 --port <wolny>` i czeka na `/health` (log: katalog stanu `panel.log`).
-fn start_local(live: Option<&str>, extra: &[String]) -> Result<(Child, String), String> {
-    let bin = find_live(live).ok_or("Nie znaleziono programu vizrs-live (obok aplikacji ani w PATH) – wskaż go: --live PLIK albo VIZRS_LIVE_BIN, albo połącz się z panelem zdalnym (Plik → Połącz z panelem).")?;
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .map_err(|e| format!("wolny port: {e}"))?;
-    let dir = paths::state_dir();
-    std::fs::create_dir_all(&dir).ok();
-    let log = dir.join("panel.log");
-    if log.exists() {
-        std::fs::rename(&log, dir.join("panel.log.1")).ok();
-    }
-    let out = std::fs::File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
-    let err = out.try_clone().map_err(|e| e.to_string())?;
-    let mut cmd = Command::new(&bin);
-    cmd.args(["--bind", "127.0.0.1", "--port", &port.to_string()])
-        .args(extra)
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err);
-    // panel lokalny słucha tylko na 127.0.0.1 – token operatora niepotrzebny (i nie trafia do strony)
-    cmd.env_remove("VIZRS_LIVE_BIND")
-        .env_remove("VIZRS_LIVE_PORT");
-    let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", bin.display()))?;
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(15) {
-        if let Ok(Some(st)) = child.try_wait() {
-            let tail: String = std::fs::read_to_string(&log)
-                .unwrap_or_default()
-                .lines()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Err(format!(
-                "Panel lokalny nie wystartował ({st}):\n{tail}\nLog: {}",
-                log.display()
-            ));
-        }
-        if health(port) {
-            return Ok((child, format!("http://127.0.0.1:{port}")));
-        }
-        std::thread::sleep(Duration::from_millis(150));
-    }
-    let _ = child.kill();
-    Err(format!(
-        "Panel lokalny nie odpowiada po 15 s. Log: {}",
-        log.display()
-    ))
-}
-
-fn use_local(app: &AppHandle) -> Result<(), String> {
-    let (live, extra) = {
-        let a = state(app);
-        if let (Mode::Local { .. }, Some(_)) = (&a.mode, &a.child) {
-            return Ok(());
-        }
-        (a.live.clone(), a.extra.clone())
-    };
-    let (child, base) = start_local(live.as_deref(), &extra)?;
-    let mut a = state(app);
-    if let Some(mut old) = a.child.replace(child) {
-        let _ = old.kill();
-    }
-    a.mode = Mode::Local { base };
-    Ok(())
-}
+// ------------------------------------------------------------------ panel
 
 fn use_remote(app: &AppHandle, url: String, token: Option<String>) -> Result<(), String> {
     let p = proxy::start(&url, token)?;
     let mut a = state(app);
     a.mode = Mode::Remote { url, proxy: p };
-    // panel lokalny nie jest już potrzebny
-    if let Some(mut c) = a.child.take() {
-        let _ = c.kill();
-    }
     Ok(())
 }
 
@@ -544,12 +404,11 @@ fn open_connect(app: &AppHandle) {
     }
     let data = {
         let a = state(app);
-        let (current, local) = match &a.mode {
-            Mode::Remote { url, .. } => (url.clone(), Some("lokalnie")),
-            Mode::Local { .. } => ("lokalnie".to_string(), Some("lokalnie")),
-            Mode::None => (String::new(), Some("lokalnie")),
+        let current = match &a.mode {
+            Mode::Remote { url, .. } => url.clone(),
+            Mode::None => String::new(),
         };
-        connect::page_data(&connect::Saved::load(), &current, None, local)
+        connect::page_data(&connect::Saved::load(), &current, None)
     };
     let parent = state(app)
         .target_label()
@@ -648,17 +507,6 @@ fn on_conn(app: &AppHandle, body: &str) {
             if let Err(e) = saved.save() {
                 conn_error(app, &e);
             }
-        }
-        connect::Msg::Local => {
-            let app2 = app.clone();
-            std::thread::spawn(move || {
-                let r = use_local(&app2);
-                let app3 = app2.clone();
-                let _ = app2.run_on_main_thread(move || match r {
-                    Ok(()) => switch(&app3),
-                    Err(e) => conn_error(&app3, &e),
-                });
-            });
         }
         connect::Msg::Connect(mut req) => {
             if req.token.is_none() {
@@ -799,7 +647,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let (s4, s5) = (sep()?, sep()?);
     let view: Vec<&Item> = vec![&reload, &full, &s4, &zin, &zout, &z0, &s5, &dev];
-    let logs = item("logs", "Pokaż logi panelu lokalnego", None)?;
     let updates = item("updates", "Sprawdź aktualizacje", None)?;
     let about = item(
         "about",
@@ -810,8 +657,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         },
         None,
     )?;
-    let (s6, s7) = (sep()?, sep()?);
-    let mut help: Vec<&Item> = vec![&logs, &s6, &updates];
+    let s7 = sep()?;
+    let mut help: Vec<&Item> = vec![&updates];
     if !mac {
         help.extend([&s7 as &Item, &about]);
     }
@@ -904,19 +751,14 @@ fn on_menu(app: &AppHandle, id: &str) {
                 w.open_devtools();
             }
         }
-        "logs" => open_external(&paths::state_dir().to_string_lossy()),
         "updates" => open_external(RELEASES),
         "about" => {
             let msg = {
                 let a = state(app);
                 let mode = match &a.mode {
-                    Mode::Local { base } => format!(
-                        "panel lokalny ({base}, log: {})",
-                        paths::state_dir().join("panel.log").display()
-                    ),
-                    Mode::Remote { url, .. } => format!(
-                        "panel zdalny {url} (przez pośrednika okna – token zostaje w programie)"
-                    ),
+                    Mode::Remote { url, .. } => {
+                        format!("panel {url} (przez pośrednika okna – token zostaje w programie)")
+                    }
                     Mode::None => "nie połączono".into(),
                 };
                 format!(
@@ -971,16 +813,13 @@ fn main() {
                 std::process::exit(2);
             }
         });
-    let auto = if args.connect.is_none() && args.kind != Kind::Local {
+    let auto = if args.connect.is_none() {
         connect::Saved::load().auto
     } else {
         None
     };
     let app_state = App {
         mode: Mode::None,
-        child: None,
-        live: args.live.clone(),
-        extra: args.extra.clone(),
         probe,
         wins: HashSet::new(),
         alert: HashMap::new(),
@@ -1006,22 +845,21 @@ fn main() {
             h.set_theme(Some(Theme::Dark));
             app.set_menu(build_menu(&h)?)?;
             app.on_menu_event(|app, ev| on_menu(app, ev.id().as_ref()));
-            // panel: zdalny (--connect albo zapisany „przy uruchomieniu”), okno połączenia albo lokalny
+            // panel na serwerze: --connect albo zapisany „przy uruchomieniu”; bez nich – okno połączenia
             let started = if let Some(c) = connect_url {
-                use_remote(&h, c, token)
+                Some(use_remote(&h, c, token))
             } else if let Some(a) = auto {
                 let t = connect::Saved::load().token_for(&a);
-                use_remote(&h, a, t)
-            } else if kind == Kind::Connect {
-                Ok(())
+                Some(use_remote(&h, a, t))
             } else {
-                use_local(&h)
+                None
             };
             match started {
-                Ok(()) if kind != Kind::Connect => open_panel(&h),
-                Ok(()) => open_connect(&h),
-                // bez panelu lokalnego (brak vizrs-live, zła konfiguracja) – wybór panelu zdalnego z komunikatem
-                Err(e) if kind == Kind::Panel => {
+                None => open_connect(&h),
+                Some(Ok(())) if kind != Kind::Connect => open_panel(&h),
+                Some(Ok(())) => open_connect(&h),
+                // zapisany panel nieosiągalny – wybór panelu z komunikatem
+                Some(Err(e)) if kind == Kind::Panel => {
                     open_connect(&h);
                     let (h2, msg) = (h.clone(), e.clone());
                     std::thread::spawn(move || {
@@ -1031,7 +869,7 @@ fn main() {
                     });
                     eprintln!("{e}");
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     eprintln!("{e}");
                     let h2 = h.clone();
                     h.dialog()
@@ -1069,15 +907,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    app.run(|app, ev| {
-        // panel lokalny żyje tylko z oknem; pośrednik kończy się razem z procesem
-        if let RunEvent::Exit = ev {
-            if let Some(mut c) = state(app).child.take() {
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-        }
-    });
+    // pośrednik kończy się razem z procesem
+    app.run(|_, _| {});
 }
 
 #[cfg(test)]
@@ -1090,23 +921,11 @@ mod tests {
 
     #[test]
     fn command_line() {
-        let a = args(&[
-            "local",
-            "--live",
-            "/x/vizrs-live",
-            "--",
-            "--bridge",
-            "http://b:8409",
-            "--bridge-token",
-            "t",
-        ])
-        .unwrap();
-        assert_eq!(a.kind, Kind::Local);
-        assert_eq!(a.live.as_deref(), Some("/x/vizrs-live"));
-        assert_eq!(
-            a.extra,
-            ["--bridge", "http://b:8409", "--bridge-token", "t"]
-        );
+        assert_eq!(args(&[]).unwrap().kind, Kind::Panel);
+        // dawny panel lokalny – usunięty: okno jest tylko klientem panelu na serwerze
+        assert!(args(&["local"]).is_err());
+        assert!(args(&["--live", "/x/vizrs-live"]).is_err());
+        assert!(args(&["--", "--bridge", "http://b:8409"]).is_err());
         let a = args(&["--connect", "https://live.example.pl/", "--token", "abc"]).unwrap();
         assert_eq!(a.connect.as_deref(), Some("https://live.example.pl"));
         assert_eq!(a.token.as_deref(), Some("abc"));

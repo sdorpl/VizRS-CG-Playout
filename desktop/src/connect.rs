@@ -186,7 +186,6 @@ pub struct Request {
 #[derive(Debug, PartialEq)]
 pub enum Msg {
     Connect(Request),
-    Local,
     Forget(String),
     Cancel,
 }
@@ -211,7 +210,6 @@ pub fn parse_msg(body: &str) -> Result<Msg, String> {
                 auto: v["auto"].as_bool().unwrap_or(false),
             }))
         }
-        Some("local") => Ok(Msg::Local),
         Some("forget") => Ok(Msg::Forget(v["url"].as_str().unwrap_or("").to_string())),
         Some("cancel") => Ok(Msg::Cancel),
         _ => Err("zły komunikat".into()),
@@ -219,23 +217,17 @@ pub fn parse_msg(body: &str) -> Result<Msg, String> {
 }
 
 /// Dane dla strony okna (`window.__vizrsConn`).
-pub fn page_data(
-    saved: &Saved,
-    current: &str,
-    current_token: Option<&str>,
-    local: Option<&str>,
-) -> String {
+pub fn page_data(saved: &Saved, current: &str, current_token: Option<&str>) -> String {
     let servers: Vec<Value> = saved
         .servers
         .iter()
         .map(|(u, t)| json!({ "url": u, "hasToken": t.is_some() }))
         .collect();
-    let remote = local != Some(current);
+    let remote = !current.is_empty();
     let data = json!({
         "current": current,
         "remote": remote,
         "token": if remote { current_token } else { None },
-        "local": local,
         "auto": saved.auto,
         "servers": servers,
     });
@@ -283,7 +275,7 @@ mod tests {
             })
         );
         assert!(parse_msg(r#"{"action":"connect","url":"cg.pl","token":"a&b"}"#).is_err());
-        assert_eq!(parse_msg(r#"{"action":"local"}"#).unwrap(), Msg::Local);
+        assert!(parse_msg(r#"{"action":"local"}"#).is_err()); // panelu lokalnego już nie ma
         assert!(parse_msg("probe:{}").is_err());
     }
 
