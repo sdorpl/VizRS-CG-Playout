@@ -2,44 +2,88 @@
 
 Sidecar (jeden plik binarny w Ruście + bezgłowy Chromium) łączący **ErsatzTV** z silnikiem grafiki **VizRS**: komendy TCP na start klipu,
 reklamy bez grafiki i wtapianie `/output` – przez nakładkę ffmpeg (grafika wprost do ffmpeg ErsatzTV) albo element grafiki „script” ErsatzTV –
-oraz live ingest (RTMP/SRT przejmuje kanał, jak w ffPlayout). Kod ErsatzTV zostaje niezmieniony.
+oraz live ingest (RTMP/SRT przejmuje kanał). Kod ErsatzTV zostaje niezmieniony.
 
-Pakiet VizRS (repozytoria obok, `../`) – aplikacje pakietu mają być **zawsze ze sobą zgodne** (DOKUMENTACJA §1 „Pakiet VizRS”); zmiana styku = dostosowanie drugiej strony w tym samym cyklu:
-- **VizRS CG System** (`../VizRS CG System`) – silnik grafiki (Rust): Trio, `/output`, API TCP 6100 / HTTP / SSE. Plan kanału: `docs/plany/PLAN-kanal.md`.
-- **VizRS CG Playout** (to repo, do 2026-10-31 „VirtRS CG Playout”) – ta integracja dla ErsatzTV. Zmieniona tylko nazwa w tekstach; od 2.6.0 binarka, crate i obraz to `vizrs-cg` (wcześniej `virtrs-cg`); usługi compose i zmienne `VIRTRS_*` bez zmian; repozytorium GitHub: `sdorpl/VizRS-CG-Playout`.
-- **VizRS Live** (`../VizRS Live`) – panel kanału nad ErsatzTV legacy; korzysta z live API tego repo (`/api/live/*`, `/health`, `/etv/pages`, `/ingest/state`) i ma nakładkę `compose.cg-playout.yml` na stos stąd.
-- **VizRS CG Artist** (`../VizRS CG Artist`) – edytor grafik i animacji; sceny wysyła na serwer VizRS CG System, z tym repo nie styka się bezpośrednio.
-- **VizRS ffPlayout System** (`../VizRS ffPlayout System`) – **archiwum od 2026-10-24**: porzucony własny playout 24/7 (fork ffplayout, GPL-3.0). Zostaje jako wzorzec integracji VizRS, nie jest rozwijany.
+Kod, komentarze i komunikaty logu są po angielsku; dokumentacja i rozmowa po polsku.
 
-Język pracy z użytkownikiem i dokumentacji: **polski**. Kod, komentarze i komunikaty logu są po angielsku — pisz zgodnie z otoczeniem.
+<!-- pakiet:A – blok wspólny pakietu VizRS; źródło: VizRS CG System/CLAUDE.md, kopie: tools/sync-zasady.sh (nie edytuj w kopii) -->
+Język pracy z użytkownikiem, dokumentacji, komentarzy, komunikatów i UI: **polski** – pisz zgodnie z otoczeniem.
+
+## Pakiet VizRS
+
+To repo jest częścią pakietu **VizRS**. Opis całego pakietu (mapa aplikacji, styki, stos, porty, plan porządków): [sdorpl/VizRS](https://github.com/sdorpl/VizRS) (lokalnie `../VizRS`).
+
+| Aplikacja (katalog obok, `../`) | Rola | Dostawca styku |
+|---|---|---|
+| **VizRS CG System** (`VizRS CG System`) | silnik grafiki: Trio, wyjście `/output`, TCP 6100, HTTP/SSE, `vizrs-render`; źródło wspólnego kodu i zasad pakietu | protokół VizRS, `/output`, `vizrs-render`, format show i `.cgpack` (`docs/API.md`) |
+| **VizRS CG Artist** (`VizRS CG Artist`) | edytor scen i animacji (Tauri 2) | – (klient CG System) |
+| **VizRS CG Playout** (`VirtRS CG Playout`) | sidecar grafiki i live ingest obok ErsatzTV; Live API | Live API `:7700` (DOKUMENTACJA §1) |
+| **VizRS Live** (`VizRS Live`) | panel kanału nad ErsatzTV legacy, VizRS Bridge, natywny klient panelu | most `/vizrs-bridge/*`, wspólny stos compose |
+
+Kierunek (decyzja 2026-11-15): VizRS Live łączy się z VizRS CG Playout w jeden produkt **„VizRS CG Playout”** (plan: sdorpl/VizRS §3).
+
+Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
+- **Styk zmienia się po obu stronach w tym samym cyklu.** Opis styku jest u dostawcy; klient opisuje tylko, jak z niego korzysta.
+- **Starsza wersja sąsiada nie psuje aplikacji ani emisji** – brak nowego pola lub ścieżki to „niedostępne w tej wersji”, nie błąd.
+- **Wydania razem:** przed wydaniem sprawdź z bieżącymi wersjami sąsiadów; zmianę wymagającą nowszego sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
+<!-- /pakiet:A -->
 
 ## Zacznij każdą sesję tutaj
 
-1. `git log -5`, `git status`.
-2. Przy zmianie zachowania przeczytaj właściwą sekcję [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) — w tym samym commicie ją zaktualizujesz.
-3. Przy komendach VizRS sprawdź składnię w `../VizRS CG System/docs/API.md` (sekcja TCP).
+<!-- pakiet:S -->
+- Przeczytaj [docs/STATUS.md](docs/STATUS.md) (bieżący etap, następne zadanie), `git log -5` i `git status`.
+- Przeczytaj [docs/LUKI.md](docs/LUKI.md): znane braki, uszeregowane G1 (niezawodność i bezpieczeństwo) → G2 (wierność) → G3 (funkcje).
+- Przy zmianie zachowania przeczytaj właściwą sekcję [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) – w tym samym commicie ją zaktualizujesz.
+- Zmiana dotyka styku z inną aplikacją pakietu – przeczytaj opis styku u dostawcy (tabela „Pakiet VizRS”) i sprawdź drugą stronę.
+<!-- /pakiet:S -->
+- Przy komendach VizRS sprawdź składnię w `../VizRS CG System/docs/API.md` (sekcja TCP).
 
 ## Niepodważalne zasady
 
-- **Numer wersji: rok.miesiąc.rewizja** (`26.11.1` = listopad 2026, pierwsze wydanie w miesiącu; kolejne `26.11.2`, w grudniu od `26.12.1`), bez zer wiodących (semver: Cargo, obrazy). Znacznik `v<wersja>` = `version` w `Cargo.toml`. Wydania idą z gałęzi `main`; `main-oldstable` to stan sprzed 26.11.1.
-- **Z VizRS tylko przez protokół**: TCP 6100 (`AUTH`, `STATE`, `TAKE`, `OUT`, …), strona `/output` i proces `vizrs-render stream` (renderer natywny VizRS, protokół klatek w VizRS DOKUMENTACJA §10.1; jego kod zostaje w VizRS). Nie kopiuj kodu między repozytoriami rodziny (różne licencje; ffPlayout jest GPL-3.0). Wyjątek (zgoda autora, 2026-10-25): wolno przenosić kod z modułów VizRS w ffPlayout napisanych wyłącznie przez autora (sdorpl) – `crates/app/src/utils/vizrs.rs`, `vizrs_capture.rs`, `crates/engine/src/compositor/graphics.rs` – sprawdź `git log` pliku. Kodu upstream ffplayout (inni autorzy) nadal nie.
-- **Wzorzec VizRS ffPlayout System (archiwum)**: opcje (`on_clip`, `on_ad`, `output_url`, adres/token), symbole zastępcze i zachowanie reklam pochodzą z ffPlayout i zostają zgodne, żeby szablony komend dało się przenieść. ffPlayout nie jest już rozwijany: nowe funkcje projektuj tutaj, niczego tam nie dopasowuj (tabela w DOKUMENTACJA §2 to mapa pojęć).
+### Wspólne dla pakietu
+
+<!-- pakiet:B -->
+- **Emisja nie pada przez nasz błąd.** Błędy przez `Result`, limity czasu na połączeniach, blokady odporne na zatrucie; awaria grafiki, panelu albo zapisu na dysk nie zatrzymuje anteny ani kanału.
+- **Dane z zewnątrz są obce.** Wejście z sieci, plików, ErsatzTV i sąsiednich aplikacji – walidacja i limity; tekst do DOM tylko przez `textContent` (bez `innerHTML`/`eval`); sekrety (tokeny) nie trafiają do przeglądarki ani do logów.
+- **Zależności tylko z listy.** Serwery pakietu (`vizrs`, `vizrs-live`) nie mają zależności zewnętrznych; front-end to czysty JS (moduły ES) bez bundlera, bibliotek i CDN. Wyjątki (okna Tauri, renderer natywny, sidecar) – tylko crate'y wymienione w nagłówku ich `Cargo.toml`; nowa zależność to decyzja użytkownika.
+- **Kod wspólny tylko przez synchronizację.** Kod, wygląd (`vizrs-ui.css`), moduły okna (`gpu.rs`, `scale.rs`, `screen.rs`) i zasady pakietu mają źródło w VizRS CG System; kopie aktualizują skrypty (`tools/sync-cg.sh`, `scripts/sync-ui.sh`, `tools/sync-zasady.sh`) ze sprawdzaniem `--check` w CI – kopii nie edytuje się ręcznie. Cudzy kod tylko na licencji zgodnej z MIT i z wpisem w `THIRD-PARTY.md`. ErsatzTV – wyłącznie przez jego interfejsy (element „script”, ścieżka FFmpeg, startup hook mostu, komendy MediatR), bez kopiowania i bez zmian w jego kodzie.
+- **Licencja: MIT** (`LICENSE`, `Copyright (c) 2026 sdorpl`; pole `license` w manifestach); składniki zewnętrzne – `THIRD-PARTY.md`.
+- **Numer wersji: rok.miesiąc.rewizja** (`26.11.1` = listopad 2026, pierwsze wydanie w miesiącu; kolejne `26.11.2`, w grudniu od `26.12.1`), bez zer wiodących (semver: Cargo, paczki, obrazy). Znacznik `v<wersja>` = wersja we wszystkich manifestach projektu (lista – „Tego projektu”). Wydania z gałęzi `main`; `main-oldstable` to stan sprzed 26.11.1.
+- **Gdzie co opisywać:** README tylko wprowadza i odsyła; opis działania, opcje i zmienne tylko w `docs/DOKUMENTACJA.md` (nie powielaj w README, planach ani STATUS); API, którego aplikacja jest dostawcą – `docs/API.md` (albo sekcja wskazana w „Tego projektu”); praca użytkownika – `docs/INSTRUKCJA*.md`; wdrożenie i awarie – `docs/RUNBOOK.md`; plany – `docs/plany/` + wiersz w `docs/plany/README.md`; opis całego pakietu – sdorpl/VizRS.
+- **Dokumentacja razem z kodem:** commit zmieniający zachowanie (UI, API, format, opcje, obrazy) aktualizuje w tym samym commicie `docs/DOKUMENTACJA.md`, a gdy dotyczy codziennej pracy – także instrukcję; API – `docs/API.md`; wdrożenie – `docs/RUNBOOK.md`; zmiany wydania – `CHANGELOG.md` (sekcja „Niewydane”); zamknięta luka – usuń wiersz z `docs/LUKI.md`; zmiana etapu – `docs/STATUS.md`.
+- **Produkcji i danych użytkownika nie ruszaj bez prośby.** Testy na kopii danych, innym porcie albo stosie testowym; działających serwerów, stosów i kontenerów nie zatrzymuj (mogą nadawać).
+- **Zobacz wynik.** Przy pracy nad UI zrzut ekranu (Playwright; pliki PNG poza repo) i obejrzenie go przed commitem.
+<!-- /pakiet:B -->
+
+### Tego projektu
+
+- **Manifesty wersji:** znacznik `v<wersja>` = `version` w `Cargo.toml` i `package.json`.
+- **Z VizRS CG System tylko przez protokół:** TCP 6100 (`AUTH`, `STATE`, `TAKE`, `OUT`, …), `GET /api/show`, strona `/output` i proces `vizrs-render stream` / `bounds` / `thumb` (renderer natywny, protokół klatek w VizRS CG System DOKUMENTACJA §10.1; jego kod zostaje w CG System – obraz `vizrs-cg` buduje go z tagu `VIZRS_REF` w `Dockerfile`).
 - **ErsatzTV bez zmian w kodzie**: integracja tylko przez element „script” (`etv/templates/graphics-elements/script/vizrs.yml`) z klientem `vizrs-etv-client` i nakładkę ffmpeg `vizrs-ffmpeg` ustawioną jako ścieżka FFmpeg – obie to statyczne binarki musl z tego crate'a, budowane w obrazie sidecara na amd64 i arm64 i instalowane przez sidecara (obraz ErsatzTV nie ma Pythona na arm64 i niczego nie doinstalowujemy). Nakładka zmienia wyłącznie wejście płótna grafiki (plus jawnie włączone `VIZRS_FFMPEG_FPS`/`VIZRS_FFMPEG_PRESET`/`VIZRS_FFMPEG_X264_PARAMS` (z `VIZRS_FFMPEG_NVENC_BF` tylko pierwsze wypełnienie `encoder.json`: presety x264/NVENC/QSV, profil H.264, opcje x264 i klatki B koderów sprzętowych ustawia VizRS Live)/`VIZRS_FFMPEG_READRATE_CATCHUP`/`VIZRS_FFMPEG_FPS_BLEND`/`VIZRS_FFMPEG_CUDA`/`VIZRS_FFMPEG_NVENC_BF`/`VIZRS_FFMPEG_NO_SHORTEST`/`VIZRS_FFMPEG_SYNC_RAM`/`VIZRS_FFMPEG_NO_DISCARDCORRUPT`/`VIZRS_FFMPEG_INGEST` – ten ostatni dzieli kawałek na przebiegi kawałek/live do tej samej playlisty, tylko gdy sidecar ma sygnał live kanału); w płótnie z jednym `-init_hw_device cuda` grafika idzie przez `hwupload` zamiast `hwupload_cuda` (bez osobnego kontekstu CUDA na strefę); każde inne wywołanie i każdy błąd = oryginalna komenda.
 - **Grafika nigdy nie zatrzymuje emisji**: komendy w tle z limitami czasu, błędy tylko do logu, awaria Chromium = czyste klatki i restart, brak sidecara = klip bez grafiki.
 - **Bez GPU na ścieżce grafiki**: Chromium / vizrs-render renderuje programowo; na Oracle Cloud Ampere A1 (arm64) kompilacja binarek (`vizrs-cg`, `vizrs-ffmpeg`, `vizrs-etv-client`, `vizrs-render`) wymusza flagi mikroarchitektury `RUSTFLAGS="-C target-cpu=neoverse-n1 -C opt-level=3"` oraz dostrojenie .NET CLR (`DOTNET_gcServer=0`, limit sterty 1.5 GB). Obraz buduje się na amd64 i arm64 bez emulacji QEMU.
 - **Mało zależności**: zależności runtime to tylko `png` i `regex` (bez domyślnych funkcji; wersje w `Cargo.lock`, budowa z `--locked`). Nowej nie dodawaj bez potrzeby – JSON, HTTP, base64, DevTools i skalowanie są własne. Testy kontraktu w Node.js – tylko biblioteka standardowa.
-- **Gdzie co opisywać**: README tylko wprowadza i odsyła; opis działania, opcje i zmienne środowiskowe tylko w `docs/DOKUMENTACJA.md`. Nowa opcja = `src/config.rs` + `config.example.json` (gdy dotyczy) + `docker-compose.yml` + DOKUMENTACJA §5 + test.
+- **Gdzie co opisywać (uzupełnienie):** Live API, którego to repo jest dostawcą (`/api/live/*`, `/health`, `/etv/pages`, `/ingest/*`) – DOKUMENTACJA §1 „Live API” (docelowo `docs/API.md`). Nowa opcja = `src/config.rs` + `config.example.json` (gdy dotyczy) + `docker-compose.yml` + DOKUMENTACJA §5 + test.
 
 ## Współpraca z Gemini
 
-To repo nie ma własnego `docs/AGENCI.md` – obowiązuje wspólny podział pakietu VizRS opisany w `../VizRS Live/docs/AGENCI.md` (tam też „AGENCI §4/§5” niżej). W skrócie:
+<!-- pakiet:C -->
+Szczegóły: [docs/AGENCI.md](docs/AGENCI.md) – wspólny dla pakietu. W skrócie:
 
-- **Claude dowodzi i jako jedyny pisze kod** (`src/**`, `tests/**`, `Cargo.toml`, `Dockerfile`, `docker-compose*.yml`, `etv/`, `seed/`, `bench/`, `.github/`, `config.example.json`, `CLAUDE.md`, `GEMINI.md`) oraz plany w `docs/plany/`.
-- **Gemini wykonuje lekkie zadania:** redaguje wskazane pliki `.md`, uruchamia bramkę (`cargo fmt --check`, `cargo clippy`, `cargo test`, `npm test`) z krótkim raportem, streszcza długie wyjścia, przeszukuje źródła (także ErsatzTV i `../VizRS CG System`). Nie commituje i nie rusza działających stosów Dockera.
-- **Kontekst Gemini:** `AGENTS.md` to kopia tego pliku (nie dowiązanie: Portainer GitOps odrzuca repozytorium z symlinkiem) – każdą zmianę CLAUDE.md przenieś do niej w tym samym commicie (`cp CLAUDE.md AGENTS.md`); `agy` sam wczytuje `AGENTS.md` i `GEMINI.md`, także w `-p` (pomiar agy 1.5.3, 2026-11-08: plik 19 KB w całości); importów `@plik` nie rozwija. Zasady zmieniaj tylko tutaj, `GEMINI.md` opisuje wyłącznie rolę wykonawcy i niczego stąd nie powiela.
-- **Wywołanie:** `~/.gemini/bin/agy` (poza `PATH`), przełączniki – AGENCI §5. Wygodniej przez wrapper wtyczki antigravity: `PATH="$HOME/.gemini/bin:$PATH" agy-delegate [--tier flash|flash-lo] [--digest] [--mode plan] --dir . "<zlecenie>"`. Wrapper sam stawia `-p` na końcu i odcina stdin. Zamiast kodu 0 zwraca kod błędu: 10 – limit, 11 – logowanie, 12 – przekroczony czas, 14 – brak modelu, 15 – odmowa uprawnień, 3 – pusta odpowiedź. Na stderr wypisuje wiersz `AGY_USAGE` z tokenami i modelem. Tylko subskrypcja Google (bez kluczy API). `--yolo` / `--dangerously-skip-permissions` – nigdy: daje zgodę na cały komputer, a `--sandbox` jej nie ogranicza.
+- **Claude dowodzi i jako jedyny pisze kod** (lista „Kod” niżej oraz pliki zasad, CI, Docker, testy, skrypty, manifesty, licencje, białe listy, decyzje w planach).
+- **Gemini wykonuje lekkie zadania:** redaguje wskazane pliki `.md` z listy „Dokumentacja”, uruchamia bramkę z listy „Bramka” i streszcza wynik, streszcza długie wyjścia, przeszukuje źródła (także sąsiednich repozytoriów pakietu – tylko do czytania). Nie commituje.
+- **Kontekst Gemini:** `AGENTS.md` to **kopia** tego pliku (nie dowiązanie: Portainer GitOps odrzuca repozytorium z symlinkiem, a Windows bywa z nimi zawodny) – zmienia się razem z `CLAUDE.md` (`tools/sync-zasady.sh` kopiuje, `--check` w CI porównuje). `agy` sam wczytuje `AGENTS.md` i `GEMINI.md`, także w `-p`; importów `@plik` nie rozwija. `GEMINI.md` i `docs/AGENCI.md` są wspólne dla pakietu (źródło: VizRS CG System) i niczego stąd nie powielają.
+- **Wywołanie:** `~/.gemini/bin/agy` (poza `PATH`), przełączniki – AGENCI §5. Wygodniej przez wrapper wtyczki antigravity: `PATH="$HOME/.gemini/bin:$PATH" agy-delegate [-m "Gemini 3.8 Flash (High)"] [--digest] [--mode plan] --dir . "<zlecenie>"` (poziomu `--tier pro` w tej subskrypcji nie ma). Wrapper sam stawia `-p` na końcu i odcina stdin. Zamiast kodu 0 zwraca kod błędu: 10 – limit, 11 – logowanie, 12 – przekroczony czas, 14 – brak modelu, 15 – odmowa uprawnień, 3 – pusta odpowiedź. Na stderr wypisuje wiersz `AGY_USAGE` z tokenami i modelem. Tylko subskrypcja Google (bez kluczy API). `--yolo` / `--dangerously-skip-permissions` – nigdy: daje zgodę na cały komputer, a `--sandbox` jej nie ogranicza.
 - **Próg opłacalności:** każde zlecenie ma koszt stały (zlecenie, czekanie, przegląd). Małe, jednorazowe i wymagające decyzji zadania rób sam – ich zlecanie to zmierzona strata. Zlecaj duże porcje tekstu przy niewielu decyzjach: prozę dokumentacji (też w kilku repozytoriach naraz, AGENCI §5), przeszukanie dużych źródeł, nieustrukturyzowane logi. Jedno duże zlecenie zamiast wielu małych. Bierz streszczenie (`--digest`), nie surowe wyjście; plików, które przerobił Gemini, nie czytaj ponownie – przeglądaj diff. Logi (bramka, kompilacja, testy) czytaj sam przez plik i filtr (`tail`, `grep`) – AGENCI §4.
 - **Weryfikacja:** przed zleceniem migawka `git status` (i `git diff`, gdy pliki mają już zmiany), po zleceniu przegląd diffu – razem z usuniętymi wierszami. Kod 0 i raport „gotowe” niczego nie dowodzą. Bramkę uruchom sam, w czystym stanie – `agy` potrafi zmienić środowisko (połatać pakiety, podstawić atrapy), żeby test przeszedł. Każdą liczbę, ścieżkę i stan etapu sprawdź z kodem (Gemini dopowiada fakty).
+<!-- /pakiet:C -->
+
+### Ten projekt
+
+- **Kod (tylko Claude):** `src/**`, `tests/**` (wektory, kontrakt), `Cargo.toml`, `Cargo.lock`, `package.json`, `Dockerfile`, `docker-compose*.yml`, `.release`, `etv/`, `seed/`, `bench/`, `.github/`, `config.example.json`, `tools/sync-zasady.sh`; plany w `docs/plany/`.
+- **Dokumentacja (Gemini – tylko pliki wskazane w zleceniu):** `README.md`, `CHANGELOG.md`, `docs/DOKUMENTACJA.md`, `docs/STATUS.md`, `docs/LUKI.md`.
+- **Bramka (Gemini może uruchomić i streścić):** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --release`, `npm test`, `tools/sync-zasady.sh --check`.
+- **Zawsze:** stosów produkcyjnych (Portainer, serwery emisji) i lokalnego stosu użytkownika nie ruszaj; po testach na Dockerze sprzątaj tylko to, co powstało na potrzeby testu – bez `down -v` i `volume prune`.
 
 ## Uruchamianie
 
@@ -56,6 +100,7 @@ Nakładki: `docker-compose.ampere.yml` (Oracle Ampere A1), `docker-compose.nvidi
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 cargo test                                 # moduły, wektory tests/vectors/, Chromium (pomijany bez przeglądarki)
 cargo build --release && npm test          # kontrakt: binarka jako czarna skrzynka (tests/contract/)
+tools/sync-zasady.sh --check                # zasady pakietu = CG System (wersja w docs/ZASADY_CG_SYSTEM)
 ```
 
 Wektory `tests/vectors/*.json` to zachowanie sidecara Node.js sprzed migracji (generator w historii gita, commit 0c54143); po zamierzonej zmianie zachowania popraw wektor w tym samym commicie. Testy kontraktu (udawany VizRS, klient `vizrs-etv-client`, nakładka `vizrs-ffmpeg`; `VIRTRS_CG_BIN`/`VIZRS_ETV_CLIENT_BIN`/`VIZRS_FFMPEG_BIN` wskazują inne binarki) obowiązują każdą zmianę protokołu.
@@ -99,6 +144,9 @@ Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu
 
 ## Commity
 
-- Jedna spójna zmiana = jeden commit, po polsku, opisowo. Tylko zielone stany.
-- Pliki dodawaj jawnie (`git add ścieżka`). Nie commituj `config.json`, `target/`, `media/` (własne media; testowe są w `seed/media/`), zrzutów PNG ani logów. W `seed/` nigdy sekretów ErsatzTV (`*-secrets.json`, `data-protection`) ani tokenów.
+<!-- pakiet:D -->
+- Jedna spójna zmiana = jeden commit, po polsku, opisowo (styl historii repo). Tylko zielone stany (bramka z „Testy”).
+- Pliki dodawaj jawnie (`git add ścieżka`), nie `git add -A`. Nie commituj katalogów `target/`, zrzutów, logów, plików tymczasowych, `.env` ani sekretów.
 - Commit i push tylko na prośbę użytkownika.
+<!-- /pakiet:D -->
+- Nie commituj `config.json`, `media/` (własne media; testowe są w `seed/media/`) ani kopii `.env*`. W `seed/` nigdy sekretów ErsatzTV (`*-secrets.json`, `data-protection`) ani tokenów.

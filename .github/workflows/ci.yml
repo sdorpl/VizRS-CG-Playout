@@ -19,6 +19,24 @@ jobs:
       VIZRS_BROWSER_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
+      # zasady pakietu (CLAUDE.md – bloki pakiet:*, GEMINI.md, docs/AGENCI.md) = CG System w wersji z docs/ZASADY_CG_SYSTEM
+      - name: Wersja CG System dla zasad pakietu
+        id: zasady
+        run: echo "ref=$(cat docs/ZASADY_CG_SYSTEM)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: sdorpl/VizRS-CG-System
+          ref: ${{ steps.zasady.outputs.ref }}
+          path: cg-zasady
+          sparse-checkout: |
+            CLAUDE.md
+            GEMINI.md
+            docs/AGENCI.md
+            tools/sync-zasady.sh
+            source/Cargo.toml
+          sparse-checkout-cone-mode: false
+      - name: Zasady pakietu zgodne z CG System
+        run: tools/sync-zasady.sh --check cg-zasady
       - run: cargo fmt --check
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
