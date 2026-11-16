@@ -1,21 +1,23 @@
-# VizRS Live zamiast web GUI ErsatzTV (panel kanału, osobne repozytorium sdorpl/VizRS-Live).
+# Panel VizRS CG Playout (panel/, dawny VizRS Live) zamiast web GUI ErsatzTV.
 # Nakładka bez plików z hosta i bez budowania – działa też w Portainerze (stos z GitHuba,
 # „Additional paths”: docker-compose.live.yml, na Ampere po docker-compose.ampere.yml):
 #
-#   docker compose -f docker-compose.yml [-f docker-compose.ampere.yml] -f docker-compose.live.yml up -d
+#   COMPOSE_PROFILES=grafika,ingest docker compose -f docker-compose.yml [-f docker-compose.ampere.yml] -f docker-compose.live.yml up -d
+#   (bez profilu "grafika": panel nad samym ErsatzTV, bez grafiki i slotów na żywo; lokalna budowa obrazów: + panel/compose.build.yml)
 #
 # Zmienne (Portainer: Environment variables; min. 16 znaków: litery, cyfry, -._~):
+#   COMPOSE_PROFILES    grafika[,ingest] – usługi vizrs, cg (i ingest) z docker-compose.yml
 #   VIZRS_BRIDGE_TOKEN  token mostu w legacy (panel ↔ ErsatzTV, tylko sieć Dockera)
-#   VIZRS_LIVE_TOKEN    token logowania do panelu
+#   VIZRS_LIVE_TOKEN    token logowania do panelu (także okno panelu – AppImage)
 #   VIZRS_PANEL_TOKEN   token live API sidecara (/api/live) – ten sam, którym panel steruje slotami
 #
 # Zmiana w stosie:
 #   ersatztv  oficjalne legacy z mostem VizRS Bridge (ghcr.io/sdorpl/vizrs-live-legacy, amd64/arm64),
 #             te same wolumeny; port 8409 już nie wprost
 #   proxy     :8409 na zewnątrz tylko dla widzów (/iptv/*, /artwork/*, HDHomeRun); web GUI legacy = 403
-#   live      panel http://<serwer>:8090/
-# Caddyfile proxy to kopia docker/proxy.Caddyfile z VizRS Live (wpisana tu, bo Portainer nie montuje plików repo).
-# Kopię, środowisko usługi live i nakładkę VAAPI porównuje z VizRS Live jego scripts/check-cg-overlay.sh (przed każdym wdrożeniem).
+#   live      panel http://<serwer>:8090/ (z zewnątrz najlepiej przez proxy z TLS, np. nginx z domeną)
+# Caddyfile proxy to kopia panel/docker/proxy.Caddyfile (wpisana tu, bo Portainer nie montuje plików repo);
+# zgodność sprawdza panel/scripts/check-caddy.sh (bramka i CI panelu).
 services:
   ersatztv:
     image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:26.11.8}
@@ -41,7 +43,12 @@ services:
     labels:
       com.centurylinklabs.watchtower.enable: "false"
     restart: unless-stopped
-    depends_on: [ersatztv, cg]
+    depends_on:
+      ersatztv:
+        condition: service_started
+      cg:
+        condition: service_started
+        required: false   # bez profilu "grafika" panel działa bez grafiki i slotów (CG „niedostępne”)
     environment:
       TZ: Europe/Warsaw
       VIZRS_LIVE_BRIDGE: http://ersatztv:8409

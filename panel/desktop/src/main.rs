@@ -39,8 +39,8 @@ use tauri::{
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 const CONNECT: &str = "connect";
-const RELEASES: &str = "https://github.com/sdorpl/VizRS-Live/releases";
-const TITLE: &str = "VizRS Live";
+const RELEASES: &str = "https://github.com/sdorpl/VizRS-CG-Playout/releases";
+const TITLE: &str = "VizRS CG Playout";
 /// Okno czeka ukryte na pierwszą klatkę strony (bez białego błysku), ale nie dłużej niż tyle.
 const REVEAL_AFTER: Duration = Duration::from_millis(2500);
 /// Tło okna przed stroną – `--bg` z `vizrs-ui.css` (Windows, macOS).
@@ -66,7 +66,7 @@ struct Args {
 }
 
 fn help() -> &'static str {
-    "vizrs-live-desktop – aplikacja VizRS Live (Tauri 2)
+    "vizrs-live-desktop – aplikacja VizRS CG Playout: natywny klient panelu (Tauri 2)
 
 Użycie: vizrs-live-desktop [connect] [opcje]
 
@@ -420,7 +420,7 @@ fn open_connect(app: &AppHandle) {
         CONNECT,
         WebviewUrl::App("connect.html".into()),
     ))
-    .title("VizRS Live – połącz z panelem")
+    .title("VizRS CG Playout – połącz z panelem")
     .inner_size(560.0, 600.0)
     .resizable(false)
     .maximizable(false)
@@ -619,7 +619,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let quit = item(
         "quit",
         if mac {
-            "Zakończ VizRS Live"
+            "Zakończ VizRS CG Playout"
         } else {
             "Zakończ"
         },
@@ -653,7 +653,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let about = item(
         "about",
         if mac {
-            "O programie VizRS Live"
+            "O programie VizRS CG Playout"
         } else {
             "O programie"
         },
@@ -674,12 +674,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     {
         let app_menu = Submenu::with_items(
             app,
-            "VizRS Live",
+            "VizRS CG Playout",
             true,
             &[
                 &about as &Item,
                 &PredefinedMenuItem::separator(app)?,
-                &PredefinedMenuItem::hide(app, Some("Ukryj VizRS Live"))?,
+                &PredefinedMenuItem::hide(app, Some("Ukryj VizRS CG Playout"))?,
                 &PredefinedMenuItem::hide_others(app, Some("Ukryj pozostałe"))?,
                 &PredefinedMenuItem::show_all(app, Some("Pokaż wszystko"))?,
                 &PredefinedMenuItem::separator(app)?,
@@ -764,7 +764,7 @@ fn on_menu(app: &AppHandle, id: &str) {
                     Mode::None => "nie połączono".into(),
                 };
                 format!(
-                    "VizRS Live – aplikacja (vizrs-live-desktop {}, Tauri 2)\n{mode}",
+                    "VizRS CG Playout – natywny klient panelu (vizrs-live-desktop {}, Tauri 2)\n{mode}\n\nPowered by ErsatzTV (https://ersatztv.org) – playout kanałów; licencja MIT, składniki zewnętrzne: THIRD-PARTY.md",
                     env!("CARGO_PKG_VERSION")
                 )
             };

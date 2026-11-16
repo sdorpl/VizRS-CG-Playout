@@ -1,0 +1,21 @@
+# Lokalna budowa obrazów panelu (stos użytkownika, panel/tests/deploy.sh) – nakładka na docker-compose.live.yml:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.nvidia.yml:docker-compose.live.yml:panel/compose.build.yml
+#   COMPOSE_PROFILES=grafika,ingest
+# Legacy z mostem budowany przy każdym up na najnowszym ghcr.io/ersatztv/legacy; panel – z panel/server.
+# Portainer tego pliku nie używa (nie buduje) – bierze obrazy z wydań (docker-compose.live.yml).
+services:
+  ersatztv:
+    build:
+      context: panel
+      dockerfile: docker/legacy-bridge.Dockerfile
+      args:
+        LEGACY_IMAGE: ${LEGACY_IMAGE:-ghcr.io/ersatztv/legacy:latest}
+      pull: true
+    pull_policy: build
+    image: ${LIVE_LEGACY_IMAGE:-vizrs-live-legacy:local}
+
+  live:
+    build:
+      context: panel
+      dockerfile: docker/live.Dockerfile
+    image: ${LIVE_IMAGE:-vizrs-live:local}

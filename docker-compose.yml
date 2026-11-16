@@ -1,15 +1,18 @@
 # VizRS CG System + VizRS CG Playout sidecar + ErsatzTV.
 #
-#   docker compose up -d
+#   COMPOSE_PROFILES=grafika docker compose up -d          # z grafiką VizRS (stosy emisji)
+#   COMPOSE_PROFILES=grafika,ingest docker compose up -d   # + live ingest (wymaga profilu grafika)
+#   docker compose up -d                                   # bez grafiki: sam ErsatzTV (z panelem – docker-compose.live.yml)
+#   Portainer: zmienna COMPOSE_PROFILES w Environment variables stosu.
 #
 #   ErsatzTV     http://<server>:8409
 #   VizRS Trio   http://<server>:8788/trio   token vizrs-operator-change-me
 #   Sidecar      http://<server>:7700/health
-#   Live API     http://<server>:7700/api/live/* for VizRS Live (token VIZRS_PANEL_TOKEN)
+#   Live API     http://<server>:7700/api/live/* for the panel (token VIZRS_PANEL_TOKEN)
 #
 # Live ingest (RTMP/SRT takes a channel over, DOKUMENTACJA §1): set VIZRS_INGEST_TOKEN
 # and VIZRS_INGEST (e.g. "1=rtmp://0.0.0.0:1936/live/<key>"), then
-#   docker compose --profile ingest up -d
+#   COMPOSE_PROFILES=grafika,ingest docker compose up -d
 #
 # The first start fills empty volumes from seed/: the VizRS show "newsroom-info24"
 # and ErsatzTV channel 1 with the VizRS element, test videos in seed/media.
@@ -48,6 +51,8 @@ services:
       - seed-media:/media
 
   vizrs:
+    # profil "grafika": silnik VizRS i sidecar; bez profilu stos = ErsatzTV (+ panel z docker-compose.live.yml)
+    profiles: ["grafika"]
     image: ghcr.io/sdorpl/vizrs:latest
     labels:
       com.centurylinklabs.watchtower.enable: "false"
@@ -64,6 +69,8 @@ services:
       - "${VIZRS_PORT:-8788}:8088"
 
   cg:
+    # profil "grafika": silnik VizRS i sidecar; bez profilu stos = ErsatzTV (+ panel z docker-compose.live.yml)
+    profiles: ["grafika"]
     build: .
     labels:
       com.centurylinklabs.watchtower.enable: "false"
@@ -182,6 +189,7 @@ services:
         condition: service_completed_successfully
       cg:
         condition: service_started
+        required: false   # bez profilu "grafika" ErsatzTV startuje sam (vizrs-ffmpeg bez sidecara = zwykły ffmpeg)
     environment:
       <<: *timezone
       # ffmpeg overlay (FFmpeg path /vizrs/vizrs-ffmpeg in ErsatzTV): ffmpeg takes

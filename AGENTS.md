@@ -120,11 +120,12 @@ Szczegóły: [docs/AGENCI.md](docs/AGENCI.md) – wspólny dla pakietu. W skróc
 ## Uruchamianie
 
 ```bash
-docker compose up -d                       # VizRS :8788, sidecar :7700, ErsatzTV :8409
+COMPOSE_PROFILES=grafika docker compose up -d   # VizRS :8788, sidecar :7700, ErsatzTV :8409 (bez profilu: sam ErsatzTV)
+COMPOSE_PROFILES=grafika docker compose -f docker-compose.yml -f docker-compose.live.yml up -d   # + panel :8090
 cargo run --release -- config.json         # bez Dockera (Rust 1.87+, Chromium w PATH albo VIZRS_BROWSER)
 ```
 
-Nakładki: `docker-compose.ampere.yml` (Oracle Ampere A1), `docker-compose.nvidia.yml` (NVENC w ErsatzTV), `docker-compose.vaapi.yml` (VAAPI w ErsatzTV: Intel, AMD).
+Profile compose: `grafika` (`seed` jest zawsze; `vizrs`, `cg` tylko z profilem), `ingest` (wymaga `grafika`); w Portainerze zmienna `COMPOSE_PROFILES` stosu. Nakładki: `docker-compose.live.yml` (panel: legacy z mostem, `proxy`, `live`; Caddyfile w `configs:`), `panel/compose.build.yml` (lokalna budowa obrazów panelu, `tests/deploy.sh`), `docker-compose.ampere.yml` (Oracle Ampere A1), `docker-compose.nvidia.yml` (NVENC w ErsatzTV), `docker-compose.vaapi.yml` (VAAPI w ErsatzTV: Intel, AMD).
 
 
 ### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – `docs/panel/`)
@@ -212,7 +213,7 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `bench/` | benchmark sidecara (`sidecar.mjs`, scena `scene.html`, obraz i compose, DOKUMENTACJA §8) |
 | `docs/plany/` | plany prac (`PLAN-rust.md` – migracja z Node.js, `PLAN-plynnosc.md` – płynność animacji, `native.md` – natywny renderer VizRS zamiast Chromium, `PLAN-ampere.md` – emisja w 2 OCPU, `PLAN-live-panel.md` – dawny VizRS Live Panel, zamknięty: UI przeniesione do VizRS Live, tu zostaje live API, `PLAN-strefy.md` – strefy grafiki liczone z tego, co jest na antenie, `VIZRS_AREA=auto`, `PLAN-p400.md` – lokalny stos na Quadro P400: pamięć karty, NVENC, `VIZRS_FFMPEG_CUDA=auto`) |
 | `.github/workflows/ci.yml` | testy, binarka jako artefakt |
-| `.github/workflows/release.yml` | po znaczniku `v*`: archiwa Linux x86_64/arm64, obraz amd64 + arm64 do ghcr, wydanie GitHub |
+| `.github/workflows/release.yml` | po znaczniku `v*` – jedno wydanie produktu: archiwa sidecara i panelu (Linux x86_64/arm64), obrazy `vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy` (amd64 + arm64), AppImage okna panelu, wydanie GitHub; sprawdza jedną wersję (Cargo.toml, panel, okno, most) |
 
 
 ### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – `docs/panel/`)
@@ -224,18 +225,18 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `server/src/main.rs` | serwer panelu: opcje i `VIZRS_LIVE_*`, logowanie i limit prób, CSRF/CSP, `/api/*`, pośrednik CG (`/api/cg/…`), `mask_secrets`, `STATIC` |
 | `server/src/bridge.rs` | klient HTTP mostu i CG Playout (sieć wewnętrzna) |
 | `server/src/http.rs` | minimalny HTTP/1.1: jedno żądanie na połączenie, limity rozmiaru i czasu, nagłówki bezpieczeństwa |
-| `desktop/` | aplikacja VizRS Live (Tauri 2): `src/main.rs` (opcje, okna, menu, komenda `ipc`), `src/proxy.rs` (pośrednik z tokenem), `src/connect.rs` + `ui/connect.html` (okno połączenia), `src/bridge.rs` (biała lista), `tests/okno.cjs`; `tauri.conf.json` (paczki: sam klient) |
+| `desktop/` | aplikacja VizRS CG Playout – natywny klient panelu (Tauri 2): `src/main.rs` (opcje, okna, menu, komenda `ipc`), `src/proxy.rs` (pośrednik z tokenem), `src/connect.rs` + `ui/connect.html` (okno połączenia), `src/bridge.rs` (biała lista), `tests/okno.cjs`; `tauri.conf.json` (paczki: sam klient) |
 | `server/web/desktop.js` | most panelu z aplikacją `desktop/` (tytuł okna, alarm); w przeglądarce nic nie robi |
 | `server/web/app.js`, `core.js` | wejście i pasek górny; DOM (`h`, `table`…), `api`/`cmd`, toast, dialog, router (`VIEWS`), etykiety `PL`, kontrola białej listy |
 | `server/web/form.js`, `parts.js`, `when.js`, `tasks.js`, `check.js` | formularz z metadanych komend; `crudView`, `itemsEditor`, `contentPicker`, `dayBar`; „kiedy obowiązuje”; wyniki zadań w tle z logu legacy; kontrola ramówki |
 | `server/web/views/*.js` | ekrany (po jednym pliku na grupę menu albo duży ekran; spis: DOKUMENTACJA §3 „UI”) |
 | `docker/` | `legacy-bridge.Dockerfile` (oficjalny legacy + DLL + `commands.txt` + workstation GC; bez limitu sterty – strojenie Ampere A1 w nakładce CG Playout), `live.Dockerfile` (`scratch`, musl, kompilacja krzyżowa z `-C target-cpu=neoverse-n1` dla arm64), `proxy.Caddyfile` |
-| `compose.yml`, `.env.example` | wdrożenie: `live`, `ersatztv` (tylko `expose`), `proxy`; obrazy: panel i proxy `latest`, legacy najnowsze oficjalne |
-| `compose.cg-playout.yml` | nakładka: VizRS Live w stosie VizRS CG Playout (RUNBOOK §2a) |
-| `compose.vaapi.yml`, `compose.nvidia.yml` | nakładki: karta graficzna dla legacy – Intel/AMD (VAAPI, QSV), NVIDIA (NVENC przez CDI); RUNBOOK §2b |
+| `.env.example` | zmienne panelu (`VIZRS_LIVE_*`, `LEGACY_IMAGE`); wdrożenie panelu – `docker-compose.live.yml` w korzeniu repo, karta graficzna – `docker-compose.{vaapi,nvidia}.yml` |
+| `compose.build.yml` | nakładka do lokalnej budowy obrazów panelu i legacy z mostem (`tests/deploy.sh`); Portainer jej nie używa |
+| `scripts/check-caddy.sh` | `docker/proxy.Caddyfile` = kopia w `configs:` nakładki `docker-compose.live.yml` (CI, `deploy.sh`) |
 | `tests/` | `deploy.sh` (szybkie testy + wdrożenie panelu na lokalny stos + `prod-smoke.cjs`, przejście tylko do odczytu), `stack.sh` (stos testowy, smoke, seed), `e2e.cjs` (Playwright + atrapy), `gate.sh` (pełna bramka, CI), `real.sh` (prawdziwe usługi), `mock-bridge.cjs` (atrapa mostu do zrzutów UI bez Dockera), `hwaccel.sh` (akceleracja Intel/AMD/NVIDIA w obrazie legacy – CI i wydanie) |
 | `scripts/plan.sh` | automat planu: jeden punkt = jedna świeża sesja `claude -p`; dzienniki w `.plan-logs/` (poza repo) |
-| `.github/workflows/` | `ci.yml` (bramka), `legacy-latest.yml` (co tydzień najnowsze legacy), `release.yml` (obrazy ghcr po tagu `v*`) |
+| `../.github/workflows/` | `panel-ci.yml` (bramka panelu), `panel-legacy-latest.yml` (co tydzień najnowsze legacy); wydanie panelu w `release.yml` produktu (jeden tag `v*`: binarka, obrazy `vizrs-live`, `vizrs-live-legacy`, AppImage) |
 | `docs/panel/` | dokumentacja (spis: [docs/README.md](docs/panel/README.md)); `docs/panel/plany/` – plany (dokumenty projektowe, nie opis bieżącego działania) |
 
 **Model panelu:** Przeglądarka → `POST /api/cmd/{Nazwa}` (panel, ciasteczko + `X-VizRS-Live`) → `POST /vizrs-bridge/command/{Nazwa}` (token mostu, biała lista) → komenda legacy przez MediatR. Wynik: `{"ok":true,"result":…}`, odrzucenie legacy `{"ok":false,"error":…}`, zadanie w tle `queued` (202), wynik nieodczytywalny `warning`. Formularze budują się z metadanych `GET /api/commands` (typy parametrów, wyliczenia); wyliczeń typów zagnieżdżonych most nie opisuje – listy są wtedy w pliku ekranu. Zmiany ramówki wchodzą na antenę dopiero po przebudowie playoutu. Szczegóły: [docs/DOKUMENTACJA.md](docs/panel/DOKUMENTACJA.md) §2–4.

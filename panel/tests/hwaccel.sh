@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Akceleracja sprzętowa w obrazie legacy z mostem (amd64): ffmpeg i sterowniki dla Intela (VAAPI, QSV),
 # AMD (VAAPI) i NVIDII (NVENC/CUDA). Bez GPU – sprawdza tylko, że obraz to zawiera; przekazanie GPU
-# do kontenera: compose.vaapi.yml, compose.nvidia.yml (RUNBOOK §2b). Biblioteki sterownika NVIDII
+# do kontenera: docker-compose.vaapi.yml, docker-compose.nvidia.yml w korzeniu repo (RUNBOOK §2b). Biblioteki sterownika NVIDII
 # (libcuda, libnvidia-encode) podaje przy starcie NVIDIA Container Toolkit – ich w obrazie być nie może.
 #
 # Użycie: tests/hwaccel.sh [obraz]   (domyślnie vizrs-live-legacy:dev – obraz ze stosu testowego)

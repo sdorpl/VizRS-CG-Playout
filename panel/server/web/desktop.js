@@ -11,7 +11,7 @@ export function desktopBridge() {
   const state = () => {
     const screen = document.querySelector('.side a.on')?.textContent?.trim();
     const alarm = document.querySelector('#alarm:not([hidden]):not(.warn-only)');
-    return { t: 'state', title: (alarm ? '● ALARM – ' : '') + (screen ? screen + ' – ' : '') + 'VizRS Live', alert: !!alarm };
+    return { t: 'state', title: (alarm ? '● ALARM – ' : '') + (screen ? screen + ' – ' : '') + 'VizRS CG Playout', alert: !!alarm };
   };
   let last = '';
   const sync = () => {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Szybkie wdrożenie panelu na lokalny stos (VizRS Live w stosie VizRS CG Playout, nakładka compose.cg-playout.yml)
+# Szybkie wdrożenie panelu na lokalny stos VizRS CG Playout (nakładki docker-compose.live.yml + panel/compose.build.yml)
 # zamiast lokalnego stosu testowego. Pełna bramka z e2e (tests/gate.sh) działa w CI po pushu.
 #
-#   0. scripts/check-cg-overlay.sh – Caddyfile, usługa live i VAAPI takie same jak w nakładce CG Playout;
+#   0. scripts/check-caddy.sh – Caddyfile proxy taki sam jak kopia w docker-compose.live.yml;
 #      scripts/sync-ui.sh --check – vizrs-ui.css taki sam jak w VizRS CG System (gdy jest obok)
 #   1. szybkie testy: cargo fmt --check, clippy, cargo test (m.in. importy modułów UI), node --check plików JS
 #   2. obraz panelu z drzewa roboczego (poprzedni zostaje jako vizrs-live:poprzedni)
@@ -24,8 +24,8 @@ PORT="$(envval VIZRS_LIVE_PORT)"; PORT="${PORT:-8090}"
 case "$IMAGE" in *:local) ;; *) echo "deploy: LIVE_IMAGE=$IMAGE w $CG_DIR/.env – obraz z rejestru, nie budowany lokalnie; ustaw LIVE_IMAGE=vizrs-live:local" >&2; exit 2 ;; esac
 PREV="${IMAGE%:*}:poprzedni"
 
-step "zgodność wdrożenia z CG Playout (Caddyfile, usługa live, VAAPI)"
-scripts/check-cg-overlay.sh "$CG_DIR"
+step "Caddyfile proxy = kopia w docker-compose.live.yml"
+scripts/check-caddy.sh
 if [ -d "../../VizRS CG System" ]; then scripts/sync-ui.sh --check; else echo "deploy: brak ../../VizRS CG System – pomijam kontrolę vizrs-ui.css"; fi
 
 step "szybkie testy: cargo fmt, clippy, test; składnia JS"

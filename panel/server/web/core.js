@@ -263,7 +263,7 @@ export function needs(names, view) {
 export async function login() {
   const input = h('input', { type: 'password', id: 'login-token', autocomplete: 'current-password', 'aria-label': 'Token panelu' });
   for (;;) {
-    const ok = await dialog('Logowanie do VizRS Live', h('div', null, h('label', { for: 'login-token' }, 'Token panelu (VIZRS_LIVE_TOKEN)'), input), [['Zaloguj', true, 'acc']]);
+    const ok = await dialog('Logowanie do panelu VizRS CG Playout', h('div', null, h('label', { for: 'login-token' }, 'Token panelu (VIZRS_LIVE_TOKEN)'), input), [['Zaloguj', true, 'acc']]);
     if (!ok) continue;
     try {
       await api('/api/login', { method: 'POST', body: input.value, type: 'text/plain' });

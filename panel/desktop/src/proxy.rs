@@ -128,7 +128,7 @@ pub fn check(url: &str, token: Option<&str>) -> Result<(), String> {
             Ok(())
         }
         200 => Err(format!(
-            "{target} odpowiada, ale to nie jest panel VizRS Live"
+            "{target} odpowiada, ale to nie jest panel VizRS CG Playout"
         )),
         401 => Err(if token.is_some() {
             "Panel odrzucił token.".into()
@@ -337,7 +337,7 @@ fn handle(ctx: &Ctx, mut s: TcpStream) -> Result<(), String> {
         return reply(&mut s, 403, &[], "zły klucz").map_err(|e| e.to_string());
     }
     if !req.cookie(COOKIE).is_some_and(|c| eq_ct(c, &ctx.secret)) {
-        return reply(&mut s, 403, &[], "tylko okno VizRS Live").map_err(|e| e.to_string());
+        return reply(&mut s, 403, &[], "tylko okno VizRS CG Playout").map_err(|e| e.to_string());
     }
     forward(ctx, &req, &mut s)
 }

@@ -3,6 +3,9 @@ name: Release
 #   binarka vizrs-cg (Rust) z client/ (vizrs-etv-client i vizrs-ffmpeg, statyczne musl) i etv/: Linux x86_64 i arm64 (.tar.gz)
 #   obraz Docker ghcr.io/<właściciel>/vizrs-cg:<wersja> i :latest (amd64 + arm64)
 #   obraz ghcr.io/<właściciel>/vizrs-seed:<wersja> i :latest (dane startowe i programy ErsatzTV; stosy s1 i s2)
+#   panel (panel/, dawny VizRS Live): bramka panel/tests/gate.sh, binarka vizrs-live (musl, x86_64 i arm64), obrazy
+#   ghcr.io/<właściciel>/vizrs-live:<wersja> i vizrs-live-legacy:<wersja>[-legacy<wersja>] (amd64 + arm64), AppImage okna panelu
+#   VizRS-CG-Playout-<wersja>-x86_64.AppImage; jedna wersja produktu: Cargo.toml = panel/server = panel/desktop = tauri.conf.json = most
 #   wydanie na GitHubie z sumami SHA256SUMS.txt (ręcznie: szkic)
 # Wersja z łącznikiem (v2.1.0-rc1) = wydanie wstępne, bez przesuwania :latest.
 on:
@@ -92,14 +95,204 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/vizrs-seed:${{ env.VERSION }}
             ${{ !contains(env.VERSION, '-') && format('ghcr.io/{0}/vizrs-seed:latest', github.repository_owner) || '' }}
 
+  panel_wersja:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: panel
+    outputs:
+      v: ${{ steps.w.outputs.v }}
+      tag: ${{ steps.w.outputs.tag }}
+      lv: ${{ steps.w.outputs.lv }}
+      legacy: ${{ steps.w.outputs.legacy }}
+      owner: ${{ steps.w.outputs.owner }}
+      latest: ${{ steps.w.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wersje
+        id: w
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then R=$GITHUB_REF_NAME; else R=$INPUT; fi
+          V=${R#v}
+          # jedna wersja produktu: sidecar, panel, okno, most
+          for f in ../Cargo.toml server/Cargo.toml desktop/Cargo.toml; do
+            C=$(sed -n 's/^version = "\(.*\)"/\1/p' "$f" | head -1)
+            [ "$V" = "$C" ] || { echo "wersja $R ≠ $C z $f"; exit 1; }
+          done
+          T=$(sed -n 's/^ *"version": *"\(.*\)".*/\1/p' desktop/tauri.conf.json | head -1)
+          B=$(sed -n 's#.*<Version>\(.*\)</Version>.*#\1#p' bridge/VizRS.Bridge.csproj | head -1)
+          [ "$V" = "$T" ] && [ "$V" = "$B" ] || { echo "wersja $R ≠ tauri.conf.json $T / VizRS.Bridge.csproj $B"; exit 1; }
+          L=$(sed -n 's#^LEGACY_IMAGE=##p' .env.example)
+          case "$L" in *:v*) LV="-legacy${L##*:v}";; *) LV="";; esac
+          latest=false
+          [ "$GITHUB_EVENT_NAME" = push ] && case "$V" in *-*) ;; *) latest=true;; esac
+          {
+            echo "v=$V"; echo "tag=v$V"; echo "lv=$LV"; echo "legacy=$L"
+            echo "owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"; echo "latest=$latest"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  panel_bramka:
+    needs: panel_wersja
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: panel
+    timeout-minutes: 60
+    env:
+      LEGACY_IMAGE: ${{ needs.panel_wersja.outputs.legacy }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Playwright (Chromium)
+        run: |
+          # katalog poza repo; kontekst runner niedostępny w env joba – przez GITHUB_ENV dla kolejnych kroków
+          PLAYWRIGHT_DIR=$RUNNER_TEMP/pw; echo "PLAYWRIGHT_DIR=$PLAYWRIGHT_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1.58.2
+          npx playwright install --with-deps chromium
+      - name: bramka na wersji legacy z .env.example
+        run: tests/gate.sh
+      - name: akceleracja sprzętowa w obrazie legacy (Intel VAAPI/QSV, AMD VAAPI, NVIDIA NVENC)
+        run: tests/hwaccel.sh vizrs-live-legacy:dev
+      - name: dziennik przy błędzie
+        if: failure()
+        run: |
+          docker logs vizrs-live-test-legacy 2>&1 | tail -200 || true
+          cat "${VIZRS_LIVE_TEST_DIR:-$HOME/.cache/vizrs-live-test}/panel.log" || true
+
+  panel_bin:
+    needs: panel_wersja
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, name: linux-x86_64, musl: x86_64-unknown-linux-musl, rustflags: "" }
+          - { os: ubuntu-22.04-arm, name: linux-arm64, musl: aarch64-unknown-linux-musl, rustflags: "-C target-cpu=neoverse-n1 -C opt-level=3" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: panel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.musl }}
+      - run: RUSTFLAGS="${{ matrix.rustflags }}" cargo build --release --locked --target ${{ matrix.musl }}
+        working-directory: panel/server
+      - name: Paczka
+        env:
+          V: ${{ needs.panel_wersja.outputs.v }}
+        run: |
+          b=server/target/${{ matrix.musl }}/release/vizrs-live
+          "$b" --version
+          d=VizRS-CG-Playout-panel-$V-${{ matrix.name }}; mkdir -p "dist/$d"
+          cp "$b" ../README.md ../CHANGELOG.md .env.example ../docker-compose.live.yml "dist/$d/"
+          cd dist && tar czf "$d.tar.gz" "$d" && rm -rf "$d" && ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panel-bin-${{ matrix.name }}
+          path: panel/dist/*
+
+  panel_appimage:
+    needs: panel_wersja
+    runs-on: ubuntu-22.04   # starsza glibc = AppImage działa na większej liczbie dystrybucji
+    defaults:
+      run:
+        working-directory: panel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file desktop-file-utils
+      - name: AppImage (bundler Tauri)
+        working-directory: panel/desktop
+        env:
+          # linuxdeploy / appimagetool to AppImage – na runnerze bez FUSE rozpakowują się same
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: npx --yes @tauri-apps/cli@2 build --ci --bundles appimage
+      - name: Paczka
+        env:
+          V: ${{ needs.panel_wersja.outputs.v }}
+        run: |
+          mkdir -p dist
+          a=$(find desktop/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -1)
+          [ -n "$a" ] || { echo "::error::brak AppImage"; exit 1; }
+          cp "$a" "dist/VizRS-CG-Playout-$V-x86_64.AppImage"
+          APPIMAGE_EXTRACT_AND_RUN=1 "dist/VizRS-CG-Playout-$V-x86_64.AppImage" --version
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panel-appimage
+          path: panel/dist/*
+
+  panel_docker:
+    needs: [panel_wersja, panel_bramka]
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: panel
+    env:
+      # bez artefaktu „*.dockerbuild” (zapis budowy) – download-artifact w jobie release nie umiał go pobrać
+      DOCKER_BUILD_RECORD_UPLOAD: false
+      IMG: ghcr.io/${{ needs.panel_wersja.outputs.owner }}
+      V: ${{ needs.panel_wersja.outputs.v }}
+      LV: ${{ needs.panel_wersja.outputs.lv }}
+      LATEST: ${{ needs.panel_wersja.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+      # Bez QEMU: panel kompiluje się krzyżowo, DLL mostu to IL – oba Dockerfile budują na platformie budującej.
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: panel
+          file: panel/docker/live.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          cache-from: type=gha,scope=live
+          cache-to: type=gha,mode=max,scope=live
+          tags: |
+            ${{ env.IMG }}/vizrs-live:${{ env.V }}
+            ${{ env.LATEST == 'true' && format('{0}/vizrs-live:latest', env.IMG) || '' }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: panel
+          file: panel/docker/legacy-bridge.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          pull: true
+          push: true
+          build-args: LEGACY_IMAGE=${{ needs.panel_wersja.outputs.legacy }}
+          tags: |
+            ${{ env.IMG }}/vizrs-live-legacy:${{ env.V }}${{ env.LV }}
+            ${{ env.LATEST == 'true' && format('{0}/vizrs-live-legacy:latest', env.IMG) || '' }}
+
   release:
-    needs: [bin, docker]
+    needs: [bin, docker, panel_wersja, panel_bin, panel_appimage, panel_docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           pattern: 'bin-*'
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: 'panel-*'
           merge-multiple: true
       - name: Sumy kontrolne
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
@@ -112,4 +305,6 @@ jobs:
           files: dist/*
           body: |
             **Docker (amd64 / arm64):** `ghcr.io/${{ github.repository_owner }}/vizrs-cg:${{ env.VERSION }}` – stos: `docker compose pull && docker compose up -d` (docs/DOKUMENTACJA.md §4).
+            **Panel (amd64 / arm64):** `ghcr.io/${{ needs.panel_wersja.outputs.owner }}/vizrs-live:${{ needs.panel_wersja.outputs.v }}` i `ghcr.io/${{ needs.panel_wersja.outputs.owner }}/vizrs-live-legacy:${{ needs.panel_wersja.outputs.v }}${{ needs.panel_wersja.outputs.lv }}` (ErsatzTV legacy `${{ needs.panel_wersja.outputs.legacy }}` z mostem; powered by ErsatzTV) – nakładka `docker-compose.live.yml`, `COMPOSE_PROFILES=grafika,ingest`.
+            **Linux – okno panelu:** `VizRS-CG-Playout-*-x86_64.AppImage` – natywny klient panelu na serwerze (adres panelu, np. przez proxy z TLS, i token; wymaga WebKitGTK 4.1).
             **Linux x86_64 / arm64:** archiwum z `vizrs-cg` (wymaga Chromium w PATH albo `VIZRS_BROWSER`), programami ErsatzTV (`client/`: klient elementu `vizrs-etv-client` i nakładka ffmpeg `vizrs-ffmpeg`, statyczne) i elementem grafiki (`etv/`).

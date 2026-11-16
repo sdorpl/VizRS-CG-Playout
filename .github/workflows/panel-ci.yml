@@ -35,6 +35,9 @@ jobs:
       - name: vizrs-ui.css zgodny z CG System
         working-directory: panel
         run: scripts/sync-ui.sh --check ../cg
+      - name: Caddyfile proxy = kopia w docker-compose.live.yml
+        working-directory: panel
+        run: scripts/check-caddy.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
