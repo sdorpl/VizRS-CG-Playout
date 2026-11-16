@@ -21,31 +21,31 @@ Instrukcja operatora: [INSTRUKCJA.md](INSTRUKCJA.md). Wdrożenie, kopie, aktuali
 | Składnik | Gdzie | Rola |
 |---|---|---|
 | VizRS Bridge | `bridge/` (C#, .NET 10) | most REST w procesie ErsatzTV legacy: ogólny dyspozytor komend z białą listą |
-| vizrs-live | `server/` (Rust, bez zależności) | serwer panelu: UI, logowanie, pośrednik do mostu |
+| vizrs-live | `server/` (Rust, bez zależności) | serwer panelu: UI, logowanie, pośrednik do mostu i CG Playout |
 | UI panelu | `server/web/` (moduły ES, bez bibliotek) | ekrany na wzór web GUI legacy, po polsku; wbudowane w binarkę (`include_str!`), budowa w §3 „UI” |
+| okno panelu | `desktop/` (Tauri 2) | natywny klient panelu na serwerze (`VizRS-CG-Playout-<wersja>-x86_64.AppImage`) |
 | obraz legacy z mostem | `docker/legacy-bridge.Dockerfile` | `FROM ghcr.io/ersatztv/legacy` + `VizRS.Bridge.dll` + `commands.txt` + 3 zmienne środowiskowe (§2) |
 | obraz panelu | `docker/live.Dockerfile` | statyczna binarka musl w `scratch` |
-| proxy dla widzów | `docker/proxy.Caddyfile` (obraz `caddy`, usługa `proxy` w `compose.yml`) | na zewnątrz tylko strumienie, M3U/XMLTV, obrazy i HDHomeRun; web GUI legacy i most – 403 (§8) |
-| wpięcie w stos CG Playout | `compose.cg-playout.yml` | nakładka na `docker-compose.yml` VizRS CG Playout: `ersatztv` → legacy z mostem bez portu, `proxy`, `live` z `http://cg:7700` (RUNBOOK §2a) |
-| akceleracja sprzętowa | `compose.vaapi.yml`, `compose.nvidia.yml` | nakładki przekazujące kartę graficzną (Intel/AMD VAAPI/QSV, NVIDIA NVENC przez CDI) do usługi `ersatztv` (RUNBOOK §2b) |
-| CI | `.github/workflows/ci.yml`, `legacy-latest.yml`, `release.yml`, `drafts.yml` | bramka na GitHub Actions; co tydzień najnowsze legacy (§7); wydanie (obrazy amd64/arm64, binarki, wydanie GitHub) po tagu `v*` albo ręcznie jako szkic (§9); usuwanie szkiców |
+| proxy dla widzów | `docker/proxy.Caddyfile` | na zewnątrz tylko strumienie, M3U/XMLTV, obrazy i HDHomeRun; w nakładce wpisany w `configs:`, sprawdzany przez `scripts/check-caddy.sh` (§8) |
+| wdrożenie panelu | `../docker-compose.live.yml` | nakładka na `docker-compose.yml` VizRS CG Playout: `ersatztv` → legacy z mostem bez portu, `proxy`, `live` z `http://cg:7700` (RUNBOOK §2a); lokalna budowa: `compose.build.yml` |
+| akceleracja sprzętowa | `../docker-compose.vaapi.yml`, `../docker-compose.nvidia.yml` | nakładki przekazujące kartę graficzną (Intel/AMD VAAPI/QSV, NVIDIA NVENC przez CDI) do usługi `ersatztv` (RUNBOOK §2b) |
+| CI i wydanie | `../.github/workflows/panel-ci.yml`, `release.yml` | bramka na GitHub Actions; jedno wydanie całego produktu (sidecar, panel, most, AppImage) po tagu `v*` (§9) |
 
 ### Pakiet VizRS – zgodność aplikacji
 
-VizRS Live to jedna z kilku aplikacji pakietu VizRS. Aplikacje pakietu mają być **zawsze ze sobą zgodne**: bieżące wersje wszystkich repozytoriów działają razem, w jednym stosie.
+Panel kanału VizRS CG Playout (dawny VizRS Live) jest od 2026-11-15 połączony z VizRS CG Playout w jednym repozytorium (katalog `panel/`, plan: sdorpl/VizRS §3). Aplikacje pakietu VizRS mają być **zawsze ze sobą zgodne**: bieżące wersje działają razem, w jednym stosie.
 
-| Repozytorium (katalogi obok, `../`) | Rola | Styk z VizRS Live |
+| Repozytorium (katalogi obok, `../`) | Rola | Styk z panelem |
 |---|---|---|
 | [VizRS CG System](../../VizRS%20CG%20System) | silnik grafiki: Trio (playout stron), `/output`, API TCP 6100 / HTTP / SSE; tu też plan rodziny (`docs/plany/PLAN-vizrs-live.md`) | przeglądarka operatora: ramka `/output` (też anteny kanałów `bus=ch-N`) i odnośniki do Trio (`--vizrs-url`, `--vizrs-output-token`, `--vizrs-channels`; §3, §4) |
-| [VizRS CG Playout](../../VirtRS%20CG%20Playout) (katalog `VirtRS CG Playout`) | grafika VizRS i sloty na żywo na kanałach ErsatzTV (sidecar `cg`) | serwer panelu przez pośrednika `/api/cg/…`: `/health`, `/etv/pages`, `/ingest/state`, `/api/live/*` (`--cg-url`, `--cg-token`; §3); wspólny stos `compose.cg-playout.yml` (RUNBOOK §2a) |
-| **VizRS Live** (to repo) | panel kanału nad ErsatzTV legacy | – |
+| **VizRS CG Playout** (to repo) | grafika VizRS i sloty na żywo na kanałach ErsatzTV (sidecar `cg`) oraz panel kanału (`panel/`) nad ErsatzTV legacy | serwer panelu przez pośrednika `/api/cg/…`: `/health`, `/etv/pages`, `/ingest/state`, `/api/live/*` (`--cg-url`, `--cg-token`; §3); nakładka `docker-compose.live.yml` (RUNBOOK §2a) |
 | [VizRS CG Artist](../../VizRS%20CG%20Artist) | samodzielny edytor grafik i animacji (sceny dla VizRS CG System) | brak bezpośredniego – sceny z Artist trafiają do VizRS CG System, a stamtąd na kanał (strony VizRS w Grafice kanału) |
 
 Zasady zgodności:
 
-- **Styk zmienia się w obu repozytoriach naraz.** Zmiana API, pól odpowiedzi, parametrów lub zmiennych wspólnego stosu (`compose.cg-playout.yml`) po jednej stronie wymaga dostosowania drugiej strony i jej dokumentacji, zanim wejdzie do wydania. Opis styku jest po stronie dostawcy (API CG Playout – jego DOKUMENTACJA §1 „Live API”, protokół VizRS – `docs/API.md` w VizRS CG System); tu – jak panel z niego korzysta (§3 pośrednik CG, §4).
+- **Styk zmienia się w obu częściach naraz.** Zmiana API, pól odpowiedzi, parametrów lub zmiennych nakładki `docker-compose.live.yml` po jednej stronie wymaga dostosowania drugiej strony i jej dokumentacji, zanim wejdzie do wydania. Opis styku jest po stronie dostawcy (API CG Playout – jego DOKUMENTACJA §1 „Live API”, protokół VizRS – `docs/API.md` w VizRS CG System); tu – jak panel z niego korzysta (§3 pośrednik CG, §4).
 - **Starsza wersja sąsiada nie psuje panelu.** Brak nowego pola lub ścieżki (404) panel pokazuje jako „niedostępne w tej wersji” z podpowiedzią, a nie jako błąd (wzór: reguły grafiki i `inputs` przy starszym CG Playout, §4).
-- **Wydania razem.** Przed wydaniem VizRS Live sprawdź z bieżącymi wersjami CG Playout i VizRS CG System (lokalny stos `virtrs-*`, `tests/deploy.sh`); zmianę wymagającą nowszego sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
+- **Wydania razem.** Przed wydaniem sprawdź z bieżącymi wersjami CG Playout i VizRS CG System (lokalny stos `virtrs-*`, `tests/deploy.sh`); zmianę wymagającą nowszego sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
 
 ## 2. Most (VizRS Bridge)
 
@@ -53,7 +53,7 @@ Zasady zgodności:
 
 - `DOTNET_STARTUP_HOOKS=/vizrs-bridge/VizRS.Bridge.dll` – hak startowy .NET; rejestruje rozwiązywanie zestawu `VizRS.Bridge` (nie ma go w `ErsatzTV.deps.json`).
 - `ASPNETCORE_HOSTINGSTARTUPASSEMBLIES=VizRS.Bridge` – ASP.NET Core ładuje `BridgeHostingStartup`, który dokłada oprogramowanie pośrednie na początek potoku legacy (`IStartupFilter`).
-- `DOTNET_gcServer=0` – workstation GC zamiast server GC z runtimeconfig legacy (ok. połowa RAM, §7). Obraz **nie** ustawia limitu sterty (`DOTNET_GCHeapHardLimit`): po jego przekroczeniu legacy pada, a z nim emisja wszystkich kanałów; limit i `DOTNET_EnableWriteXorExecute=0` daje tylko nakładka Ampere A1 VizRS CG Playout (`docker-compose.ampere.yml`). Segmenty HLS (`/transcode`) – tmpfs w `compose.yml` i w CG Playout.
+- `DOTNET_gcServer=0` – workstation GC zamiast server GC z runtimeconfig legacy (ok. połowa RAM, §7). Obraz **nie** ustawia limitu sterty (`DOTNET_GCHeapHardLimit`): po jego przekroczeniu legacy pada, a z nim emisja wszystkich kanałów; limit i `DOTNET_EnableWriteXorExecute=0` daje tylko nakładka Ampere A1 VizRS CG Playout (`docker-compose.ampere.yml`). Segmenty HLS (`/transcode`) – tmpfs w `docker-compose.yml` i `docker-compose.live.yml`.
 - Most kompiluje się tylko przeciw ASP.NET Core i `MediatR.dll` **z obrazu legacy** (wersja zawsze zgodna). Komendy legacy wyszukuje w czasie działania (refleksja po `ErsatzTV.Application`), więc nie wiąże się z ich wersją przy kompilacji.
 
 ### API (`/vizrs-bridge/…`, nagłówek `X-VizRS-Token`)
@@ -109,9 +109,9 @@ Biała lista: jedna nazwa komendy w wierszu, `#` – komentarz. Nazwy nieznane w
 | `--bridge-token` | `VIZRS_LIVE_BRIDGE_TOKEN` | wymagany (= `VIZRS_BRIDGE_TOKEN`) |
 | `--token` | `VIZRS_LIVE_TOKEN` | brak; **wymagany**, gdy panel nasłuchuje poza 127.0.0.1 |
 | `--stream-url` | `VIZRS_LIVE_STREAM_URL` | brak; adres legacy dla widzów (odnośniki „Strumień”, M3U, XMLTV) |
-| `--vizrs-url` | `VIZRS_LIVE_VIZRS_URL` | brak; VizRS CG System **widziany z przeglądarki operatora** (podgląd `/output`, odnośniki do Trio): `http(s)://host:port` albo sam port `:8788` – wtedy host, pod którym otwarto panel (ciasteczko VizRS `SameSite=Strict` działa w ramce tylko w tej samej witrynie; w `compose.cg-playout.yml` domyślnie `:${VIZRS_PORT}`) |
+| `--vizrs-url` | `VIZRS_LIVE_VIZRS_URL` | brak; VizRS CG System **widziany z przeglądarki operatora** (podgląd `/output`, odnośniki do Trio): `http(s)://host:port` albo sam port `:8788` – wtedy host, pod którym otwarto panel (ciasteczko VizRS `SameSite=Strict` działa w ramce tylko w tej samej witrynie; w `docker-compose.live.yml` domyślnie `:${VIZRS_PORT}`) |
 | `--vizrs-output-token` | `VIZRS_LIVE_VIZRS_OUTPUT_TOKEN` | brak; token wyjścia VizRS (`VIZRS_OUTPUT_TOKEN`, tylko odczyt – jak w OBS) dla ramki `/output`; **trafia do przeglądarki** (`/api/status`, adres ramki). Bez niego VizRS z tokenem pokazuje w ramce „wymagany token”, chyba że przeglądarka jest zalogowana w Trio. Wymaga `--vizrs-url` |
-| `--vizrs-channels` | `VIZRS_LIVE_VIZRS_CHANNELS=1` | wyłączone; VizRS z antenami kanałów (CG Playout `channel_buses` / `VIZRS_CHANNEL_BUSES=1`; w `compose.cg-playout.yml` brane stamtąd): podgląd `/output?bus=ch-N`, Trio `/trio?channel=N` |
+| `--vizrs-channels` | `VIZRS_LIVE_VIZRS_CHANNELS=1` | wyłączone; VizRS z antenami kanałów (CG Playout `channel_buses` / `VIZRS_CHANNEL_BUSES=1`; w `docker-compose.live.yml` brane stamtąd): podgląd `/output?bus=ch-N`, Trio `/trio?channel=N` |
 | `--multiview-max N` | `VIZRS_LIVE_MULTIVIEW_MAX` | 4; najwyżej tyle podglądów w mozaice Na antenie (K10), 0–16, 0 = bez mozaiki (przycisku nie ma). Każdy podgląd to sesja segmentera Next kanału, która koduje – limit chroni maszynę (Ampere A1 2 OCPU: 4 albo mniej); `GET /api/status` podaje `multiviewMax` |
 | `--cg-url` | `VIZRS_LIVE_CG_URL` | brak; VizRS CG Playout (sidecar `cg`, np. `http://cg:7700`) – Grafika kanału i Sloty na żywo; tylko `http://` w sieci wewnętrznej |
 | `--cg-token` | `VIZRS_LIVE_CG_TOKEN` | wymagany przy `--cg-url`; = `panel_token` (`VIZRS_PANEL_TOKEN`) CG Playout; zostaje w serwerze |
@@ -310,7 +310,7 @@ Na białej liście są też komendy bez ekranu, używane przez `tests/stack.sh s
 4. Przejrzyj zmiany komend: `git diff v<stara>..v<nowa> -- ErsatzTV.Application` w źródle legacy (zmienione rekordy `Commands/*.cs`, `Queries/*.cs` = zmienione parametry; nowe pliki = nowe możliwości). Zmiany zachowania opisz w §5.
 5. Dopiero potem: kopia `etv-config` i `docker compose up -d` na produkcji.
 
-**Domyślnie najnowsze (decyzja 2026-11-07).** `docker/legacy-bridge.Dockerfile`, `compose.yml`, `compose.cg-playout.yml`, `.env.example` i stos testowy biorą `ghcr.io/ersatztv/legacy:latest` – tak jak `ersatztv` i `ingest` w CG Playout, żeby cały stos był na jednej wersji legacy. Obraz z mostem (`vizrs-live-legacy:local`) buduje się na miejscu: `pull_policy: build` i `build.pull: true` – każde `docker compose up` sprawdza nowsze legacy (`tests/stack.sh up` – `docker build --pull`). Konkretna wersja (powrót po złej aktualizacji, test przed wdrożeniem): `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:v<wersja>`. Ryzyko: nowe legacy wchodzi bez testu mostu i migruje bazę – stąd kopia `etv-config` przed `up` (RUNBOOK §4) i `commandsMissing` w Diagnostyce. Akcelerację sprzętową GPU dla usługi `ersatztv` włączają nakładki `compose.vaapi.yml` (Intel, AMD) oraz `compose.nvidia.yml` (NVIDIA) – szczegóły w [RUNBOOK.md](RUNBOOK.md) §2b.
+**Domyślnie najnowsze (decyzja 2026-11-07).** `docker/legacy-bridge.Dockerfile`, `../docker-compose.live.yml`, `.env.example` i stos testowy biorą `ghcr.io/ersatztv/legacy:latest` – tak jak `ersatztv` i `ingest` w CG Playout, żeby cały stos był na jednej wersji legacy. Obraz z mostem (`vizrs-live-legacy:local`) buduje się na miejscu (w lokalnym stosie przez `panel/compose.build.yml`): `pull_policy: build` i `build.pull: true` – każde `docker compose up` sprawdza nowsze legacy (`tests/stack.sh up` – `docker build --pull`). Konkretna wersja (powrót po złej aktualizacji, test przed wdrożeniem): `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:v<wersja>`. Ryzyko: nowe legacy wchodzi bez testu mostu i migruje bazę – stąd kopia `etv-config` przed `up` (RUNBOOK §4) i `commandsMissing` w Diagnostyce. Akcelerację sprzętową GPU dla usługi `ersatztv` włączają nakładki `docker-compose.vaapi.yml` (Intel, AMD) oraz `docker-compose.nvidia.yml` (NVIDIA) w korzeniu repozytorium – szczegóły w [RUNBOOK.md](RUNBOOK.md) §2b.
 
 Wczesne ostrzeżenie: CI `legacy-latest.yml` co tydzień robi kroki 1–3 na `ghcr.io/ersatztv/legacy:latest` (od 2026-11-07 to samo robi `ci.yml` przy każdym push, bo latest jest domyślne).
 
@@ -328,8 +328,8 @@ Wczesne ostrzeżenie: CI `legacy-latest.yml` co tydzień robi kroki 1–3 na `gh
 | e2e UI | `tests/stack.sh test` (Playwright: `PLAYWRIGHT_DIR` albo `tests/local.env`; zrzuty nowych widoków: `E2E_SHOTS=<katalog poza repo>`) |
 | proxy (smoke) | w `tests/stack.sh up`: proxy na 127.0.0.1:18410 (`docker/proxy.Caddyfile`, sieć `vizrs-live-test-net`): `/`, `/channels`, `/api/…`, `/vizrs-bridge/…`, `POST` = 403; M3U, XMLTV, `discover.json` = 200. Panel testowy podaje widzom adres proxy (`--stream-url http://127.0.0.1:18410`) |
 | **pełna bramka (CI)** | `tests/gate.sh` – wszystko poniżej „lokalnie” po kolei, ze stosem testowym; uruchamia ją `ci.yml` po pushu, lokalnie tylko na prośbę; stos, który sama uruchomiła, po zielonym przebiegu zatrzymuje (`GATE_KEEP_STACK=1` – zostaw), przy błędzie zostawia do debugowania |
-| pamięć | `tests/stack.sh mem` – RAM kontenerów stosu, paneli i Chromium z Playwright, katalog danych i jego system plików. Dane domyślnie w `~/.cache/vizrs-live-test` (dysk; `/tmp` bywa tmpfs = RAM). Legacy w stosie z `DOTNET_gcServer=0` (obraz ma w runtimeconfig Server GC – sterta na każdy rdzeń; workstation GC to ok. połowa RAM) i limitem `VIZRS_LIVE_TEST_MEM` (domyślnie `1536m`, `0` – bez limitu; e2e ogląda kanał 24 w podglądzie, a ffmpeg legacy kodujący 1080p zajmuje ok. 775 MB – razem z legacy ok. 1,12 GB, w limicie 1 GB jądro ubija ffmpeg i sesja kanału nie startuje), proxy 128 MB; `tests/real.sh` – Jellyfin, Emby, Plex po `VIZRS_LIVE_REAL_MEM` (domyślnie `1g`). Pomiar 2026-11-07 (up + seed + e2e): legacy ok. 850 → 420–480 MB bez oglądania kanału, dane w tmpfs 300 MB → 0. Produkcji to nie dotyczy (`compose.yml` bez zmian) |
-| CI | `.github/workflows/ci.yml` (push na `main`, PR, ręcznie): serwer (`--locked`, binarka jako artefakt `vizrs-live-linux-x86_64`), krzyżowa budowa obu obrazów na arm64, obraz panelu, `tests/gate.sh` z Playwright 1.58.2 (`PLAYWRIGHT_DIR` = `$RUNNER_TEMP/pw` przez `GITHUB_ENV` – kontekst `runner` jest niedostępny w `env` joba, co przy 1.1.0 unieważniało wszystkie workflow), po bramce krok `tests/hwaccel.sh` (sprawdzenie akceleracji Intel/AMD/NVIDIA w obrazie legacy; ten sam krok wykonuje `release.yml`); `legacy-latest.yml` (poniedziałek 04:17 UTC i ręcznie): stos na `ghcr.io/ersatztv/legacy:latest` + seed + e2e |
+| pamięć | `tests/stack.sh mem` – RAM kontenerów stosu, paneli i Chromium z Playwright, katalog danych i jego system plików. Dane domyślnie w `~/.cache/vizrs-live-test` (dysk; `/tmp` bywa tmpfs = RAM). Legacy w stosie z `DOTNET_gcServer=0` (obraz ma w runtimeconfig Server GC – sterta na każdy rdzeń; workstation GC to ok. połowa RAM) i limitem `VIZRS_LIVE_TEST_MEM` (domyślnie `1536m`, `0` – bez limitu; e2e ogląda kanał 24 w podglądzie, a ffmpeg legacy kodujący 1080p zajmuje ok. 775 MB – razem z legacy ok. 1,12 GB, w limicie 1 GB jądro ubija ffmpeg i sesja kanału nie startuje), proxy 128 MB; `tests/real.sh` – Jellyfin, Emby, Plex po `VIZRS_LIVE_REAL_MEM` (domyślnie `1g`). Pomiar 2026-11-07 (up + seed + e2e): legacy ok. 850 → 420–480 MB bez oglądania kanału, dane w tmpfs 300 MB → 0. Produkcji to nie dotyczy (`docker-compose.live.yml` bez zmian) |
+| CI | `.github/workflows/panel-ci.yml` (push na `main`, PR, ręcznie): serwer (`--locked`, binarka jako artefakt `vizrs-live-linux-x86_64`), krzyżowa budowa obu obrazów na arm64, obraz panelu, `tests/gate.sh` z Playwright 1.58.2 (`PLAYWRIGHT_DIR` = `$RUNNER_TEMP/pw` przez `GITHUB_ENV` – kontekst `runner` jest niedostępny w `env` joba, co przy 1.1.0 unieważniało wszystkie workflow), po bramce krok `tests/hwaccel.sh` (sprawdzenie akceleracji Intel/AMD/NVIDIA w obrazie legacy; ten sam krok wykonuje `release.yml`); `panel-legacy-latest.yml` (poniedziałek 04:17 UTC i ręcznie): stos na `ghcr.io/ersatztv/legacy:latest` + seed + e2e |
 
 **Prawdziwe usługi zamiast atrap (`tests/real.sh`, ręcznie, poza bramką).** e2e testuje Jellyfin i CG Playout na atrapach; `tests/real.sh up` stawia obok stosu testowego prawdziwe: **Jellyfin** (127.0.0.1:18196), **Emby** (18896), **Plex** (18324) – w sieci `vizrs-live-test-net`, z wideo testowym seeda pod `/media/info24` – oraz **VizRS CG Playout** z repozytorium obok (binarka, 127.0.0.1:18701, live API na danych stosu) i drugi panel VizRS Live (**127.0.0.1:18092**) podłączony do niego (panel 18090 zostaje na atrapie e2e). Jellyfin i Emby konfiguruje sam (konto `vizrs`, biblioteka „Filmy E2E”, klucz API w `$VIZRS_LIVE_TEST_DIR/real/*.key`); `tests/real.sh connect` łączy z nimi legacy przez panel; `status`, `down` (najpierw odłącza legacy od Jellyfin i Emby – ich pozycje zmieniają liczby, których oczekuje e2e, więc przed `tests/stack.sh test` zawsze `down`), `reset` (usuwa też dane usług). Plex: logowanie PIN przez plex.tv – ręcznie w panelu (Źródła zewnętrzne → Plex), opcjonalnie `PLEX_CLAIM`. Sprawdzone 2026-11-07: legacy ↔ Jellyfin 10.10.7 i Emby 4.8.11 (połączenie, klucz zamaskowany, biblioteki, zamiana ścieżki `/media/info24` → `/config/media/info24`, synchronizacja – film „Pogoda” w indeksie legacy); reguły grafiki na prawdziwym CG Playout (odczyt, błędny regex odrzucony, zapis `graphics.json`). Bez silnika VizRS (komendy grafiki idą w próżnię) i bez Plex z kontem.
 
@@ -337,7 +337,7 @@ Plan rozbudowy realizuje automat `scripts/plan.sh` (opis w [plany/PLAN-rozbudowy
 
 ## 8. Zamknięcie web GUI legacy (R10)
 
-Operatorzy pracują wyłącznie w panelu. Legacy nie ma portu na zewnątrz (`expose`, nie `ports` w `compose.yml`); panel i most rozmawiają w sieci wewnętrznej Dockera (`http://ersatztv:8409`). Na zewnątrz port 8409 wystawia **proxy** (Caddy, `docker/proxy.Caddyfile`):
+Operatorzy pracują wyłącznie w panelu. Legacy nie ma portu na zewnątrz (`expose`, nie `ports` w `docker-compose.live.yml`); panel i most rozmawiają w sieci wewnętrznej Dockera (`http://ersatztv:8409`). Na zewnątrz port 8409 wystawia **proxy** (Caddy, `docker/proxy.Caddyfile`):
 
 | Na zewnątrz (tylko `GET`/`HEAD`) | Po co |
 |---|---|
@@ -378,34 +378,45 @@ Operatorzy pracują wyłącznie w panelu. Legacy nie ma portu na zewnątrz (`exp
 | pasek: Docs, pomoc, GitHub | **pominięte**: strony projektu ErsatzTV |
 
 **Kroki ręczne (poza repozytorium / poza sesją automatu):**
-1. Produkcja: po aktualizacji `compose.yml` legacy traci port 8409, a dostaje go proxy – `docker compose up -d` przestawia to bez zmian w `etv-config`. Jeśli coś (np. Plex/Jellyfin jako tuner HDHomeRun, odtwarzacze) korzystało dotąd z innych ścieżek niż powyżej, sprawdzić po przejściu (`curl -I`).
+1. Produkcja: po wdrożeniu `docker-compose.live.yml` legacy traci port 8409, a dostaje go proxy – `docker compose up -d` przestawia to bez zmian w `etv-config`. Jeśli coś (np. Plex/Jellyfin jako tuner HDHomeRun, odtwarzacze) korzystało dotąd z innych ścieżek niż powyżej, sprawdzić po przejściu (`curl -I`).
 2. Administrator, który wyjątkowo potrzebuje web GUI legacy: tunel SSH do sieci Dockera albo tymczasowo `ports: ["127.0.0.1:8410:8409"]` przy usłudze `ersatztv` – nie dla operatorów.
 3. CI zacznie działać po wypchnięciu `.github/workflows/` na GitHub (sesja automatu nie robi push); w ustawieniach repozytorium Actions muszą być włączone. `legacy-latest.yml` nie wymaga sekretów (obraz legacy jest publiczny). Krok `tests/hwaccel.sh` w `ci.yml` i `release.yml` weryfikuje akcelerację sprzętową w obrazie legacy przed publikacją.
 
 
 ## 9. Wydania
 
-Bieżące wydanie: 26.11.10 (CHANGELOG.md).
+Bieżące wydanie: 26.11.10 (CHANGELOG.md). Od połączenia P2 panel kanału, most VizRS Bridge oraz aplikacja okienna są wydawane wspólnie z sidecarem w jednym workflow wydania produktu `.github/workflows/release.yml`.
 
 ### Obrazy i wersje
 
 | Obraz | Tag | Z czego |
 |---|---|---|
-| `ghcr.io/sdorpl/vizrs-live` | `1.2.3` (wydanie 1.2.3) i `latest`, amd64 + arm64; wcześniej `1.1.0` (tylko amd64; tag v1.2.0 bez publikacji) | `docker/live.Dockerfile` (kompilacja krzyżowa musl z `rust-lld` na platformie budującej, bez QEMU) |
-| `ghcr.io/sdorpl/vizrs-live-legacy` | `1.2.3` i `latest` (wydanie 1.2.3, na najnowszym legacy), amd64 + arm64; wcześniej `1.1.0-legacy26.12.0` | `docker/legacy-bridge.Dockerfile` (SDK .NET na platformie budującej – DLL mostu to IL) na `LEGACY_IMAGE` z `.env.example` – od 2026-11-07 `ghcr.io/ersatztv/legacy:latest`; amd64 zawiera akcelerację Intel VAAPI/QSV, AMD VAAPI i NVIDIA NVENC z obrazu upstream, a `release.yml` i `ci.yml` sprawdzają to `tests/hwaccel.sh` po bramce, przed publikacją; compose go nie używa (most budowany na miejscu, §6) |
+| `ghcr.io/sdorpl/vizrs-live` | `<wersja>` i `latest`, amd64 + arm64 | `docker/live.Dockerfile` (statyczna binarka musl w `scratch`, kompilacja z `-C target-cpu=neoverse-n1` na arm64) |
+| `ghcr.io/sdorpl/vizrs-live-legacy` | `<wersja>` i `<wersja>-legacy<legacy>`, amd64 + arm64 | `docker/legacy-bridge.Dockerfile` na `LEGACY_IMAGE` z `.env.example` (domyślnie najnowszy `ghcr.io/ersatztv/legacy:latest`); akceleracja Intel VAAPI/QSV, AMD VAAPI i NVIDIA NVENC z obrazu upstream weryfikowana przez `tests/hwaccel.sh` przed publikacją |
+| `ghcr.io/sdorpl/vizrs-cg`, `vizrs-seed` | `<wersja>` i `latest`, amd64 + arm64 | sidecar i dane startowe w korzeniu repozytorium |
 | `caddy` (proxy) | `alpine` (zawsze najnowszy) | obraz oficjalny |
 
-Od 2026-11-09 (decyzja użytkownika) domyślne w `compose.yml`, `compose.cg-playout.yml` i `.env.example` to zawsze najnowsze wydania: `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:latest`, `PROXY_IMAGE=caddy:alpine`; konkretną wersję daje `LIVE_IMAGE=…:<wersja>` w `.env`. Legacy – też (od 2026-11-07 zawsze najnowsze, §6): `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:latest`, `LIVE_LEGACY_IMAGE=vizrs-live-legacy:local` (lokalny obraz z mostem); inna wersja: `LEGACY_IMAGE=…` w `.env` albo `LEGACY_IMAGE=… tests/stack.sh up`. `release.yml` dokleja `-legacy<wersja>` do tagu tylko przy `LEGACY_IMAGE=…:v<wersja>`. Publikację robi `.github/workflows/release.yml` (wzór: VizRS CG System i CG Playout) po tagu `v<wersja>` albo ręcznie (Actions → Release, wersja = szkic wydania, bez `latest`): sprawdza zgodność wersji z `server/Cargo.toml`, przechodzi `tests/gate.sh` na `LEGACY_IMAGE` z `.env.example` oraz `tests/hwaccel.sh` i dopiero wtedy wypycha oba obrazy (buildx, amd64 + arm64, `GITHUB_TOKEN`, nazwa z właściciela repozytorium); równolegle buduje binarki panelu `VizRS-Live-<wersja>-linux-{x86_64,arm64}.tar.gz` (statyczne musl, z `README.md`, `CHANGELOG.md`, `.env.example`, `compose.yml` oraz nakładkami `compose.vaapi.yml` i `compose.nvidia.yml`; RUNBOOK §2b) i zakłada wydanie na GitHubie z `SHA256SUMS.txt` i notą z commitów. Wersja z łącznikiem (`v1.2.0-rc1`) = wydanie wstępne, bez `latest`. Zbędny szkic usuwa `drafts.yml` (Actions → Usuń szkic wydania).
+W Portainerze obowiązują wartości domyślne `docker-compose.live.yml`: panel i legacy z mostem przypięte do wydania (`LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`; dziś 26.11.8), podnoszone commitem po publikacji obrazów. Dla lokalnego stosu (`panel/.env.example`, `tests/deploy.sh`) domyślne to zawsze najnowsze wydania: `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:latest`, `PROXY_IMAGE=caddy:alpine`; konkretną wersję daje `LIVE_IMAGE=…:<wersja>` w `.env`. Legacy – od 2026-11-07 zawsze najnowsze (§6): `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:latest`, `LIVE_LEGACY_IMAGE=vizrs-live-legacy:local` (lokalny obraz z mostem, budowany nakładką `panel/compose.build.yml`); inna wersja: `LEGACY_IMAGE=…` w `.env`.
 
-**Decyzje (2026-11-07, sesja automatu – zachowawczo):**
-- Tag obrazu legacy niesie obie wersje (`<panel>-legacy<legacy>`) – most jest sprawdzony z konkretną wersją legacy, więc nazwa mówi, co jest w środku; nowa wersja legacy = nowy tag bez nowego wydania panelu.
-- ~~Brak tagu `latest` na ghcr~~ – zmienione 2026-11-07 (workflow jak w CG System i CG Playout): wydanie z tagu bez łącznika przesuwa `latest`, a od 2026-11-09 `compose.yml` i `.env.example` wskazują `latest` (każde `pull` bierze najnowszy panel). (Legacy: zawsze najnowsze oficjalne, most budowany na miejscu, §6.)
-- TLS: panel i proxy zostają na HTTP (decyzja R10 podtrzymana); w RUNBOOK zalecenie LAN/VPN albo zewnętrzne proxy TLS. Panel nie robi TLS sam (serwer bez zależności).
+Publikację całego produktu wykonuje `.github/workflows/release.yml` po tagu `v<wersja>` (albo ręcznie ze szkicem):
+- sprawdza zgodność jednej wersji produktu (`Cargo.toml` w korzeniu = `panel/server/Cargo.toml` = `panel/desktop/Cargo.toml` = `tauri.conf.json` = `VizRS.Bridge.csproj`);
+- uruchamia bramkę panelu `panel/tests/gate.sh` oraz weryfikację akceleracji sprzętowej `panel/tests/hwaccel.sh`;
+- buduje binarki panelu `VizRS-CG-Playout-panel-<wersja>-linux-{x86_64,arm64}.tar.gz` (statyczne musl) oraz sidecara;
+- buduje obrazy Dockera (`vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy`) na amd64 i arm64;
+- buduje aplikację okienną (Tauri 2): `VizRS-CG-Playout-<wersja>-x86_64.AppImage` (natywny klient panelu na serwerze; wydania: https://github.com/sdorpl/VizRS-CG-Playout/releases);
+- zakłada wydanie na GitHubie z plikami i sumami `SHA256SUMS.txt`.
+
+Nazwy obrazów oraz zmienne środowiskowe `VIZRS_LIVE_*` pozostają bez zmian (stosy produkcyjne ich używają).
+
+**Decyzje:**
+- Tag obrazu legacy niesie wersję panelu oraz wersję upstream legacy (`<wersja>-legacy<legacy>`), co precyzuje wersję bazową.
+- Wydanie z tagu bez łącznika przesuwa tag `:latest`, a wersja z łącznikiem (`v26.11.11-rc1`) to wydanie wstępne bez przesuwania `:latest`.
+- TLS: panel i proxy działają po HTTP; dostęp z zewnątrz – za odwrotnym proxy z TLS (np. nginx, RUNBOOK §2).
 
 **Kroki ręczne (sesja automatu niczego nie publikuje):**
-1. `git push origin main` i `git tag v<wersja> && git push origin v<wersja>` – uruchamia `release.yml` (ostatnio: v1.2.3, 2026-11-08; wcześniej v1.2.2 i v1.2.1; v1.2.0 – tag bez publikacji, bramka nie przeszła).
-2. Po pierwszej publikacji: pakiety `vizrs-live` i `vizrs-live-legacy` na GitHub ustawić jako publiczne (albo `docker login ghcr.io` na serwerze produkcyjnym).
-3. Produkcja: `.env` wg `.env.example` (nowe zmienne `LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`), kopia `etv-config`, `docker compose pull && docker compose up -d` (RUNBOOK §2–4).
+1. `git push origin main` i `git tag v<wersja> && git push origin v<wersja>` – uruchamia `.github/workflows/release.yml`.
+2. Pakiety `vizrs-live` i `vizrs-live-legacy` na GitHub ustawione jako publiczne.
+3. Produkcja: `.env` wg `.env.example`, upewnienie się co do `COMPOSE_PROFILES=grafika` w Portainerze, kopia `etv-config`, `docker compose pull && docker compose up -d` (RUNBOOK §2–4).
 
 ### Przegląd bezpieczeństwa
 

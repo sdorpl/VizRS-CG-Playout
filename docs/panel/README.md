@@ -1,4 +1,6 @@
-# Dokumentacja VizRS Live
+# Dokumentacja panelu VizRS CG Playout
+
+> Od 2026-11-15 panel kanału (dawny VizRS Live) jest częścią połączonego projektu **VizRS CG Playout** (katalog `panel/`, plan połączenia: sdorpl/VizRS §3). Nazwę „VizRS Live” zachowano w odniesieniach do historii projektu.
 
 ## Użytkownicy
 

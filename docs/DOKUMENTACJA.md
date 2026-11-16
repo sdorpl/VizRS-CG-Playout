@@ -1473,20 +1473,20 @@ bez nich panel pokazuje sygnały, a audycji nie zapisze (409).
 
 ### Pakiet VizRS – zgodność aplikacji
 
-VizRS CG Playout to jedna z czterech aplikacji pakietu VizRS, które mają być **zawsze ze sobą zgodne** (bieżące wersje działają razem).
+VizRS CG Playout to jedna z aplikacji pakietu VizRS, które mają być **zawsze ze sobą zgodne** (bieżące wersje działają razem).
 
 | Repozytorium | Rola | Styk z tą aplikacją |
 |---|---|---|
 | [VizRS CG System](../../VizRS%20CG%20System) | silnik grafiki (Rust): Trio (playout stron), wyjście `/output` (też anteny kanałów `bus=ch-N`), API TCP 6100 / HTTP / SSE (opis: `docs/API.md`), serwer `vizrs` | protokół VizRS: TCP 6100 (`AUTH`, `STATE`, `TAKE`, `OUT`…), strona `/output`, renderer `vizrs-render stream` (dostawca styku: VizRS CG System, `docs/API.md`) |
-| **VizRS CG Playout** (to repo) | grafika VizRS i sloty na żywo (live ingest RTMP/SRT) na kanałach ErsatzTV (sidecar `cg`, bez zmian w ErsatzTV) | – |
-| [VizRS Live](../../VizRS%20Live) | panel kanału nad ErsatzTV legacy (sterowanie kanałami, ramówką, playoutami bez web GUI legacy) | API CG Playout `/health`, `/etv/pages`, `/ingest/state`, `/api/live/*` z tokenem panelu (`panel_token`), przez pośrednika w serwerze panelu; wspólny stos `compose.cg-playout.yml` z repo VizRS Live (dostawca styku: CG Playout, §1 „Live API”) |
+| **VizRS CG Playout** (to repo) | grafika VizRS i sloty na żywo (live ingest RTMP/SRT) na kanałach ErsatzTV (sidecar `cg`, bez zmian w ErsatzTV) oraz panel kanału (`panel/`) nad ErsatzTV legacy | – |
+| [VizRS Live](../../VizRS%20Live) | dawne osobne repozytorium panelu – od 2026-11-15 połączone z VizRS CG Playout w katalogu `panel/` | API CG Playout `/health`, `/etv/pages`, `/ingest/state`, `/api/live/*` z tokenem panelu (`panel_token`), przez pośrednika w serwerze panelu; nakładka `docker-compose.live.yml` (dostawca styku: CG Playout, §1 „Live API”) |
 | [VizRS CG Artist](../../VizRS%20CG%20Artist) | samodzielny edytor grafik i animacji (Tauri 2), sceny dla VizRS CG System | brak bezpośredniego – sceny z Artist trafiają na serwer `vizrs` (VizRS CG System), a stamtąd na kanał |
 
 Zasady zgodności:
 
-- **Styk zmienia się w obu repozytoriach naraz.** Zmiana API, pól odpowiedzi, parametrów lub zmiennych wspólnego stosu (`compose.cg-playout.yml`) po jednej stronie wymaga dostosowania drugiej strony i jej dokumentacji, zanim wejdzie do wydania. Opis styku jest po stronie dostawcy: dla API CG Playout (`/health`, `/etv/pages`, `/ingest/state`, `/api/live/*`) dostawcą jest ta aplikacja (§1 „Live API”), a dla protokołu VizRS (TCP 6100, `/output`) dostawcą jest VizRS CG System (`docs/API.md`).
-- **Starsza wersja sąsiada nie psuje aplikacji.** Rozszerzenia API w CG Playout zachowują kompatybilność wsteczną ze starszą wersją VizRS Live; z kolei przy współpracy z serwerem VizRS CG System brak nowych możliwości serwera grafiki nie może powodować błędu krytycznego ani przerywać emisji kanału.
-- **Wydania razem.** Przed wydaniem sprawdź z bieżącymi wersjami pozostałych aplikacji pakietu (VizRS CG System i VizRS Live); zmianę wymagającą nowszej wersji sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
+- **Styk zmienia się w obu aplikacjach naraz.** Zmiana API, pól odpowiedzi, parametrów lub zmiennych nakładki `docker-compose.live.yml` po jednej stronie wymaga dostosowania drugiej strony i jej dokumentacji, zanim wejdzie do wydania. Opis styku jest po stronie dostawcy: dla API CG Playout (`/health`, `/etv/pages`, `/ingest/state`, `/api/live/*`) dostawcą jest ta aplikacja (§1 „Live API”), a dla protokołu VizRS (TCP 6100, `/output`) dostawcą jest VizRS CG System (`docs/API.md`).
+- **Starsza wersja sąsiada nie psuje aplikacji.** Rozszerzenia API w CG Playout zachowują kompatybilność wsteczną ze starszą wersją panelu; z kolei przy współpracy z serwerem VizRS CG System brak nowych możliwości serwera grafiki nie może powodować błędu krytycznego ani przerywać emisji kanału.
+- **Wydania razem.** Przed wydaniem sprawdź z bieżącymi wersjami pozostałych aplikacji pakietu (VizRS CG System i VizRS CG Artist); zmianę wymagającą nowszej wersji sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
 
 ## 3. Komendy i symbole zastępcze
 
@@ -1936,7 +1936,7 @@ s1 i s2 mają ten sam stos z repozytorium: w Portainerze **Repository → Compos
 path** `docker-compose.yml`, **Additional paths** `docker-compose.ampere.yml` i
 `docker-compose.live.yml` (po złożeniu nic się nie buduje – `ampere` zeruje
 `build`, więc działa też przez agenta Portainera na s2) oraz
-`COMPOSE_PROFILES=ingest`. Ustawienia są wspólne – domyślne dla Ampere: preset
+`COMPOSE_PROFILES=grafika,ingest`. Ustawienia są wspólne – domyślne dla Ampere: preset
 `ultrafast`, `cg` 6 GB, bez płynnych przejść, synchronizacja w RAM, 25 kl./s,
 renderer `auto`; obie stacje mają też `VIZRS_CHANNEL_BUSES=1`. Stos ustawia tylko
 to, co się różni:
@@ -1967,10 +1967,10 @@ zapisuje go na `main`. Stos w Portainerze ma włączone **GitOps updates** z
 programy ErsatzTV.
 Odtworzenie `cg` zamraża grafikę do końca pozycji; naprawą jest restart ErsatzTV.
 
-### VizRS Live zamiast web GUI ErsatzTV (`docker-compose.live.yml`)
+### Panel kanału zamiast web GUI ErsatzTV (`docker-compose.live.yml`)
 
 Nakładka [docker-compose.live.yml](../docker-compose.live.yml) wpina w stos panel
-**VizRS Live** (osobne repozytorium `sdorpl/VizRS-Live`), w którym operator
+**VizRS CG Playout** (katalog `panel/`, dawny VizRS Live), w którym operator
 pracuje zamiast w web GUI ErsatzTV. Nie montuje plików z hosta i niczego nie
 buduje, więc działa także w Portainerze: **Additional paths** →
 `docker-compose.live.yml` (na Ampere po `docker-compose.ampere.yml`).
@@ -1980,20 +1980,21 @@ buduje, więc działa także w Portainerze: **Additional paths** →
   te same, port 8409 nie jest już wystawiony wprost;
 - `proxy` (Caddy) wystawia `:8409` tylko dla widzów: `/iptv/*`, `/artwork/*`,
   HDHomeRun; web GUI i API legacy oraz `/vizrs-bridge/*` odpowiadają 403;
-- `live` – panel na `:8090` (`VIZRS_LIVE_PORT`), z sidecarem przez `http://cg:7700`.
+- `live` – panel na `:8090` (`VIZRS_LIVE_PORT`), z sidecarem przez `http://cg:7700`
+  (gdy włączony jest profil `grafika`; bez profilu `grafika` panel działa nad samym ErsatzTV,
+  a `cg` ma `required: false`).
 
 Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
-`VIZRS_BRIDGE_TOKEN` (most), `VIZRS_LIVE_TOKEN` (logowanie do panelu),
+`COMPOSE_PROFILES=grafika` (lub `grafika,ingest` dla live ingest; wymagane przed aktualizacją!),
+`VIZRS_BRIDGE_TOKEN` (most), `VIZRS_LIVE_TOKEN` (logowanie do panelu oraz okna AppImage),
 `VIZRS_PANEL_TOKEN` (live API sidecara, §„Live API”); opcjonalnie
-`VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Panel (`LIVE_IMAGE`) i proxy
-(`PROXY_IMAGE`): panel i ErsatzTV z mostem (`LIVE_LEGACY_IMAGE`) są przypięte
-do tego samego wydania VizRS Live (26.11.1) – od 26.11.1 wersja mostu = wersja
-panelu, więc podnosi się je razem; proxy to zawsze najnowsze `caddy:alpine`. Caddyfile jest kopią `docker/proxy.Caddyfile` z VizRS Live:
-zmiana jednego wymaga zmiany drugiego. Zgodność kopii, środowiska usługi `live`
-(z nakładką `compose.cg-playout.yml` VizRS Live) i `docker-compose.vaapi.yml`
-sprawdza `scripts/check-cg-overlay.sh` w VizRS Live – uruchamia go każde
-`tests/deploy.sh` panelu i przerywa wdrożenie przy rozjeździe. Cofnięcie: usunięcie nakładki ze stosu
-i redeploy (ErsatzTV wraca na oficjalny obraz z tą samą bazą).
+`VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Panel (`LIVE_IMAGE`), ErsatzTV z mostem
+(`LIVE_LEGACY_IMAGE`) są przypięte do wydania produktu (dziś 26.11.8) i podnoszone razem commitem po publikacji obrazów; sidecar (`vizrs-cg`) idzie z `:latest`; proxy to zawsze najnowsze `caddy:alpine`.
+Caddyfile jest wpisany bezpośrednio w sekcję `configs:` nakładki `docker-compose.live.yml`
+(Portainer ze stosu GitHuba nie montuje plików z repozytorium). Zgodność kopii z `panel/docker/proxy.Caddyfile`
+sprawdza `panel/scripts/check-caddy.sh` w CI (`panel-ci.yml`) i `panel/tests/deploy.sh`.
+Do lokalnej budowy obrazów panelu służy nakładka `panel/compose.build.yml` (używana przez `panel/tests/deploy.sh`; Portainer jej nie używa).
+Cofnięcie: usunięcie nakładki ze stosu i redeploy (ErsatzTV wraca na oficjalny obraz z tą samą bazą).
 
 ### Dane startowe (`seed/`)
 
@@ -2526,17 +2527,27 @@ binarkę, uruchamia `npm test` i zostawia binarkę (Linux x86_64) jako
 artefakt przebiegu.
 
 Wydanie (`.github/workflows/release.yml`) rusza po znaczniku `v*`
-(`git tag v2.0.6 && git push origin v2.0.6`) albo ręcznie (Actions → Release
-→ Run workflow, z wersją; powstaje wtedy szkic wydania). Buduje:
+(`git tag v26.11.11 && git push origin v26.11.11`) albo ręcznie (Actions → Release
+→ Run workflow, z wersją; powstaje wtedy szkic wydania). Workflow sprawdza
+jedną wspólną wersję produktu (`Cargo.toml` sidecara, `panel/server/Cargo.toml`,
+`panel/desktop/Cargo.toml`, `panel/desktop/tauri.conf.json` oraz `panel/bridge/VizRS.Bridge.csproj`)
+i uruchamia pełną bramkę panelu (`panel/tests/gate.sh` oraz weryfikację akceleracji sprzętowej
+`panel/tests/hwaccel.sh` na obrazie legacy). Buduje:
 
-- archiwa `VizRS-CG-Playout-<wersja>-linux-x86_64.tar.gz` i `…-linux-arm64.tar.gz`
+- archiwa sidecara `VizRS-CG-Playout-<wersja>-linux-x86_64.tar.gz` i `…-linux-arm64.tar.gz`
   (binarka `vizrs-cg`, `client/` z `vizrs-etv-client` i `vizrs-ffmpeg` –
   statycznymi, musl –, `etv/`, `config.example.json`), arm64 natywnie na runnerze arm,
-- obraz `ghcr.io/<właściciel>/vizrs-cg:<wersja>` i `:latest` (amd64 i arm64),
+- archiwa panelu `VizRS-CG-Playout-panel-<wersja>-linux-x86_64.tar.gz` i `…-linux-arm64.tar.gz`
+  (statyczna binarka `vizrs-live` z `panel/server`),
+- obrazy `ghcr.io/<właściciel>/vizrs-cg:<wersja>`, `vizrs-seed:<wersja>`,
+  `vizrs-live:<wersja>` oraz `vizrs-live-legacy:<wersja>[-legacy<wersja>]` (amd64 i arm64),
+- aplikację okienną: AppImage natywnego klienta panelu `VizRS-CG-Playout-<wersja>-x86_64.AppImage`,
 - wydanie na GitHubie z archiwami i `SHA256SUMS.txt`.
 
-Wersja z łącznikiem (`v2.1.0-rc1`) to wydanie wstępne: obraz dostaje tylko
-swój znacznik, `:latest` zostaje bez zmian.
+Wydanie z tagu bez łącznika przesuwa tag `:latest` (dla obrazów `vizrs-cg`, `vizrs-seed`, `vizrs-live`
+oraz `vizrs-live-legacy`). Wersja z łącznikiem (`v26.11.11-rc1`) to wydanie wstępne: obrazy dostają tylko
+swój znacznik wersji, a `:latest` zostaje bez zmian. Nazwy obrazów oraz zmienne środowiskowe `VIZRS_LIVE_*`
+pozostają bez zmian (stosy produkcyjne ich używają).
 
 ## 8. Benchmark przechwytywania grafiki
 

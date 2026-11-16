@@ -1,47 +1,102 @@
-# VizRS Live – runbook administratora
+# Panel VizRS CG Playout – runbook administratora
 
 Wdrożenie, kopie, aktualizacja legacy, odtworzenie. Praca operatora: [INSTRUKCJA.md](INSTRUKCJA.md); budowa i API: [DOKUMENTACJA.md](DOKUMENTACJA.md).
 
 ## 1. Składniki i porty
 
-| Usługa (`compose.yml`) | Obraz (wydanie 1.2.3) | Port na zewnątrz |
+Wdrożenie opiera się na głównym pliku `docker-compose.yml` w korzeniu repozytorium oraz nakładce `docker-compose.live.yml`:
+
+| Usługa (`docker-compose.live.yml`) | Obraz | Port na zewnątrz |
 |---|---|---|
-| `live` – panel | `ghcr.io/sdorpl/vizrs-live:1.2.3` | 8090 – operatorzy |
-| `ersatztv` – legacy z mostem | `vizrs-live-legacy:local` – budowany na miejscu na najnowszym `ghcr.io/ersatztv/legacy` + VizRS Bridge, ffmpeg z VAAPI/QSV/NVENC (§2b) | brak (`expose`) |
+| `live` – panel | `ghcr.io/sdorpl/vizrs-live:<wersja>` – przypięta w nakładce (`LIVE_IMAGE`, dziś 26.11.8) | 8090 – operatorzy (w produkcji zalecane za proxy TLS) |
+| `ersatztv` – legacy z mostem | `ghcr.io/sdorpl/vizrs-live-legacy:<wersja>` – przypięta w nakładce (`LIVE_LEGACY_IMAGE`, dziś 26.11.8); lokalnie budowany nakładką `panel/compose.build.yml` na `ghcr.io/ersatztv/legacy:latest` + VizRS Bridge | brak (`expose`, sieć Dockera) |
 | `proxy` – Caddy | `caddy:alpine` | 8409 – widzowie: strumienie, M3U, XMLTV, HDHomeRun |
 
-Dane: `ETV_CONFIG` (domyślnie `./etv-config`, cała baza i stan legacy) i `MEDIA_DIR` (media, tylko do odczytu). Panel nie trzyma żadnych danych.
+W stosie z grafiką VizRS (`COMPOSE_PROFILES=grafika`) dochodzą usługi z `docker-compose.yml`:
+- `seed` – jednorazowa inicjalizacja wolumenów danymi startowymi,
+- `vizrs` – silnik grafiki VizRS (port 8788),
+- `cg` – sidecar grafiki i Live API (port 7700),
+- oraz z profilem `ingest` (`COMPOSE_PROFILES=grafika,ingest`): usługa `ingest` (RTMP/SRT).
+
+Dane: wolumen `ersatztv-config` (albo katalog z `ERSATZTV_CONFIG`; cała baza i stan legacy) i `MEDIA_DIR` / `MEDIA_MOUNT` (media, tylko do odczytu). Panel nie trzyma żadnych własnych danych na dysku (sesje w RAM).
 
 ## 2. Wdrożenie
 
-1. Docker z Compose v2. Skopiuj repozytorium (albo tylko `compose.yml`, `.env.example`, `docker/proxy.Caddyfile`).
-2. `cp .env.example .env`; wygeneruj dwa **różne** tokeny: `head -c 24 /dev/urandom | base64 | tr -d '/+='` → `VIZRS_BRIDGE_TOKEN`, `VIZRS_LIVE_TOKEN`. Ustaw `ETV_CONFIG`, `MEDIA_DIR`, `TZ`, `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409` (adres dla widzów, widoczny z kontenera panelu). `chmod 600 .env`.
-3. `docker compose pull live && docker compose up -d` – panel z ghcr, legacy z mostem budowany na miejscu (`pull_policy: build`); każde `up` sprawdza nowsze `ghcr.io/ersatztv/legacy` i dobudowuje most (warstwy z pamięci podręcznej, bez nowego legacy – kilka sekund).
+1. Docker z Compose v2 i repozytorium (`docker-compose.yml`, `docker-compose.live.yml` w korzeniu).
+2. Plik `.env` w korzeniu repozytorium (wzór zmiennych panelu: `panel/.env.example`); wygeneruj dwa **różne** tokeny: `head -c 24 /dev/urandom | base64 | tr -d '/+='` → `VIZRS_BRIDGE_TOKEN`, `VIZRS_LIVE_TOKEN`. Ustaw `MEDIA_DIR` (i `MEDIA_MOUNT`), `TZ`, `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409` (adres dla widzów). Jeśli stos ma nadawać z grafiką VizRS, ustaw `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest`). `chmod 600 .env`.
+3. Uruchomienie stosu:
+   ```bash
+   # Z grafiką VizRS (emisja):
+   COMPOSE_PROFILES=grafika docker compose -f docker-compose.yml -f docker-compose.live.yml up -d
+
+   # Z grafiką VizRS i live ingest:
+   COMPOSE_PROFILES=grafika,ingest docker compose -f docker-compose.yml -f docker-compose.live.yml up -d
+
+   # Bez grafiki (sam ErsatzTV z panelem):
+   docker compose -f docker-compose.yml -f docker-compose.live.yml up -d
+
+   # Lokalna budowa obrazów panelu (np. przy pracy nad kodem / deploy.sh):
+   COMPOSE_PROFILES=grafika docker compose -f docker-compose.yml -f docker-compose.live.yml -f panel/compose.build.yml up -d
+   ```
 4. Sprawdź: `docker compose ps` (wszystko `healthy`/`running`), panel `http://<serwer>:8090/` → zaloguj → **Diagnostyka**: most zielony, „Web GUI legacy dla widzów” = zamknięte. Z innej maszyny: `curl -I http://<serwer>:8409/` → 403, `curl -I http://<serwer>:8409/iptv/channels.m3u` → 200.
 5. Pierwsza konfiguracja (biblioteka, kanał, harmonogram, playout) – w panelu; legacy nie wymaga kreatora.
 
-**Sieć i TLS.** Panel i proxy mówią zwykłym HTTP. Panel wystawiaj tylko w sieci zaufanej (LAN/VPN); przez Internet – wyłącznie za odwrotnym proxy z TLS (np. Caddy z certyfikatem), które ustawia `X-Forwarded-Proto: https` – panel doda wtedy `Secure` do ciasteczka. Port 8090 nie powinien być widoczny publicznie bez TLS (token leci w treści logowania i w ciasteczku).
+> [!WARNING]
+> **Ważne ostrzeżenie dla Portainera (stosy z grafiką):** Stosy w Portainerze, które mają grafikę VizRS, **MUSZĄ** mieć ustawioną zmienną środowiskową stosu `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest` dla live ingest) **PRZED** pierwszym wdrożeniem wersji z profilami compose. Z dawną wartością `COMPOSE_PROFILES=ingest` compose odrzuca nowy plik (`ingest` zależy od wyłączonego `cg`) i stos przestaje się aktualizować; z pustą wartością compose pomija `vizrs` i `cg`, co zdejmuje grafikę z anteny. Wartość `grafika,ingest` działa też ze starszą wersją compose (nieznany profil jest ignorowany), więc można ją ustawić wcześniej.
 
-**CG Playout (opcjonalnie).** `VIZRS_LIVE_CG_URL=http://cg:7700` (sieć wewnętrzna) i `VIZRS_LIVE_CG_TOKEN` = `panel_token` CG Playout.
+**Aplikacja okienna i dostęp ze stacji operatora.** Aplikacja okienna (`VizRS-CG-Playout-<wersja>-x86_64.AppImage`) to wyłącznie natywny klient panelu działającego na serwerze produkcyjnym (nie zawiera panelu lokalnego). Port 8090 nie powinien być wystawiony bezpośrednio na zewnątrz. Dostęp ze stacji operatora realizowany jest przez proxy nginx z własną domeną i certyfikatem TLS na serwerze produkcyjnym. Operator w oknie „VizRS CG Playout – połącz z panelem” wpisuje `https://<domena serwera>` i token panelu (`VIZRS_LIVE_TOKEN`).
+
+**Przykład konfiguracji nginx reverse proxy przed panelem:**
+```nginx
+# Przykład konfiguracji nginx przed panelem (serwer z TLS)
+server {
+    listen 443 ssl http2;
+    server_name panel.twojadomena.pl;
+
+    # Certyfikaty TLS serwera produkcyjnego (np. certbot / Let's Encrypt)
+    ssl_certificate /etc/letsencrypt/live/panel.twojadomena.pl/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/panel.twojadomena.pl/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+
+        # Nagłówek Authorization jest domyślnie przekazywany przez nginx – nie nadpisuj go
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Podgląd HLS i długie odpowiedzi panelu – bez buforowania:
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        client_max_body_size 10m;   # wgrywanie logo i znaków wodnych (limit panelu: 10 MB)
+    }
+}
+```
+> [!NOTE]
+> Powyższa konfiguracja jest przykładem; domena oraz certyfikaty TLS należą do konfiguracji serwera produkcyjnego.
+
+**CG Playout (Live API).** W nakładce `docker-compose.live.yml` połączenie z sidecarem jest skonfigurowane przez sieć wewnętrzną Dockera (`http://cg:7700`) z tokenem `VIZRS_PANEL_TOKEN`. Bez profilu `grafika` panel działa nad samym ErsatzTV, a sidecar jest traktowany jako niedostępny (`cg` w nakładce ma `required: false`).
 
 **VizRS CG System (opcjonalnie, podgląd grafiki i Trio).** `VIZRS_LIVE_VIZRS_URL` – adres VizRS widziany z przeglądarki operatora (nie z kontenera): `http://<serwer>:8788` albo sam port `:8788` (ten sam host co panel – zalecane, ciasteczko Trio działa wtedy także w ramce). VizRS z tokenem: `VIZRS_LIVE_VIZRS_OUTPUT_TOKEN` = `VIZRS_OUTPUT_TOKEN` VizRS (tylko odczyt). Anteny kanałów (`VIZRS_CHANNEL_BUSES=1` w CG Playout): `VIZRS_LIVE_VIZRS_CHANNELS=1`. Sprawdzenie: Grafika kanału → ramka pokazuje wyjście (nie „wymagany token”), Diagnostyka → Panel.
 
-### 2a. Razem ze stosem VizRS CG Playout (jeden projekt compose)
+### 2a. Wdrożenie w Portainerze (GitOps) i konfiguracja proxy
 
-Gdy ErsatzTV legacy działa już w stosie CG Playout (`../VirtRS CG Playout/docker-compose.yml`: `vizrs`, `cg`, `ersatztv`, `ingest`), VizRS Live wpina się w ten sam projekt nakładką `compose.cg-playout.yml` zamiast osobnego `compose.yml`: `ersatztv` dostaje obraz legacy z mostem i traci port na zewnątrz, dochodzą `proxy` (port 8409 dla widzów) i `live` (8090, CG Playout przez `http://cg:7700`). Wolumen `ersatztv-config` i reszta stosu bez zmian.
+W Portainerze (stos z GitHuba, np. s1):
+1. **Repository → Compose path**: `docker-compose.yml`.
+2. **Additional paths**: `docker-compose.live.yml` (na maszynach Ampere A1 po `docker-compose.ampere.yml`, z kartą NVIDIA po `docker-compose.nvidia.yml`).
+3. **Environment variables**:
+   - `COMPOSE_PROFILES=grafika` (lub `grafika,ingest` dla live ingest – **pamiętaj o ustawieniu przed wdrożeniem!**),
+   - `VIZRS_BRIDGE_TOKEN` (token mostu),
+   - `VIZRS_LIVE_TOKEN` (logowanie do panelu i okna AppImage),
+   - `VIZRS_PANEL_TOKEN` (token live API sidecara),
+   - `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`.
+4. **Deploy the stack** / **Pull and redeploy**. Przed pierwszym razem zrób kopię `etv-config` (§3) i porównaj wersję legacy w obrazie z mostem z działającą.
 
-1. Panel z repozytorium (albo gotowy z ghcr): `VIZRS_BRIDGE_TOKEN=x… VIZRS_LIVE_TOKEN=x… LIVE_IMAGE=vizrs-live:local docker compose build live` w VizRS Live; w CG Playout `docker compose build cg`. Legacy z mostem nakładka buduje sama przy każdym `up` na najnowszym `ghcr.io/ersatztv/legacy` (tym samym, co `ingest` CG Playout).
-2. Kopia `ersatztv-config` (§3; wolumen: `docker run --rm -v <projekt>_ersatztv-config:/c -v "$PWD":/k alpine tar -C /c -czf /k/etv-config-$(date +%F).tgz .` przy zatrzymanym `ersatztv`) – nowsze legacy migruje bazę starszej wersji.
-3. W `.env` CG Playout (poza gitem): `COMPOSE_FILE=docker-compose.yml:docker-compose.nvidia.yml:<ścieżka VizRS Live>/compose.cg-playout.yml` (bez nakładki NVIDIA – bez niej), `VIZRS_LIVE_DIR=<ścieżka VizRS Live>` (dla `docker/proxy.Caddyfile`), `VIZRS_BRIDGE_TOKEN`, `VIZRS_LIVE_TOKEN` (dwa różne, §2), `LIVE_IMAGE` (`LIVE_LEGACY_IMAGE` – opcjonalnie, nazwa lokalnego obrazu z mostem, domyślnie `vizrs-live-legacy:local`), `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`; token CG dla panelu to `VIZRS_PANEL_TOKEN`, który już tam jest. VizRS dla panelu nakładka ustawia sama: adres `:${VIZRS_PORT}` (host, pod którym otwarto panel), token wyjścia `VIZRS_OUTPUT_TOKEN`, anteny kanałów wg `VIZRS_CHANNEL_BUSES`; własny `VIZRS_LIVE_VIZRS_URL` w `.env` ma pierwszeństwo – działa tylko, gdy operator otwiera panel pod tym samym hostem (np. `127.0.0.1` ≠ `localhost`).
-4. `docker compose up -d` w katalogu CG Playout; sprawdzenie jak w §2 pkt 4 (most zielony, `curl -I :8409/` → 403, `:8409/iptv/channels.m3u` → 200) i w panelu Sloty na żywo (CG Playout połączony).
+**Caddyfile proxy w Portainerze:** Portainer przy stosach z gita nie montuje plików z repozytorium na hosta. Z tego powodu Caddyfile usługi `proxy` jest wpisany bezpośrednio w sekcję `configs:` nakładki `docker-compose.live.yml`. Zgodność tej kopii ze źródłowym plikiem `panel/docker/proxy.Caddyfile` weryfikuje skrypt `panel/scripts/check-caddy.sh` w CI (`panel-ci.yml`) oraz w `panel/tests/deploy.sh` (zastąpił dawny `check-cg-overlay.sh` i `panel/compose.cg-playout.yml`).
 
-Cofnięcie: przywróć poprzedni `.env` CG Playout i kopię `ersatztv-config` (§5), `docker compose up -d --remove-orphans`.
-
-**Portainer (stos z GitHuba, np. s1):** `compose.cg-playout.yml` montuje pliki z `VIZRS_LIVE_DIR` i buduje legacy na miejscu, czego stos z repozytorium w Portainerze nie potrafi. Tam zamiast niej służy `docker-compose.live.yml` z repozytorium CG Playout (obrazy z ghcr – `vizrs-live` i `vizrs-live-legacy` w wersji wydania, Caddyfile wpisany w compose): w stosie **Additional paths** → `docker-compose.live.yml` (po `docker-compose.ampere.yml`), w **Environment variables** `VIZRS_BRIDGE_TOKEN`, `VIZRS_LIVE_TOKEN`, `VIZRS_PANEL_TOKEN`, `VIZRS_LIVE_STREAM_URL`; potem **Pull and redeploy**. Przed pierwszym razem kopia `ersatztv-config` (pkt 2) i porównanie wersji legacy w obrazie z mostem z działającą – starszy obraz nie może dostać nowszej bazy. Opis nakładki: DOKUMENTACJA CG Playout, „VizRS Live zamiast web GUI ErsatzTV”.
-
-**Media w panelu.** Usługa `live` montuje media tak jak legacy (`${MEDIA_DIR:-seed-media}:${MEDIA_MOUNT:-/media}:ro` w obu nakładkach – `MEDIA_MOUNT` jak w stosie CG Playout, np. `/media/tv` na s2, `${MEDIA_DIR:-./media}:/media:ro` w `compose.yml`) – Przeglądarka gra pliki lokalne bez legacy (DOKUMENTACJA §3 `/api/vod`). Inna ścieżka mediów w legacy = ta sama w panelu, inaczej pliki lokalne grają tylko przez legacy. Pozycje Jellyfin nie potrzebują montowania (plik z Jellyfin przez serwer panelu).
-
-**Dwie nakładki, jedna treść.** `compose.cg-playout.yml` (stos lokalny) i `docker-compose.live.yml` CG Playout (Portainer) opisują to samo. Caddyfile, środowisko i wolumeny usługi `live` oraz nakładka VAAPI muszą być w nich takie same – sprawdza to `scripts/check-cg-overlay.sh [katalog CG Playout]`, a `tests/deploy.sh` uruchamia go na początku i przerywa wdrożenie przy rozjeździe. Zmieniasz jedno – popraw drugie w tym samym cyklu (źródłem jest VizRS Live: `docker/proxy.Caddyfile`, `compose.cg-playout.yml`).
+**Media w panelu.** Usługa `live` montuje media tak jak legacy (`${MEDIA_DIR:-seed-media}:${MEDIA_MOUNT:-/media}:ro`) – Przeglądarka gra pliki lokalne bez obciążania silnika legacy (DOKUMENTACJA §3 `/api/vod`). Inna ścieżka mediów w legacy = ta sama w panelu. Pozycje Jellyfin nie potrzebują montowania (plik z Jellyfin przez serwer panelu).
 
 ### 2b. Akceleracja sprzętowa (Intel, AMD, NVIDIA)
 
@@ -56,20 +111,20 @@ Oficjalny obraz bazowy `ghcr.io/ersatztv/legacy` (Ubuntu 24.04, ffmpeg 8.1.2-etv
 
 Most VizRS Bridge nie ingeruje w ffmpeg ani system bazowy (obraz legacy bez zmian).
 
-| Karta | Nakładka | Na hoście | W panelu (Profile kodowania → Akceleracja) |
+| Karta | Nakładka (korzeń repo) | Na hoście | W panelu (Profile kodowania → Akceleracja) |
 |---|---|---|---|
-| **Intel** (iGPU, Arc) | `compose.vaapi.yml` | sterownik jądra `i915` albo `xe` (`/dev/dri/renderD128`) | **VAAPI** (urządzenie `/dev/dri/renderD128`, sterownik `iHD` lub `i965`) albo **QSV** |
-| **AMD** (Radeon) | `compose.vaapi.yml` | sterownik jądra `amdgpu` (`/dev/dri/renderD128`) | **VAAPI** (urządzenie `/dev/dri/renderD128`, sterownik `RadeonSI`) |
-| **NVIDIA** | `compose.nvidia.yml` | sterownik NVIDIA + `nvidia-container-toolkit` + CDI (`/var/run/cdi/nvidia.yaml`) | **NVIDIA** |
+| **Intel** (iGPU, Arc) | `docker-compose.vaapi.yml` | sterownik jądra `i915` albo `xe` (`/dev/dri/renderD128`) | **VAAPI** (urządzenie `/dev/dri/renderD128`, sterownik `iHD` lub `i965`) albo **QSV** |
+| **AMD** (Radeon) | `docker-compose.vaapi.yml` | sterownik jądra `amdgpu` (`/dev/dri/renderD128`) | **VAAPI** (urządzenie `/dev/dri/renderD128`, sterownik `RadeonSI`) |
+| **NVIDIA** | `docker-compose.nvidia.yml` | sterownik NVIDIA + `nvidia-container-toolkit` + CDI (`/var/run/cdi/nvidia.yaml`) | **NVIDIA** |
 
 #### Wymagania na hoście i nakładki compose
 
-1. **Intel i AMD – VAAPI / QSV (`compose.vaapi.yml`)**:
+1. **Intel i AMD – VAAPI / QSV (`docker-compose.vaapi.yml`)**:
    - Nakładka przekazuje urządzenie `${VAAPI_DEVICE:-/dev/dri/renderD128}:/dev/dri/renderD128` do kontenera `ersatztv`.
    - W przypadku kilku kart graficznych wskaż właściwy węzeł za pomocą zmiennej środowiskowej `VAAPI_DEVICE` (np. sprawdzając `ls -l /dev/dri/by-path`).
    - Proces legacy w kontenerze działa jako `root`, więc dodawanie użytkownika do grupy `render` na hoście nie jest wymagane.
 
-2. **NVIDIA – NVENC / CUDA (`compose.nvidia.yml`)**:
+2. **NVIDIA – NVENC / CUDA (`docker-compose.nvidia.yml`)**:
    - Ustawia `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility` i przekazuje kartę przez mechanizm CDI (`driver: cdi`, `device_ids: ["nvidia.com/gpu=${NVIDIA_GPU:-all}"]`) – nie wymaga przestarzałego runtime `nvidia` w Dockerze.
    - Na hoście wymagany jest sterownik NVIDIA oraz pakiet `nvidia-container-toolkit`.
    - Wygeneruj specyfikację CDI: `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml`.
@@ -78,15 +133,17 @@ Most VizRS Bridge nie ingeruje w ffmpeg ani system bazowy (obraz legacy bez zmia
 
 #### Uruchomienie
 
-- **Samodzielny stos VizRS Live**:
+- **Z kartą Intel / AMD (VAAPI / QSV):**
   ```bash
-  docker compose -f compose.yml -f compose.vaapi.yml up -d     # Intel / AMD
-  docker compose -f compose.yml -f compose.nvidia.yml up -d    # NVIDIA
+  COMPOSE_PROFILES=grafika docker compose -f docker-compose.yml -f docker-compose.vaapi.yml -f docker-compose.live.yml up -d
   ```
-- **W stosie VizRS CG Playout**: dołóż nakładkę po `compose.cg-playout.yml` (obie nakładki celują w usługę `ersatztv`):
+- **Z kartą NVIDIA (NVENC / CUDA):**
   ```bash
-  docker compose -f docker-compose.yml -f "$VIZRS_LIVE_DIR/compose.cg-playout.yml" -f "$VIZRS_LIVE_DIR/compose.vaapi.yml" up -d
-  # lub w pliku .env CG Playout w COMPOSE_FILE dopisz nakładkę po compose.cg-playout.yml
+  COMPOSE_PROFILES=grafika docker compose -f docker-compose.yml -f docker-compose.nvidia.yml -f docker-compose.live.yml up -d
+  ```
+- **Lokalna budowa obrazów z GPU (np. `panel/tests/deploy.sh`):**
+  ```bash
+  COMPOSE_FILE=docker-compose.yml:docker-compose.nvidia.yml:docker-compose.live.yml:panel/compose.build.yml COMPOSE_PROFILES=grafika,ingest docker compose up -d
   ```
 
 #### Ustawienie w panelu
@@ -123,7 +180,10 @@ docker compose start ersatztv
 
 ## 4. Aktualizacja
 
-**Panel** (nowe wydanie VizRS Live): domyślnie `LIVE_IMAGE` to `:latest`, więc wystarczy `docker compose pull live && docker compose up -d` (przypięcie wersji: `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:<wersja>` w `.env`) (most dobuduje się z repozytorium – najpierw `git pull`).
+> [!WARNING]
+> **Portainer:** Przed aktualizacją stosu z grafiką upewnij się, że w zmiennych środowiskowych stosu ustawione jest `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest`). Bez niej nowa wersja nie wejdzie albo zdejmie grafikę z anteny (§2).
+
+**Panel:** obrazy panelu i legacy z mostem są przypięte w `docker-compose.live.yml` (`LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`); nowe wydanie = commit z nowymi tagami w nakładce na `main` (Portainer przeładuje stos). Inną wersję daje zmienna stosu `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:<wersja>`.
 
 **Legacy** – zawsze najnowsze `ghcr.io/ersatztv/legacy` (decyzja 2026-11-07, jak w CG Playout): każde `docker compose up -d` pobiera nowsze legacy, jeśli jest, i buduje na nim most. Nowsze legacy migruje bazę bez pytania, więc:
 1. Przed `up`, które może przynieść nowe legacy, zrób kopię `etv-config` (§3). Wcześniejsze sprawdzenie: `tests/stack.sh up && tests/stack.sh seed && tests/stack.sh test` na maszynie testowej (DOKUMENTACJA §6) – stos testowy też bierze najnowsze.
@@ -164,8 +224,8 @@ Potem: Diagnostyka (most zielony), **Playouty → Resetuj wszystkie** (ramówka 
 
 ## 7. Wydanie nowej wersji (opiekun repozytorium)
 
-1. `tests/gate.sh` zielony; wersja w `server/Cargo.toml`, `bridge/Bridge.cs`, `bridge/VizRS.Bridge.csproj`; CHANGELOG; tagi w `.env.example` i `compose.yml`.
-2. `git tag v<wersja> && git push origin main v<wersja>` – `.github/workflows/release.yml` przechodzi bramkę, publikuje oba obrazy (amd64 + arm64, `:<wersja>` i `:latest`) na `ghcr.io/sdorpl/…` i zakłada wydanie na GitHubie z binarkami panelu i sumami (uprawnienia `contents: write`, `packages: write`, `GITHUB_TOKEN`). Próba bez znacznika: Actions → Release → Run workflow z wersją – szkic wydania, obrazy tylko z tagiem wersji; zbędny szkic – Actions → Usuń szkic wydania.
-3. Pierwsze wydanie: w ustawieniach pakietów GitHub ustaw `vizrs-live` i `vizrs-live-legacy` jako publiczne (albo `docker login ghcr.io` na serwerze).
+1. `tests/gate.sh` zielony; wspólna wersja produktu w: `Cargo.toml` w korzeniu repozytorium, `panel/server/Cargo.toml`, `panel/desktop/Cargo.toml`, `panel/desktop/tauri.conf.json` oraz `panel/bridge/VizRS.Bridge.csproj` i stała `Version` w `panel/bridge/Bridge.cs`; CHANGELOG. Po publikacji obrazów – nowe tagi `LIVE_IMAGE` i `LIVE_LEGACY_IMAGE` w `docker-compose.live.yml` (osobny commit: wcześniej obrazów jeszcze nie ma w ghcr).
+2. `git tag v<wersja> && git push origin main v<wersja>` – workflow `.github/workflows/release.yml` sprawdza zgodność wersji we wszystkich manifestach, uruchamia bramkę panelu (`panel/tests/gate.sh`) i test akceleracji (`panel/tests/hwaccel.sh`), publikuje obrazy Dockera (`vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy`), buduje binarki sidecara i panelu `VizRS-CG-Playout-panel-<wersja>-linux-{x86_64,arm64}.tar.gz`, buduje aplikację okienną `VizRS-CG-Playout-<wersja>-x86_64.AppImage` oraz zakłada wydanie na GitHubie z sumami `SHA256SUMS.txt`. Próba bez znacznika: Actions → Release → Run workflow z wersją – szkic wydania.
+3. Pakiety `vizrs-live` i `vizrs-live-legacy` na GitHubie ustawione jako publiczne.
 
-Bez dostępu do Actions – ręcznie: `docker build -f docker/live.Dockerfile -t ghcr.io/sdorpl/vizrs-live:<w> .`, `docker build -f docker/legacy-bridge.Dockerfile -t ghcr.io/sdorpl/vizrs-live-legacy:<w>-legacy<l> .`, `docker login ghcr.io`, `docker push …`.
+Bez dostępu do Actions – ręcznie: `docker build -f panel/docker/live.Dockerfile -t ghcr.io/sdorpl/vizrs-live:<w> panel`, `docker build -f panel/docker/legacy-bridge.Dockerfile -t ghcr.io/sdorpl/vizrs-live-legacy:<w>-legacy<l> panel`, `docker login ghcr.io`, `docker push …`.
