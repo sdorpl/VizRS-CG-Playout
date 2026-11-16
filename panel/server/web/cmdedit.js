@@ -5,7 +5,7 @@
 
 import { h } from './core.js';
 
-/** Symbole ramówki wstawiane w wartości pól (CG Playout, DOKUMENTACJA §3). */
+/** Symbole ramówki wstawiane w wartości pól (CG Playout, DOKUMENTACJA §11). */
 export const SYMBOLS = [
   ['{title}', 'tytuł pozycji'], ['{show_title}', 'tytuł serialu'], ['{duration}', 'długość pozycji'], ['{source}', 'ścieżka pliku'],
   ['{next_title}', 'następny – tytuł'], ['{next_start}', 'następny – start gg:mm'], ['{next_start_full}', 'następny – start gg:mm:ss'], ['{next_duration}', 'następny – długość'],

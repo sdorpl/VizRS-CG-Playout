@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Automat planu (PLAN_FILE, domyślnie docs/plany/PLAN-mcr.md – jedyny plan rozwoju; punkty K1, Q1… – litera i numer):
+# Automat planu (PLAN_FILE, domyślnie ../docs/plany/PLAN-mcr.md, względem panel/ – jedyny plan rozwoju; punkty K1, Q1… – litera i numer):
 # jeden punkt = jedna świeża sesja Claude Code bez operatora.
 #
 #   scripts/plan.sh status                 # tabela planu i następny punkt
@@ -23,7 +23,7 @@
 #          PLAN_TIMEOUT (np. 4h), PLAN_CLAUDE_ARGS (dodatkowe argumenty claude).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PLAN=${PLAN_FILE:-docs/plany/PLAN-mcr.md}
+PLAN=${PLAN_FILE:-../docs/plany/PLAN-mcr.md}
 LOGS=.plan-logs
 CHECK=${PLAN_CHECK:-tests/deploy.sh}
 

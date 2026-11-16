@@ -1,6 +1,6 @@
 // Alarmy operatora (K17, wzorzec Vizrt I) – w przeglądarce, na każdym ekranie: banner pod paskiem górnym
 // i opcjonalny dźwięk (WebAudio, bez plików). Tylko z danych, które panel ma; co 60 s, bez pętli w serwerze.
-// Webhook poza przeglądarką robi VizRS CG Playout (VIZRS_ALERT_WEBHOOK, kontrakt – DOKUMENTACJA §3).
+// Webhook poza przeglądarką robi VizRS CG Playout (VIZRS_ALERT_WEBHOOK, kontrakt – DOKUMENTACJA §11).
 
 import { S, h, btn, cmd, api, has, hm, onChannel } from './core.js';
 import { checkItems } from './check.js';

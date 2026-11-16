@@ -280,7 +280,7 @@ http.createServer((req, res) => {
   });
 }).listen(PORT, '127.0.0.1', () => console.log(`atrapa mostu: http://127.0.0.1:${PORT}/vizrs-bridge (${META.length} komend z metadanymi${process.env.LEGACY_SRC ? '' : ' – bez LEGACY_SRC'})`));
 
-// ---------- atrapa VizRS CG Playout (MOCK_CG=1) – kontrakt K12–K17 (DOKUMENTACJA §3) ----------
+// ---------- atrapa VizRS CG Playout (MOCK_CG=1) – kontrakt K12–K17 (DOKUMENTACJA §11) ----------
 if (process.env.MOCK_CG === '1') {
   const CGT = 'test-cg-token-0123456789';
   const layers = { 24: [{ layer: 10, page: '101', name: 'belka 101', scene: 'belka', since: now - 300e3 }, { layer: 20, page: '4001', name: 'zegar', scene: 'zegar', since: now - 3600e3 }], 25: [{ layer: 10, page: '201', name: 'teraz gramy', since: now - 120e3 }], 26: [] };

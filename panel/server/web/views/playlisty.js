@@ -91,7 +91,7 @@ async function deleteGroup(groups) {
 
 /**
  * Podgląd: legacy liczy go z zapisanej playlisty (PreviewPlaylistPlayout czyta pozycje z bazy po PlaylistId,
- * DOKUMENTACJA §5), więc najpierw zapis bieżącej listy (ReplacePlaylistItems), potem podgląd.
+ * DOKUMENTACJA §13), więc najpierw zapis bieżącej listy (ReplacePlaylistItems), potem podgląd.
  */
 async function preview(p, name, items, out) {
   out.replaceChildren(h('span', { class: 'dim' }, 'Zapisuję i liczę podgląd…'));

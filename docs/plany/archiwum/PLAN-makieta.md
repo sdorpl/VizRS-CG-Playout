@@ -1,10 +1,10 @@
 # PLAN-makieta – panel na wzór makiety UI
 
-> Wzorzec: artefakt **„Makieta UI VizRS Live”** – https://claude.ai/artifact/9ajuiXeKEZD6ntYLxtAzbM (sekcje = ekrany, kotwice `#antena`, `#epg`, `#harmonogramy`…; czytać narzędziem Artifact `read`, nie przez WebFetch). Stan prac: [../STATUS.md](../STATUS.md).
+> Wzorzec: artefakt **„Makieta UI VizRS Live”** – https://claude.ai/artifact/9ajuiXeKEZD6ntYLxtAzbM (sekcje = ekrany, kotwice `#antena`, `#epg`, `#harmonogramy`…; czytać narzędziem Artifact `read`, nie przez WebFetch). Stan prac: [../STATUS.md](../../STATUS.md).
 
 ## Założenie
 
-Panel **nie jest przepisywany od zera**. Porównanie zrzutów (2026-11-07) z makietą: wygląd (`style.css` – kolory, pasek górny, menu z grupami, panele, „lista + edytor”, podpis „Pod spodem”) już jest makietą. Różnice są w treści ekranów – co pokazują tabele, karty i podglądy. Każdy punkt przenosi z makiety jeden ekran albo grupę i **tylko to, co ma pokrycie w danych** (legacy przez most, CG Playout, VizRS). Przykładowe dane makiety (np. „Next: 3/3 nadaje”, „dysk 91 %”) nie stają się zmyślonymi wartościami w panelu – brak źródła = pomijamy albo zapisujemy w [../LUKI.md](../LUKI.md).
+Panel **nie jest przepisywany od zera**. Porównanie zrzutów (2026-11-07) z makietą: wygląd (`style.css` – kolory, pasek górny, menu z grupami, panele, „lista + edytor”, podpis „Pod spodem”) już jest makietą. Różnice są w treści ekranów – co pokazują tabele, karty i podglądy. Każdy punkt przenosi z makiety jeden ekran albo grupę i **tylko to, co ma pokrycie w danych** (legacy przez most, CG Playout, VizRS). Przykładowe dane makiety (np. „Next: 3/3 nadaje”, „dysk 91 %”) nie stają się zmyślonymi wartościami w panelu – brak źródła = pomijamy albo zapisujemy w [../LUKI.md](../../LUKI.md).
 
 Zrobione wcześniej (poza planem): **Harmonogramy** – start „06:00 stała / po poprzedniej”, wypełniacze, znaki i grafika w tabeli pozycji, „Podgląd 24 h” (commit 3085509).
 

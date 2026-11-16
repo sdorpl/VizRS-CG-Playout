@@ -252,10 +252,10 @@ GetRecentLogEntries
 DeleteOrphanedArtwork
 DeleteOrphanedSubtitles
 ReleaseMemory
-# RebuildSearchIndex – legacy 26.11.6 uruchamia ją tylko przy starcie; z kolejki skanera: „Unsupported request type” (DOKUMENTACJA §5)
+# RebuildSearchIndex – legacy 26.11.6 uruchamia ją tylko przy starcie; z kolejki skanera: „Unsupported request type” (DOKUMENTACJA §13)
 RefreshFFmpegCapabilities
 GetTroubleshootingInfo
-# test odtwarzania: PrepareTroubleshootingPlayback/StartTroubleshootingPlayback – patrz DOKUMENTACJA §5
+# test odtwarzania: PrepareTroubleshootingPlayback/StartTroubleshootingPlayback – patrz DOKUMENTACJA §13
 
 # --- źródła zewnętrzne (R8): Jellyfin, Emby, Plex
 # Sekrety (klucz API) panel tylko zapisuje: serwer panelu maskuje w każdej odpowiedzi pola apiKey/…token/password/secret.

@@ -40,7 +40,7 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 <!-- /pakiet:S -->
 - Przy komendach VizRS sprawdź składnię w `../VizRS CG System/docs/API.md` (sekcja TCP).
 
-- Plany panelu są w **jednym dokumencie** [docs/panel/plany/PLAN-mcr.md](docs/panel/plany/PLAN-mcr.md) (decyzja użytkownika 2026-11-09) – nowe punkty i analizy dopisuj tam, nie zakładaj nowych `PLAN-*.md`; spis i archiwum: [docs/plany/](docs/panel/plany/README.md). Praca wg planu: **jeden punkt = jedna sesja** – weź pierwszy punkt „do zrobienia” ze spełnionym „Wymaga” (albo wskazany przez użytkownika), po skończeniu (warunki „gotowe”, commit, kolumna Stan) zakończ i zaproponuj nową sesję. Plan rozbudowy R0–R12 jest zrobiony: [PLAN-rozbudowy.md](docs/panel/plany/PLAN-rozbudowy.md) – tam sekcja „Jak pracować” (wzór dla kolejnych planów i automatu `scripts/plan.sh`).
+- Plany panelu są w **jednym dokumencie** [docs/plany/PLAN-mcr.md](docs/plany/PLAN-mcr.md) (decyzja użytkownika 2026-11-09) – nowe punkty i analizy dopisuj tam, nie zakładaj nowych `PLAN-*.md`; spis i archiwum: [docs/plany/](docs/plany/README.md). Praca wg planu: **jeden punkt = jedna sesja** – weź pierwszy punkt „do zrobienia” ze spełnionym „Wymaga” (albo wskazany przez użytkownika), po skończeniu (warunki „gotowe”, commit, kolumna Stan) zakończ i zaproponuj nową sesję. Plan rozbudowy R0–R12 jest zrobiony: [PLAN-rozbudowy.md](docs/plany/archiwum/PLAN-rozbudowy.md) – tam sekcja „Jak pracować” (wzór dla kolejnych planów i automatu `scripts/plan.sh`).
 - Testy i wdrożenie: `panel/tests/deploy.sh` (niżej „Testy”). Lokalnego stosu testowego nie stawiaj, chyba że użytkownik o to poprosi.
 
 ## Niepodważalne zasady
@@ -68,14 +68,14 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 - **Grafika nigdy nie zatrzymuje emisji**: komendy w tle z limitami czasu, błędy tylko do logu, awaria Chromium = czyste klatki i restart, brak sidecara = klip bez grafiki.
 - **Bez GPU na ścieżce grafiki**: Chromium / vizrs-render renderuje programowo; na Oracle Cloud Ampere A1 (arm64) kompilacja binarek (`vizrs-cg`, `vizrs-ffmpeg`, `vizrs-etv-client`, `vizrs-render`) wymusza flagi mikroarchitektury `RUSTFLAGS="-C target-cpu=neoverse-n1 -C opt-level=3"` oraz dostrojenie .NET CLR (`DOTNET_gcServer=0`, limit sterty 1.5 GB). Obraz buduje się na amd64 i arm64 bez emulacji QEMU.
 - **Mało zależności**: zależności runtime to tylko `png` i `regex` (bez domyślnych funkcji; wersje w `Cargo.lock`, budowa z `--locked`). Nowej nie dodawaj bez potrzeby – JSON, HTTP, base64, DevTools i skalowanie są własne. Testy kontraktu w Node.js – tylko biblioteka standardowa.
-- **Gdzie co opisywać (uzupełnienie):** Live API, którego to repo jest dostawcą (`/api/live/*`, `/health`, `/etv/pages`, `/ingest/*`) – DOKUMENTACJA §1 „Live API” (docelowo `docs/API.md`). Nowa opcja = `src/config.rs` + `config.example.json` (gdy dotyczy) + `docker-compose.yml` + DOKUMENTACJA §5 + test.
+- **Gdzie co opisywać (uzupełnienie):** Live API, którego to repo jest dostawcą (`/api/live/*`, `/health`, `/etv/pages`, `/ingest/*`) – `docs/API.md` §1 (w DOKUMENTACJI §1 tylko odsyłacz). Nowa opcja = `src/config.rs` + `config.example.json` (gdy dotyczy) + `docker-compose.yml` + DOKUMENTACJA §5 + test.
 
 
-#### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – `docs/panel/`)
+#### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – DOKUMENTACJA §9–§15)
 
 - **Legacy bez zmian.** Nie forkujemy ErsatzTV i nic do niego nie zgłaszamy. Most ładuje się do oficjalnego obrazu przez `DOTNET_STARTUP_HOOKS` + `ASPNETCORE_HOSTINGSTARTUPASSEMBLIES`. **Żadnych zapisów wprost do bazy legacy** – tylko komendy legacy (MediatR), te same, których używa jego UI.
-- **C# tylko w moście** (`bridge/`), jak najmniej: ogólny dyspozytor `POST /vizrs-bridge/command/{Nazwa}` z białą listą. Nowa funkcja panelu = wiersz w `bridge/commands.txt` + kod w Ruście/JS. Nowy kod C# tylko, gdy dyspozytor nie wystarcza (jak wgrywanie obrazu, R5) – wtedy mały, ogólny endpoint, opisany w DOKUMENTACJA §2.
-- **Biała lista jest granicą bezpieczeństwa.** Nie dopisuj komend, które zwracają sekret w innym kształcie niż pole (`Get{Jellyfin,Emby,Plex}ConnectionParameters`), komend wewnętrznych (`TryCompletePlexPinFlow`, `RebuildSearchIndex`) ani takich, które legacy psuje (DOKUMENTACJA §5).
+- **C# tylko w moście** (`bridge/`), jak najmniej: ogólny dyspozytor `POST /vizrs-bridge/command/{Nazwa}` z białą listą. Nowa funkcja panelu = wiersz w `bridge/commands.txt` + kod w Ruście/JS. Nowy kod C# tylko, gdy dyspozytor nie wystarcza (jak wgrywanie obrazu, R5) – wtedy mały, ogólny endpoint, opisany w DOKUMENTACJA §10 i `docs/API.md` §3.
+- **Biała lista jest granicą bezpieczeństwa.** Nie dopisuj komend, które zwracają sekret w innym kształcie niż pole (`Get{Jellyfin,Emby,Plex}ConnectionParameters`), komend wewnętrznych (`TryCompletePlexPinFlow`, `RebuildSearchIndex`) ani takich, które legacy psuje (DOKUMENTACJA §13).
 - **Zero zależności w serwerze.** `server/Cargo.toml` ma pustą sekcję `[dependencies]` – własny HTTP/1.1 (`http.rs`), klient mostu (`bridge.rs`), JSON. Nie dodawaj crate'ów. UI to czysty JS (moduły ES) bez bundlera, bibliotek i CDN.
 - **Wyjątek: aplikacja `desktop/`** (`vizrs-live-desktop`, Tauri 2, decyzja użytkownika 2026-11-12, plan `../VizRS CG System/docs/plany/PLAN-wyglad-live-i-tauri.md` T2) – osobny workspace z własnym `Cargo.lock`; dozwolone tylko crate'y z nagłówka `desktop/Cargo.toml` (tauri, tauri-plugin-dialog, tauri-plugin-single-instance, serde_json, ureq/rustls, getrandom, webkit2gtk; tauri-build). **Natywny klient panelu na serwerze** (decyzja użytkownika 2026-11-15): nie wkompilowuje ani nie uruchamia panelu – łączy się z panelem przez pośrednika (`desktop/src/proxy.rs`), który dokleja token – **token nie trafia do strony**. Strona → okno tylko przez białą listę `desktop/src/bridge.rs` (komenda `ipc`, uprawnienie tylko dla adresu bieżącego panelu). Test: `node desktop/tests/okno.cjs` (otwiera okna).
 - **UI jest wbudowane w binarkę** (`include_str!`, tablica `STATIC` w `server/src/main.rs`). Wniosek:
@@ -83,11 +83,11 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
   - nowy plik w `server/web/` trzeba dopisać do `STATIC` (test `module_imports_resolve` pilnuje importów).
 - **Dane z legacy i CG są obce.** Tekst do DOM tylko przez `textContent` (żadnego `innerHTML`/`eval`), bez stylów i skryptów inline (CSP na każdej odpowiedzi). Komunikat błędu legacy pokaż operatorowi (toast), z polskim wstępem.
 - **Sekrety zostają w serwerze.** Token mostu i token CG Playout nie trafiają do przeglądarki; pola `…apikey/token/password/secret` w odpowiedziach maskuje `mask_secrets`. Każde żądanie zmieniające wymaga `X-VizRS-Live: 1` (CSRF).
-- **CG Playout tylko przez jego API**, przez pośrednika `/api/cg/…` z białą listą ścieżek (DOKUMENTACJA §3). Panel nie zapisuje plików CG ani legacy (decyzja R2: YAML, skrypty i JSON leżą na wolumenie `/config`).
+- **CG Playout tylko przez jego API**, przez pośrednika `/api/cg/…` z białą listą ścieżek (DOKUMENTACJA §11). Panel nie zapisuje plików CG ani legacy (decyzja R2: YAML, skrypty i JSON leżą na wolumenie `/config`).
 - **Lokalny stos użytkownika (`virtrs-*`) tylko przez `tests/deploy.sh`** (decyzja użytkownika 2026-11-07: „wdrażaj od razu, bez stosów do testów”): skrypt podmienia sam panel (`live`), przejście po ekranach jest tylko do odczytu, a błąd = powrót do poprzedniego obrazu. Legacy, CG Playout, VizRS i proxy nie restartuj, nie zapisuj nic do legacy ani CG poza tym, o co prosi użytkownik.
-- **Gdzie co opisywać (uzupełnienie):** most i API panelu – DOKUMENTACJA §2–§3 (dostawca: most `/vizrs-bridge/*`); praca operatora – `docs/panel/INSTRUKCJA.md`; nowy plan lub punkt – w `docs/panel/plany/PLAN-mcr.md` (jeden dokument planów panelu).
+- **Gdzie co opisywać (uzupełnienie):** działanie panelu i mostu – DOKUMENTACJA §9–§15, ich API – `docs/API.md` §2–§3 (dostawca: most `/vizrs-bridge/*`, panel `/api/*`); praca operatora – `docs/INSTRUKCJA.md`; wdrożenie – `docs/RUNBOOK.md`; nowy plan lub punkt – w `docs/plany/PLAN-mcr.md` (jeden dokument planów panelu).
 - **Manifesty wersji:** znacznik `v<wersja>` = `server/Cargo.toml`, `desktop/Cargo.toml`, `desktop/tauri.conf.json`, `bridge/VizRS.Bridge.csproj` i stała `Version` w `bridge/Bridge.cs`.
-- **Dokumentacja razem z kodem (uzupełnienie):** dotyczy też ekranów (DOKUMENTACJA §4 tabela ekranów), białej listy mostu i ograniczeń legacy (§5) oraz obrazów.
+- **Dokumentacja razem z kodem (uzupełnienie):** dotyczy też ekranów (DOKUMENTACJA §12 tabela ekranów), białej listy mostu i ograniczeń legacy (§13) oraz obrazów.
 
 ## Współpraca z Gemini
 
@@ -105,15 +105,15 @@ Szczegóły: [docs/AGENCI.md](docs/AGENCI.md) – wspólny dla pakietu. W skróc
 ### Ten projekt
 
 - **Kod (tylko Claude):** `src/**`, `tests/**` (wektory, kontrakt), `Cargo.toml`, `Cargo.lock`, `package.json`, `Dockerfile`, `docker-compose*.yml`, `.release`, `etv/`, `seed/`, `bench/`, `.github/`, `config.example.json`, `tools/sync-zasady.sh`; plany w `docs/plany/`.
-- **Dokumentacja (Gemini – tylko pliki wskazane w zleceniu):** `README.md`, `CHANGELOG.md`, `docs/DOKUMENTACJA.md`, `docs/STATUS.md`, `docs/LUKI.md`.
+- **Dokumentacja (Gemini – tylko pliki wskazane w zleceniu):** `README.md`, `CHANGELOG.md`, `docs/DOKUMENTACJA.md`, `docs/API.md`, `docs/INSTRUKCJA.md`, `docs/RUNBOOK.md`, `docs/STATUS.md`, `docs/LUKI.md`.
 - **Bramka (Gemini może uruchomić i streścić):** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --release`, `npm test`, `tools/sync-zasady.sh --check`.
 - **Zawsze:** stosów produkcyjnych (Portainer, serwery emisji) i lokalnego stosu użytkownika nie ruszaj; po testach na Dockerze sprzątaj tylko to, co powstało na potrzeby testu – bez `down -v` i `volume prune`.
 
 
-#### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – `docs/panel/`)
+#### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – DOKUMENTACJA §9–§15)
 
-- **Kod (tylko Claude):** `server/**` (`*.rs`, `server/web/*`), `bridge/**` (`*.cs`, `*.csproj`) i **`bridge/commands.txt`** (biała lista – granica bezpieczeństwa), `desktop/**`, `tests/**`, `scripts/**`, `docker/**`, `compose*.yml`, `.env.example`, workflowy `panel-*.yml` w `.github/workflows/`; plany w `docs/panel/plany/`.
-- **Dokumentacja (Gemini – tylko pliki wskazane w zleceniu):** `docs/panel/CHANGELOG-live.md` (historia; nowe zmiany – `CHANGELOG.md` w korzeniu), `docs/panel/DOKUMENTACJA.md`, `docs/panel/INSTRUKCJA.md`, `docs/panel/RUNBOOK.md`, `docs/panel/STATUS.md`, `docs/panel/LUKI.md`, `docs/panel/README.md`.
+- **Kod (tylko Claude):** `server/**` (`*.rs`, `server/web/*`), `bridge/**` (`*.cs`, `*.csproj`) i **`bridge/commands.txt`** (biała lista – granica bezpieczeństwa), `desktop/**`, `tests/**`, `scripts/**`, `docker/**`, `compose*.yml`, `.env.example`, workflowy `panel-*.yml` w `.github/workflows/`; plan panelu `docs/plany/PLAN-mcr.md`.
+- **Dokumentacja (Gemini – tylko pliki wskazane w zleceniu):** wspólna z sidecarem (lista wyżej) oraz `docs/API.md`, `docs/INSTRUKCJA.md`, `docs/RUNBOOK.md`.
 - **Bramka (Gemini może uruchomić i streścić):** `cargo fmt --check --manifest-path server/Cargo.toml`, `cargo clippy`, `cargo test` (server, desktop), `tests/gate.sh`, `tests/stack.sh up|seed|test|down`, `tools/sync-zasady.sh --check`.
 - **Zawsze:** produkcji nie ruszaj (stosy `virtrs-*`, serwery emisji, port 8409) – żadnego `docker compose` produkcji, zapisów w `etv-config/`, push ani tagów.
 
@@ -128,7 +128,7 @@ cargo run --release -- config.json         # bez Dockera (Rust 1.87+, Chromium w
 Profile compose: `grafika` (`seed` jest zawsze; `vizrs`, `cg` tylko z profilem), `ingest` (wymaga `grafika`); w Portainerze zmienna `COMPOSE_PROFILES` stosu. Nakładki: `docker-compose.live.yml` (panel: legacy z mostem, `proxy`, `live`; Caddyfile w `configs:`), `panel/compose.build.yml` (lokalna budowa obrazów panelu, `tests/deploy.sh`), `docker-compose.ampere.yml` (Oracle Ampere A1), `docker-compose.nvidia.yml` (NVENC w ErsatzTV), `docker-compose.vaapi.yml` (VAAPI w ErsatzTV: Intel, AMD).
 
 
-### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – `docs/panel/`)
+### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – DOKUMENTACJA §9–§15)
 
 ```bash
 cp .env.example .env && docker compose up -d --build     # produkcja / własny serwer (RUNBOOK §2)
@@ -141,7 +141,7 @@ cd server && cargo build --release                        # sam panel
 | `http://<serwer>:8090/` | panel (logowanie tokenem `VIZRS_LIVE_TOKEN`) |
 | `http://<serwer>:8409/iptv/channels.m3u`, `/iptv/xmltv.xml` | widzowie – przez proxy Caddy (web GUI legacy i most z zewnątrz = 403) |
 
-Stos testowy (`tests/stack.sh up|seed|test|down|reset|mem`, dane w `$VIZRS_LIVE_TEST_DIR`, domyślnie `~/.cache/vizrs-live-test` – nie w `/tmp`, bo to często tmpfs, czyli RAM; limity pamięci: DOKUMENTACJA §7):
+Stos testowy (`tests/stack.sh up|seed|test|down|reset|mem`, dane w `$VIZRS_LIVE_TEST_DIR`, domyślnie `~/.cache/vizrs-live-test` – nie w `/tmp`, bo to często tmpfs, czyli RAM; limity pamięci: DOKUMENTACJA §7 „Testy panelu”):
 
 | Port (127.0.0.1) | Co |
 |---|---|
@@ -167,7 +167,7 @@ Wektory `tests/vectors/*.json` to zachowanie sidecara Node.js sprzed migracji (g
 Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu (kontenery, obrazy, wolumeny, pliki), ale **dane działających instancji tego projektu zostawiaj** – bez `down -v` i `volume prune`. Szczegóły: DOKUMENTACJA §7.
 
 
-### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – `docs/panel/`)
+### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – DOKUMENTACJA §9–§15)
 
 ```bash
 tests/deploy.sh   # lokalnie, po każdej zmianie (ok. 20–60 s): cargo fmt/clippy/test, node --check, obraz panelu,
@@ -211,12 +211,12 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `tests/contract/` | testy kontraktu w Node.js (`npm test`) |
 | `seed/` | dane startowe stosu: show VizRS, baza ErsatzTV (kanał 1), media testowe; obraz `vizrs-seed` z wydania – `init.sh` wypełnia puste wolumeny i daje sidecarowi dostęp, stos bez plików z hosta (Portainer z GitHuba; DOKUMENTACJA §4) |
 | `bench/` | benchmark sidecara (`sidecar.mjs`, scena `scene.html`, obraz i compose, DOKUMENTACJA §8) |
-| `docs/plany/` | plany prac (`PLAN-rust.md` – migracja z Node.js, `PLAN-plynnosc.md` – płynność animacji, `native.md` – natywny renderer VizRS zamiast Chromium, `PLAN-ampere.md` – emisja w 2 OCPU, `PLAN-live-panel.md` – dawny VizRS Live Panel, zamknięty: UI przeniesione do VizRS Live, tu zostaje live API, `PLAN-strefy.md` – strefy grafiki liczone z tego, co jest na antenie, `VIZRS_AREA=auto`, `PLAN-p400.md` – lokalny stos na Quadro P400: pamięć karty, NVENC, `VIZRS_FFMPEG_CUDA=auto`) |
+| `docs/` | dokumentacja produktu: `DOKUMENTACJA.md` (sidecar §1–§8, panel §9–§15), `API.md` (Live API, API panelu i mostu), `INSTRUKCJA.md` (operator), `RUNBOOK.md` (wdrożenie, kopie, wydanie), `STATUS.md`, `LUKI.md`; `plany/` – plany prac (spis: `plany/README.md`; `PLAN-mcr.md` – jedyny plan rozwoju panelu, `native.md`, `PLAN-strefy.md`; zakończone w `plany/archiwum/`) |
 | `.github/workflows/ci.yml` | testy, binarka jako artefakt |
 | `.github/workflows/release.yml` | po znaczniku `v*` – jedno wydanie produktu: archiwa sidecara i panelu (Linux x86_64/arm64), obrazy `vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy` (amd64 + arm64), AppImage okna panelu, wydanie GitHub; sprawdza jedną wersję (Cargo.toml, panel, okno, most) |
 
 
-### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – `docs/panel/`)
+### Panel (ścieżki kodu względem `panel/`; dokumentacja panelu – DOKUMENTACJA §9–§15)
 
 | Ścieżka | Rola |
 |---|---|
@@ -229,7 +229,7 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `server/web/desktop.js` | most panelu z aplikacją `desktop/` (tytuł okna, alarm); w przeglądarce nic nie robi |
 | `server/web/app.js`, `core.js` | wejście i pasek górny; DOM (`h`, `table`…), `api`/`cmd`, toast, dialog, router (`VIEWS`), etykiety `PL`, kontrola białej listy |
 | `server/web/form.js`, `parts.js`, `when.js`, `tasks.js`, `check.js` | formularz z metadanych komend; `crudView`, `itemsEditor`, `contentPicker`, `dayBar`; „kiedy obowiązuje”; wyniki zadań w tle z logu legacy; kontrola ramówki |
-| `server/web/views/*.js` | ekrany (po jednym pliku na grupę menu albo duży ekran; spis: DOKUMENTACJA §3 „UI”) |
+| `server/web/views/*.js` | ekrany (po jednym pliku na grupę menu albo duży ekran; spis: DOKUMENTACJA §11 „UI”) |
 | `docker/` | `legacy-bridge.Dockerfile` (oficjalny legacy + DLL + `commands.txt` + workstation GC; bez limitu sterty – strojenie Ampere A1 w nakładce CG Playout), `live.Dockerfile` (`scratch`, musl, kompilacja krzyżowa z `-C target-cpu=neoverse-n1` dla arm64), `proxy.Caddyfile` |
 | `.env.example` | zmienne panelu (`VIZRS_LIVE_*`, `LEGACY_IMAGE`); wdrożenie panelu – `docker-compose.live.yml` w korzeniu repo, karta graficzna – `docker-compose.{vaapi,nvidia}.yml` |
 | `compose.build.yml` | nakładka do lokalnej budowy obrazów panelu i legacy z mostem (`tests/deploy.sh`); Portainer jej nie używa |
@@ -237,9 +237,8 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `tests/` | `deploy.sh` (szybkie testy + wdrożenie panelu na lokalny stos + `prod-smoke.cjs`, przejście tylko do odczytu), `stack.sh` (stos testowy, smoke, seed), `e2e.cjs` (Playwright + atrapy), `gate.sh` (pełna bramka, CI), `real.sh` (prawdziwe usługi), `mock-bridge.cjs` (atrapa mostu do zrzutów UI bez Dockera), `hwaccel.sh` (akceleracja Intel/AMD/NVIDIA w obrazie legacy – CI i wydanie) |
 | `scripts/plan.sh` | automat planu: jeden punkt = jedna świeża sesja `claude -p`; dzienniki w `.plan-logs/` (poza repo) |
 | `../.github/workflows/` | `panel-ci.yml` (bramka panelu), `panel-legacy-latest.yml` (co tydzień najnowsze legacy); wydanie panelu w `release.yml` produktu (jeden tag `v*`: binarka, obrazy `vizrs-live`, `vizrs-live-legacy`, AppImage) |
-| `docs/panel/` | dokumentacja (spis: [docs/README.md](docs/panel/README.md)); `docs/panel/plany/` – plany (dokumenty projektowe, nie opis bieżącego działania) |
 
-**Model panelu:** Przeglądarka → `POST /api/cmd/{Nazwa}` (panel, ciasteczko + `X-VizRS-Live`) → `POST /vizrs-bridge/command/{Nazwa}` (token mostu, biała lista) → komenda legacy przez MediatR. Wynik: `{"ok":true,"result":…}`, odrzucenie legacy `{"ok":false,"error":…}`, zadanie w tle `queued` (202), wynik nieodczytywalny `warning`. Formularze budują się z metadanych `GET /api/commands` (typy parametrów, wyliczenia); wyliczeń typów zagnieżdżonych most nie opisuje – listy są wtedy w pliku ekranu. Zmiany ramówki wchodzą na antenę dopiero po przebudowie playoutu. Szczegóły: [docs/DOKUMENTACJA.md](docs/panel/DOKUMENTACJA.md) §2–4.
+**Model panelu:** Przeglądarka → `POST /api/cmd/{Nazwa}` (panel, ciasteczko + `X-VizRS-Live`) → `POST /vizrs-bridge/command/{Nazwa}` (token mostu, biała lista) → komenda legacy przez MediatR. Wynik: `{"ok":true,"result":…}`, odrzucenie legacy `{"ok":false,"error":…}`, zadanie w tle `queued` (202), wynik nieodczytywalny `warning`. Formularze budują się z metadanych `GET /api/commands` (typy parametrów, wyliczenia); wyliczeń typów zagnieżdżonych most nie opisuje – listy są wtedy w pliku ekranu. Zmiany ramówki wchodzą na antenę dopiero po przebudowie playoutu. Szczegóły: [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) §10–§12, trasy – [docs/API.md](docs/API.md).
 
 ## Commity
 

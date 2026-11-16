@@ -6,7 +6,7 @@
 //   sidecar VizRS CG  – CG Playout GET /api/live/logs?source=cg (wiersze kanału i ogólne)
 //   ErsatzTV legacy   – most GetRecentLogEntries (log legacy, wpisy z tego dnia; legacy nie dzieli logu na kanały)
 //   wszystko          – powyższe na jednej osi czasu
-// Dni w UTC (jak zapisuje CG Playout). Eksport CSV w przeglądarce. Kontrakt: DOKUMENTACJA §3 „Kontrakt CG Playout”.
+// Dni w UTC (jak zapisuje CG Playout). Eksport CSV w przeglądarce. Kontrakt: DOKUMENTACJA §11 „Kontrakt CG Playout”.
 
 import { VIEWS, S, h, head, panel, pill, btn, table, toast, api, cmd, has, hms, pad2, cmdNote, onChannel } from '../core.js';
 
@@ -76,7 +76,7 @@ VIEWS.asrun = async () => {
   const channels = (st.channels || []).filter((c) => onChannel(c.number));
   const features = Array.isArray(st.features) ? st.features : [];
   if (!features.includes('asrun')) {
-    return [head(title, desc), h('div', { class: 'note', 'data-asrun-missing': '' }, 'Ta wersja VizRS CG Playout nie prowadzi dziennika emisji (brak „asrun” w features stanu /api/live/state). Zaktualizuj CG Playout – kontrakt w DOKUMENTACJA §3.')];
+    return [head(title, desc), h('div', { class: 'note', 'data-asrun-missing': '' }, 'Ta wersja VizRS CG Playout nie prowadzi dziennika emisji (brak „asrun” w features stanu /api/live/state). Zaktualizuj CG Playout – kontrakt w DOKUMENTACJA §11.')];
   }
   const logs = features.includes('logs');
   const legacy = has('GetRecentLogEntries');

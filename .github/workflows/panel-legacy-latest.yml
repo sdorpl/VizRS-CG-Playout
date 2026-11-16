@@ -1,6 +1,6 @@
 # Wczesne ostrzeżenie (R10): najnowsze ErsatzTV legacy (ghcr.io/ersatztv/legacy:latest) z mostem –
 # smoke (w tym commandsMissing = []), seed i e2e. Czerwone = legacy zmieniło komendy albo zachowanie;
-# procedura w docs/DOKUMENTACJA.md §6. Raz w tygodniu i ręcznie.
+# procedura w docs/DOKUMENTACJA.md §14. Raz w tygodniu i ręcznie.
 name: Legacy latest
 
 on:

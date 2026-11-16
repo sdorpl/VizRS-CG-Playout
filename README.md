@@ -16,15 +16,15 @@ obok niezmienionego ErsatzTV:
   ffmpeg) albo przez element grafiki ErsatzTV.
 - **Live ingest** – sygnał RTMP/SRT przejmuje kanał w miejsce harmonogramu
   (z grafiką VizRS), a po jego końcu program wraca; audycje na żywo mogą też
-  być pozycjami ramówki i EPG (DOKUMENTACJA §1).
+  być pozycjami ramówki i EPG ([DOKUMENTACJA.md §1](docs/DOKUMENTACJA.md#1-jak-to-działa)).
 - **Live API** (`:7700/api/live/*`) dla **panelu kanału** – stan sygnałów studia,
   ZDEJMIJ / WPUŚĆ, audycje LIVE w ramówce ErsatzTV i reguły grafiki; stanowisko
   operatora to panel kanału (dawny VizRS Live, katalog `panel/`), sidecar nie ma
-  własnego panelu (DOKUMENTACJA §1).
+  własnego panelu ([DOKUMENTACJA.md §1](docs/DOKUMENTACJA.md#1-jak-to-działa), [API.md §1](docs/API.md)).
 
 Sidecar to jeden plik binarny w Ruście (`vizrs-cg`) obok bezgłowego Chromium;
 wydania: obraz `ghcr.io/sdorpl/vizrs-cg` (amd64, arm64) i archiwa dla Linuksa
-x86_64 i arm64 (DOKUMENTACJA §4, §7).
+x86_64 i arm64 ([DOKUMENTACJA.md §4](docs/DOKUMENTACJA.md#4-uruchamianie-w-dockerze), [§7](docs/DOKUMENTACJA.md#7-testy)).
 
 ## Pakiet VizRS
 
@@ -38,7 +38,7 @@ VizRS CG Playout to jedna z aplikacji pakietu VizRS, które mają być ze sobą 
 
 Z VizRS CG System aplikację łączy tylko protokół VizRS (TCP 6100, `/output`), opisany w
 [API.md](../VizRS%20CG%20System/docs/API.md) systemu VizRS; panel korzysta z
-Live API sidecara (`/api/live/*`, DOKUMENTACJA §1).
+Live API sidecara (`/api/live/*`, [DOKUMENTACJA.md §1](docs/DOKUMENTACJA.md#1-jak-to-działa), [API.md §1](docs/API.md)).
 
 ## Szybki start
 
@@ -68,9 +68,16 @@ i `VIZRS_OUTPUT_TOKEN`.
 
 | Dokument | Treść |
 |---|---|
-| [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) | działanie, konfiguracja, symbole zastępcze, Docker (Ampere A1, NVENC, VAAPI), awarie, testy, benchmark przechwytywania grafiki (Portainer) |
-| [CLAUDE.md](CLAUDE.md) | dla programistów i agentów: zasady, struktura, testy, commity |
-| [docs/panel/](docs/panel/README.md) | dokumentacja panelu kanału: DOKUMENTACJA, INSTRUKCJA operatora, RUNBOOK |
+| [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) | pełny opis techniczny i architektura: sidecar (§1–§8) oraz panel kanału (§9–§15) |
+| [docs/API.md](docs/API.md) | specyfikacja interfejsów HTTP: Live API sidecara (§1), API panelu (§2), VizRS Bridge (§3) |
+| [docs/INSTRUKCJA.md](docs/INSTRUKCJA.md) | codzienna praca operatora kanału |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | runbook administratora: wdrożenie, Docker/Portainer, akceleracja sprzętowa, kopie, awarie, wydania |
+| [docs/STATUS.md](docs/STATUS.md) | stan prac, połączenie z VizRS Live i plan najbliższych kroków |
+| [docs/LUKI.md](docs/LUKI.md) | znane braki i ograniczenia uszeregowane G1 → G2 → G3 |
+| [CHANGELOG.md](CHANGELOG.md) | historia wydań produktu oraz historia wydań panelu |
+| [docs/plany/](docs/plany/README.md) | plany rozwoju ([PLAN-mcr](docs/plany/PLAN-mcr.md)) i archiwum zakończonych planów |
+| [CLAUDE.md](CLAUDE.md) | zasady pracy z repozytorium dla programistów i agentów |
+| [docs/AGENCI.md](docs/AGENCI.md) | podział ról i współpraca Claude Code i Gemini (Antigravity CLI) w pakiecie VizRS |
 
 ## Panel (`panel/`, dawny VizRS Live)
 
@@ -86,7 +93,7 @@ Od 2026-11-15 w tym repo jest też **panel kanału** – do tej pory osobne repo
 - **VizRS Bridge** (`panel/bridge/`, C#): wtyczka ładowana do niezmienionego legacy (`DOTNET_STARTUP_HOOKS`), dyspozytor komend MediatR z białą listą `panel/bridge/commands.txt`.
 - **vizrs-live** (`panel/server/`, Rust bez zależności): UI panelu i pośrednik do mostu i Live API sidecara; tokeny nie trafiają do przeglądarki.
 - **Okno panelu** (`panel/desktop/`, Tauri 2, AppImage): natywny klient panelu na serwerze – łączy się z panelem (np. przez proxy z TLS i domeną na serwerze produkcyjnym) za pomocą tokenu (`VIZRS_LIVE_TOKEN`).
-- Wdrożenie: jedna nakładka `docker-compose.live.yml` (Portainer i docker compose) oraz `docker-compose.yml` z profilami. Lokalna budowa: `panel/compose.build.yml`. Dokumentacja panelu: [docs/panel/](docs/panel/README.md) (DOKUMENTACJA, INSTRUKCJA operatora, RUNBOOK).
+- Wdrożenie: jedna nakładka `docker-compose.live.yml` (Portainer i docker compose) oraz `docker-compose.yml` z profilami. Lokalna budowa: `panel/compose.build.yml`. Dokumentacja: [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) (§9–§15), [docs/INSTRUKCJA.md](docs/INSTRUKCJA.md), [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Licencja
 

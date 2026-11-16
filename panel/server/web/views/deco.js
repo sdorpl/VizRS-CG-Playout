@@ -111,7 +111,7 @@ const decos = crudView({
     return { rows: lists.flat(), groups, watermarks, graphics };
   },
   // GetDecosByDecoGroupId nie dociąga treści (kolekcje, playlisty przerw) – do edycji i zapisu tylko pełne GetDecoById,
-  // inaczej UpdateDeco skasowałby zapisaną treść (DOKUMENTACJA §5)
+  // inaczej UpdateDeco skasowałby zapisaną treść (DOKUMENTACJA §13)
   loadOne: async (d) => ({ full: d ? await cmd('GetDecoById', { DecoId: d.Id }) : null }),
   id: (d) => d.Id,
   cols: [['DecoGroupName', 'Grupa'], ['Name', 'Deco', { class: 'w' }], [(d) => pl(d.WatermarkMode), 'Znak'], [(d) => pl(d.BreakContentMode), 'Przerwy'], [(d) => pl(d.DefaultFillerMode), 'Wypełniacz']],

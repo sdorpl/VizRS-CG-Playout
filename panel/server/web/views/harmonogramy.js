@@ -1,6 +1,6 @@
 // Widok „Harmonogramy” (grupa Ramówka): ramówka klasyczna – ustawienia harmonogramu i jego pozycje.
 // Odpowiednik Schedules + Schedule Editor + Schedule Items Editor w legacy.
-// Pozycje zapisuje jedno ReplaceProgramScheduleItems (jak UI legacy); most zwraca wtedy `warning` (DOKUMENTACJA §5).
+// Pozycje zapisuje jedno ReplaceProgramScheduleItems (jak UI legacy); most zwraca wtedy `warning` (DOKUMENTACJA §13).
 // Pola pozycji (ReplaceProgramScheduleItem) są typem zagnieżdżonym – most nie podaje ich wyliczeń, więc listy
 // wyboru są tutaj, z tymi samymi ograniczeniami co w ScheduleItemsEditor.razor.
 
@@ -298,7 +298,7 @@ VIEWS.harmonogramy = crudView({
   afterSave: async (id, ctx) => {
     const items = ctx.itemsEd.value().map((it, i) => toReplace(it, i + 1));
     try {
-      await cmd('ReplaceProgramScheduleItems', { ProgramScheduleId: id, Items: items });  // `warning` = zapisane (DOKUMENTACJA §5)
+      await cmd('ReplaceProgramScheduleItems', { ProgramScheduleId: id, Items: items });  // `warning` = zapisane (DOKUMENTACJA §13)
     } catch (e) {
       throw new Error('Ustawienia zapisane, ale legacy odrzucił pozycje harmonogramu: ' + e.message);
     }

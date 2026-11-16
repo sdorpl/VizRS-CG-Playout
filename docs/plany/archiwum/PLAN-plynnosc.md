@@ -1,7 +1,7 @@
 # PLAN: płynność animacji grafiki (ticker)
 
 > Status (2026-10-25): **etapy 1–4 i 6 zrobione** (6: obszary grafiki, także kilka na kanał; gałąź `lzejsza-grafika`) – miara równych kroków w benchmarku, tryb `capture_mode: frames` (domyślnie wyłączony), pomiary na x86 (§4), dokumentacja. Otwarte: pomiar na Ampere A1 i ewentualne włączenie `frames` w `docker-compose.ampere.yml`. Etap 5 nie podjęty (warunek niespełniony).
-> Powiązane: [DOKUMENTACJA.md](../DOKUMENTACJA.md) §1 (Płynność animacji, Klatkaż kanału), §8 (benchmark).
+> Powiązane: [DOKUMENTACJA.md](../../DOKUMENTACJA.md) §1 (Płynność animacji, Klatkaż kanału), §8 (benchmark).
 
 ## 0. Cel
 

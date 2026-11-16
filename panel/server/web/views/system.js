@@ -15,7 +15,7 @@ const LEVELS = ['Verbose', 'Debug', 'Information', 'Warning', 'Error', 'Fatal'];
 const LEVEL_PL = { Verbose: 'szczegółowy (Verbose)', Debug: 'diagnostyczny (Debug)', Information: 'informacje', Warning: 'ostrzeżenia', Error: 'błędy', Fatal: 'krytyczne' };
 const levelOpts = LEVELS.map((l) => [l, LEVEL_PL[l]]);
 const num = (key, label, min, hint, extra = {}) => ({ key, label, kind: 'number', optional: false, attrs: { min }, hint, ...extra });
-/** Legacy (26.11.6) nie sprawdza zakresów w komendach Update…Settings – robi to tylko web GUI. Panel sprawdza sam (DOKUMENTACJA §5). */
+/** Legacy (26.11.6) nie sprawdza zakresów w komendach Update…Settings – robi to tylko web GUI. Panel sprawdza sam (DOKUMENTACJA §13). */
 function atLeast(v, key, min, label) {
   if (v[key] < min) throw new Error(`Pole „${label}”: co najmniej ${min}.`);
 }
@@ -292,7 +292,7 @@ function playbackTest(channels) {
   return h('div', { class: 'form' }, h('label', { for: 'pt-ch' }, 'Kanał'), sel, h('label', null, 'Strumień'), links,
     h('div', { class: 'hint' }, '„Odtwórz w panelu” otwiera okno podglądu (ten sam strumień, co u widzów, równany do zegara anteny). ',
       base ? 'Odnośniki – do VLC/mpv. ' : 'Odnośniki do VLC/mpv – po ustawieniu --stream-url (VIZRS_LIVE_STREAM_URL). ',
-      'Szczegółowy test pliku z wyborem profilu legacy robi w Blazorze – panel go nie powtarza (DOKUMENTACJA §5).'));
+      'Szczegółowy test pliku z wyborem profilu legacy robi w Blazorze – panel go nie powtarza (DOKUMENTACJA §13).'));
 }
 
 // ---------- Zamknięcie web GUI legacy (R10) ----------
@@ -311,7 +311,7 @@ export const COVERAGE = [
   ['Settings → FFmpeg / Logging / HDHomeRun / Scanner / Playout / XMLTV', 'ustawienia'],
   ['Settings → UI', 'ustawienia', 'tylko wygląd web GUI legacy – bez znaczenia po jego zamknięciu'],
   ['Support → Health Checks', 'diagnostyka'], ['Support → Logs', 'logi'],
-  ['Support → Troubleshooting', 'diagnostyka', 'częściowo: informacje o sprzęcie i odnośniki do strumienia; test pliku w odtwarzaczu Blazora – nie (DOKUMENTACJA §5)'],
+  ['Support → Troubleshooting', 'diagnostyka', 'częściowo: informacje o sprzęcie i odnośniki do strumienia; test pliku w odtwarzaczu Blazora – nie (DOKUMENTACJA §13)'],
   ['Pasek: M3U / XMLTV', 'kanaly', 'odnośniki channels.m3u i xmltv.xml (Kanały, Przewodnik EPG)'],
   ['Pasek: Docs, pomoc, GitHub', null, 'pominięte: odnośniki do stron projektu ErsatzTV, nie funkcje kanału'],
 ];
@@ -383,12 +383,12 @@ function exposurePanel(x) {
       h('div', { class: 'pad', id: 'exp-verdict' }, pill(v.text, v.cls)),
       x?.probes?.length ? table(x.probes, [['path', 'Ścieżka'], [(p) => (p.status == null ? '—' : String(p.status)), 'Kod HTTP', { class: 'num' }],
         [(p) => (p.path.startsWith('/iptv/') ? 'ma być otwarte' : 'ma być zamknięte (403/404)'), 'Oczekiwane', { class: 'w' }]]) : null,
-      h('div', { class: 'cmd' }, `Adres dla widzów: ${x?.url || '—'} (sprawdza serwer panelu ze swojej sieci). Operatorzy pracują tylko w panelu; legacy ma na zewnątrz tylko /iptv/*, /artwork/* i HDHomeRun (DOKUMENTACJA §8).`)),
+      h('div', { class: 'cmd' }, `Adres dla widzów: ${x?.url || '—'} (sprawdza serwer panelu ze swojej sieci). Operatorzy pracują tylko w panelu; legacy ma na zewnątrz tylko /iptv/*, /artwork/* i HDHomeRun (DOKUMENTACJA §15).`)),
     panel('Pokrycie web GUI legacy', null,
       table(COVERAGE.map(([legacy, screen, note]) => ({ legacy, screen, note })), [['legacy', 'Ekran legacy'],
         [(r) => (r.screen ? h('a', { href: '#' + r.screen }, names[r.screen] || r.screen) : pill('pominięte', 'warn')), 'W panelu'],
         [(r) => r.note || '', 'Uwagi', { class: 'w' }]]),
-      h('div', { class: 'cmd' }, 'Menu web GUI legacy (Shared/MainLayout.razor) → odpowiednik w panelu albo świadome pominięcie (DOKUMENTACJA §8).'))];
+      h('div', { class: 'cmd' }, 'Menu web GUI legacy (Shared/MainLayout.razor) → odpowiednik w panelu albo świadome pominięcie (DOKUMENTACJA §15).'))];
 }
 
 VIEWS.diagnostyka = async () => {
@@ -486,7 +486,7 @@ VIEWS.diagnostyka = async () => {
     h('div', { class: 'split' },
       panel('Konserwacja', null,
         h('div', { class: 'bar pad', id: 'maint' }, MAINT.filter(([n]) => has(n)).map(([n, a, label, text]) => btn(label, () => maintenance(n, a, label, text)))),
-        h('div', { class: 'cmd' }, 'Zadania w tle legacy – wynik i błędy w System → Logi. Przebudowa indeksu wyszukiwania: tylko przy starcie legacy (DOKUMENTACJA §5).'),
+        h('div', { class: 'cmd' }, 'Zadania w tle legacy – wynik i błędy w System → Logi. Przebudowa indeksu wyszukiwania: tylko przy starcie legacy (DOKUMENTACJA §13).'),
         cmdNote(...MAINT.map(([n]) => n))),
       panel('Test odtwarzania', null, playbackTest(channels), cmdNote('GetAllChannels'))),
     h('div', { class: 'split' },

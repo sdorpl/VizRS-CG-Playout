@@ -1,5 +1,5 @@
 // Kontrola ramówki (K9) – na wzór automatycznej kontroli playlisty Vizrt, tylko z danych, które panel już ma.
-// Liczona w przeglądarce przy odświeżeniu ekranu (bez pętli w serwerze), bez zapisu. Opis reguł: DOKUMENTACJA §4 „Kontrola ramówki”.
+// Liczona w przeglądarce przy odświeżeniu ekranu (bez pętli w serwerze), bez zapisu. Opis reguł: DOKUMENTACJA §12 „Kontrola ramówki”.
 
 import { cmd, api, has, hm, S } from './core.js';
 import { overlapWarnings } from './tasks.js';

@@ -1,6 +1,6 @@
-# VizRS Live – instrukcja operatora
+# VizRS CG Playout – instrukcja operatora
 
-Dla osoby, która prowadzi kanał na co dzień. Wdrożenie i administracja: [RUNBOOK.md](RUNBOOK.md); szczegóły techniczne: [DOKUMENTACJA.md](DOKUMENTACJA.md).
+Dla osoby, która prowadzi kanał na co dzień. Wdrożenie i administracja: [RUNBOOK.md](RUNBOOK.md); szczegóły techniczne: [DOKUMENTACJA.md](DOKUMENTACJA.md); interfejsy HTTP: [API.md](API.md).
 
 Web GUI ErsatzTV legacy **nie jest potrzebne** i jest zamknięte – wszystko robi się w panelu.
 
@@ -65,7 +65,7 @@ Czerwony komunikat „legacy odrzucił: …” to odmowa ErsatzTV legacy z jego 
 
 | Objaw | Co zrobić |
 |---|---|
-| pasek: most **czerwony**, ekrany puste | legacy nie działa albo się restartuje (start trwa do minuty). Odczekaj; dalej czerwony → **Diagnostyka** (panel „Stan” na górze z komunikatem błędu) i administrator (RUNBOOK „Awarie”) |
+| pasek: most **czerwony**, ekrany puste | legacy nie działa albo się restartuje (start trwa do minuty). Odczekaj; dalej czerwony → **Diagnostyka** (panel „Stan” na górze z komunikatem błędu) i administrator ([RUNBOOK.md §6](RUNBOOK.md#6-awarie)) |
 | licznik ostrzeżeń playoutów > 0 | **Playouty** – kanał z błędem budowy; zwykle pusta kolekcja albo brak treści w harmonogramie. Popraw, „Przebuduj” |
 | kanał nie gra / czarny obraz | **Podgląd** kanału albo **Diagnostyka** → panel „Stan” i test odtwarzania („Odtwórz w panelu”, odnośnik HLS/TS do VLC); **Logi** (wybór źródła: legacy z progiem Warning/Error lub zdarzenia CG Playout); sprawdź, czy kanał ma playout i pozycje na **Na antenie** |
 | brak nowych plików | **Biblioteki** → „Skanuj”; plik w katalogu, którego biblioteka nie obejmuje, nie pojawi się |

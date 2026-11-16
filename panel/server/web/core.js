@@ -146,7 +146,7 @@ export async function api(path, opts = {}) {
 }
 /**
  * Komenda albo zapytanie legacy; zwraca wynik albo rzuca ApiError z komunikatem legacy.
- * `queued` – zadanie w tle legacy; `warning` – wykonane, wyniku nie da się odczytać (DOKUMENTACJA §5).
+ * `queued` – zadanie w tle legacy; `warning` – wykonane, wyniku nie da się odczytać (DOKUMENTACJA §13).
  */
 export async function cmd(name, args = {}) {
   const d = await api('/api/cmd/' + name, { method: 'POST', body: JSON.stringify(args) });

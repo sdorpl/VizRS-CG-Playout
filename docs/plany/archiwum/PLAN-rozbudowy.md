@@ -2,7 +2,7 @@
 
 Cel końcowy: **operator nie korzysta z web GUI ErsatzTV legacy** – wszystko, co daje web GUI legacy, robi się w VizRS Live, a web GUI legacy jest zamknięte dla operatorów (R10).
 
-> **Stan:** wdrożony – R0–R11 w wydaniu 1.0.0, R12 w „Niewydane”. Dalsze prace: [../STATUS.md](../STATUS.md) i [../LUKI.md](../LUKI.md); ta sekcja „Jak pracować” jest wzorem dla kolejnych planów.
+> **Stan:** wdrożony – R0–R11 w wydaniu 1.0.0, R12 w „Niewydane”. Dalsze prace: [../STATUS.md](../../STATUS.md) i [../LUKI.md](../../LUKI.md); ta sekcja „Jak pracować” jest wzorem dla kolejnych planów.
 
 ## Jak pracować z tym planem
 

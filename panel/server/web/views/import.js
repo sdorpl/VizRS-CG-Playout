@@ -1,7 +1,7 @@
 // Import ramówki z pliku (K11, wzorzec Vizrt E): CSV albo XML z systemu emisyjnego → playlista legacy.
 // Plik czyta przeglądarka (nic nie trafia na /config – decyzja R2); dopasowanie do mediów legacy przez wyszukiwarkę,
 // zapis istniejącymi komendami CreatePlaylist + ReplacePlaylistItems. Godziny z pliku są tylko informacją –
-// emisję o stałej godzinie ustawia pozycja harmonogramu („stała godzina”). Opis: DOKUMENTACJA §4 „Import ramówki”.
+// emisję o stałej godzinie ustawia pozycja harmonogramu („stała godzina”). Opis: DOKUMENTACJA §12 „Import ramówki”.
 
 import { h, cmd, has, dialog, toast, table, pill, route } from '../core.js';
 

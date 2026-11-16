@@ -5,7 +5,7 @@
 > w sidecarze (DOKUMENTACJA §1, §5). Decyzje z §8 podjęte wg propozycji planu (niżej, „Decyzje – stan”).
 > Dotyczy dwóch repozytoriów: **VizRS CG System** (renderer, nowy kanał protokołu) i **VizRS CG Playout** (odbiór klatek w sidecarze).
 > Powiązane: [DOKUMENTACJA.md](../DOKUMENTACJA.md) §1 (taśma crawla, obszar grafiki), §4 (Ampere A1), §8 (benchmark);
-> [PLAN-plynnosc.md](PLAN-plynnosc.md); w VizRS: `docs/plany/PLAN-lekkie-output.md`, `docs/DOKUMENTACJA.md` §4, §6, §7.
+> [PLAN-plynnosc.md](archiwum/PLAN-plynnosc.md); w VizRS: `docs/plany/PLAN-lekkie-output.md`, `docs/DOKUMENTACJA.md` §4, §6, §7.
 
 ## 0. Cel
 

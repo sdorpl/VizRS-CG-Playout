@@ -91,7 +91,7 @@ function check(cond, msg) {
       let m;
       if ((m = u.match(/^\/api\/live\/shows\/([\w.-]+)$/)) && q.method === 'DELETE') { CG.shows = CG.shows.filter((x) => x.id !== m[1]); return send(200, { ok: true }); }
       if ((m = u.match(/^\/api\/live\/channels\/24\/(hold|release)$/))) { CG.hold = m[1] === 'hold'; return send(200, { ok: true }); }
-      // K13: TAKE / CONTINUE / OUT; K14: dziennik emisji (kontrakt DOKUMENTACJA §3)
+      // K13: TAKE / CONTINUE / OUT; K14: dziennik emisji (kontrakt DOKUMENTACJA §11)
       if ((m = u.match(/^\/api\/live\/channels\/24\/(take|continue|out)$/)) && q.method === 'POST') {
         cgActions.push(`${m[1]} ${JSON.stringify(body)}`);
         if (m[1] === 'take') CG.layers.push({ layer: 30, page: String(body.page), name: 'ręcznie', manual: true, since: now });

@@ -1,6 +1,6 @@
-# Panel VizRS CG Playout – runbook administratora
+# VizRS CG Playout – runbook administratora
 
-Wdrożenie, kopie, aktualizacja legacy, odtworzenie. Praca operatora: [INSTRUKCJA.md](INSTRUKCJA.md); budowa i API: [DOKUMENTACJA.md](DOKUMENTACJA.md).
+Wdrożenie, kopie, aktualizacja legacy, odtworzenie. Zakres: cały produkt (sidecar, silnik grafiki VizRS, panel kanału i VizRS Bridge). Praca operatora: [INSTRUKCJA.md](INSTRUKCJA.md); szczegóły techniczne i architektura: [DOKUMENTACJA.md](DOKUMENTACJA.md); specyfikacja interfejsów HTTP: [API.md](API.md).
 
 ## 1. Składniki i porty
 
@@ -19,6 +19,9 @@ W stosie z grafiką VizRS (`COMPOSE_PROFILES=grafika`) dochodzą usługi z `dock
 - oraz z profilem `ingest` (`COMPOSE_PROFILES=grafika,ingest`): usługa `ingest` (RTMP/SRT).
 
 Dane: wolumen `ersatztv-config` (albo katalog z `ERSATZTV_CONFIG`; cała baza i stan legacy) i `MEDIA_DIR` / `MEDIA_MOUNT` (media, tylko do odczytu). Panel nie trzyma żadnych własnych danych na dysku (sesje w RAM).
+
+> [!NOTE]
+> Szczegółowy opis konfiguracji Dockera dla sidecara, synchronizacji z ErsatzTV, `userland-proxy`, limitów potoków pamięci oraz danych startowych `seed/` znajduje się w [DOKUMENTACJA.md §4](DOKUMENTACJA.md#4-uruchamianie-w-dockerze).
 
 ## 2. Wdrożenie
 
@@ -40,6 +43,9 @@ Dane: wolumen `ersatztv-config` (albo katalog z `ERSATZTV_CONFIG`; cała baza i 
    ```
 4. Sprawdź: `docker compose ps` (wszystko `healthy`/`running`), panel `http://<serwer>:8090/` → zaloguj → **Diagnostyka**: most zielony, „Web GUI legacy dla widzów” = zamknięte. Z innej maszyny: `curl -I http://<serwer>:8409/` → 403, `curl -I http://<serwer>:8409/iptv/channels.m3u` → 200.
 5. Pierwsza konfiguracja (biblioteka, kanał, harmonogram, playout) – w panelu; legacy nie wymaga kreatora.
+
+> [!NOTE]
+> Szczegóły uruchamiania stosów na platformie Oracle Cloud Ampere A1 (`docker-compose.ampere.yml`), specyfika konfiguracji stosów s1 i s2, live ingest w Dockerze oraz automatyczna aktualizacja wydań przez plik `.release` i workflow `stack-refresh` opisane są w [DOKUMENTACJA.md §4](DOKUMENTACJA.md#4-uruchamianie-w-dockerze).
 
 > [!WARNING]
 > **Ważne ostrzeżenie dla Portainera (stosy z grafiką):** Stosy w Portainerze, które mają grafikę VizRS, **MUSZĄ** mieć ustawioną zmienną środowiskową stosu `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest` dla live ingest) **PRZED** pierwszym wdrożeniem wersji z profilami compose. Z dawną wartością `COMPOSE_PROFILES=ingest` compose odrzuca nowy plik (`ingest` zależy od wyłączonego `cg`) i stos przestaje się aktualizować; z pustą wartością compose pomija `vizrs` i `cg`, co zdejmuje grafikę z anteny. Wartość `grafika,ingest` działa też ze starszą wersją compose (nieznany profil jest ignorowany), więc można ją ustawić wcześniej.
@@ -96,7 +102,7 @@ W Portainerze (stos z GitHuba, np. s1):
 
 **Caddyfile proxy w Portainerze:** Portainer przy stosach z gita nie montuje plików z repozytorium na hosta. Z tego powodu Caddyfile usługi `proxy` jest wpisany bezpośrednio w sekcję `configs:` nakładki `docker-compose.live.yml`. Zgodność tej kopii ze źródłowym plikiem `panel/docker/proxy.Caddyfile` weryfikuje skrypt `panel/scripts/check-caddy.sh` w CI (`panel-ci.yml`) oraz w `panel/tests/deploy.sh` (zastąpił dawny `check-cg-overlay.sh` i `panel/compose.cg-playout.yml`).
 
-**Media w panelu.** Usługa `live` montuje media tak jak legacy (`${MEDIA_DIR:-seed-media}:${MEDIA_MOUNT:-/media}:ro`) – Przeglądarka gra pliki lokalne bez obciążania silnika legacy (DOKUMENTACJA §3 `/api/vod`). Inna ścieżka mediów w legacy = ta sama w panelu. Pozycje Jellyfin nie potrzebują montowania (plik z Jellyfin przez serwer panelu).
+**Media w panelu.** Usługa `live` montuje media tak jak legacy (`${MEDIA_DIR:-seed-media}:${MEDIA_MOUNT:-/media}:ro`) – Przeglądarka gra pliki lokalne bez obciążania silnika legacy ([DOKUMENTACJA.md §11](DOKUMENTACJA.md#11-panel-vizrs-live) oraz [API.md §2](API.md)). Inna ścieżka mediów w legacy = ta sama w panelu. Pozycje Jellyfin nie potrzebują montowania (plik z Jellyfin przez serwer panelu).
 
 ### 2b. Akceleracja sprzętowa (Intel, AMD, NVIDIA)
 
@@ -156,7 +162,7 @@ W menu przejdź do **Profile kodowania** → edytuj wybrany profil (lub utwórz 
 
 #### Sprawdzenie poprawności
 
-1. **Test obrazu bez GPU**: uruchom skrypt `tests/hwaccel.sh [obraz]` (domyślnie `vizrs-live-legacy:dev`). Skrypt weryfikuje obecność akceleracji, koderów i sterowników wewnątrz kontenera i zwraca kod ≠ 0 przy jakimkolwiek braku (używany w CI i przy wydaniach).
+1. **Test obrazu bez GPU**: uruchom skrypt `panel/tests/hwaccel.sh [obraz]` (domyślnie `vizrs-live-legacy:dev`). Skrypt weryfikuje obecność akceleracji, koderów i sterowników wewnątrz kontenera i zwraca kod ≠ 0 przy jakimkolwiek braku (używany w CI i przy wydaniach).
 2. **W panelu**:
    - **Diagnostyka** → panel „Stan” / „Kontrole legacy” / „Hardware Acceleration”: weryfikuje zgłaszane akceleratory; panel pokazuje także wykryte karty grafiki oraz wersje i możliwości ffmpeg.
    - **Logi**: podczas transkodowania i nadawania sprawdź logi ffmpeg legacy (oraz raporty w `etv-config/ffmpeg-reports`), aby upewnić się, że strumień kodowany jest przez sprzętowy enkoder (np. `h264_vaapi`, `h264_nvenc`, `h264_qsv`).
@@ -186,7 +192,7 @@ docker compose start ersatztv
 **Panel:** obrazy panelu i legacy z mostem są przypięte w `docker-compose.live.yml` (`LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`); nowe wydanie = commit z nowymi tagami w nakładce na `main` (Portainer przeładuje stos). Inną wersję daje zmienna stosu `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:<wersja>`.
 
 **Legacy** – zawsze najnowsze `ghcr.io/ersatztv/legacy` (decyzja 2026-11-07, jak w CG Playout): każde `docker compose up -d` pobiera nowsze legacy, jeśli jest, i buduje na nim most. Nowsze legacy migruje bazę bez pytania, więc:
-1. Przed `up`, które może przynieść nowe legacy, zrób kopię `etv-config` (§3). Wcześniejsze sprawdzenie: `tests/stack.sh up && tests/stack.sh seed && tests/stack.sh test` na maszynie testowej (DOKUMENTACJA §6) – stos testowy też bierze najnowsze.
+1. Przed `up`, które może przynieść nowe legacy, zrób kopię `etv-config` (§3). Wcześniejsze sprawdzenie: `tests/stack.sh up && tests/stack.sh seed && tests/stack.sh test` na maszynie testowej ([DOKUMENTACJA.md §14](DOKUMENTACJA.md#14-aktualizacja-legacy)) – stos testowy też bierze najnowsze.
 2. `docker compose up -d`.
 3. Diagnostyka: most zielony, brak brakujących komend; Na antenie gra.
 4. Źle → odtworzenie (§5) i tymczasowo konkretna wersja: `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:v<poprzednia>` w `.env`.
@@ -218,14 +224,76 @@ Potem: Diagnostyka (most zielony), **Playouty → Resetuj wszystkie** (ramówka 
 | pamięć RAM | segmenty HLS kanałów w tmpfs `/transcode` (`docker compose exec ersatztv df -h /transcode`); legacy bez limitu sterty .NET – limit tylko na Ampere (nakładka CG Playout) |
 | po aktualizacji / restarcie panelu okno logowania | zamierzone – sesje są w pamięci panelu (K1); zaloguj się ponownie |
 | 429 przy logowaniu | odczekaj minutę; w dzienniku panelu »login: zły token (adres)« |
-| potrzebne web GUI legacy (wyjątkowo) | tunel SSH albo tymczasowo `ports: ["127.0.0.1:8410:8409"]` przy `ersatztv` (DOKUMENTACJA §8); cofnij po pracy |
+| potrzebne web GUI legacy (wyjątkowo) | tunel SSH albo tymczasowo `ports: ["127.0.0.1:8410:8409"]` przy `ersatztv` ([DOKUMENTACJA.md §15](DOKUMENTACJA.md#15-zamknięcie-web-gui-legacy-r10)); cofnij po pracy |
 
-**Wymiana tokenu panelu** (np. odejście operatora): nowy `VIZRS_LIVE_TOKEN` w `.env`, `docker compose up -d live` – restart panelu unieważnia wszystkie sesje (magazyn sesji jest w pamięci, DOKUMENTACJA §3); skrypty z `Authorization: Bearer` muszą dostać nowy token. Token mostu: nowy `VIZRS_BRIDGE_TOKEN`, `docker compose up -d` (obie usługi).
+**Wymiana tokenu panelu** (np. odejście operatora): nowy `VIZRS_LIVE_TOKEN` w `.env`, `docker compose up -d live` – restart panelu unieważnia wszystkie sesje (magazyn sesji jest w pamięci, [DOKUMENTACJA.md §11](DOKUMENTACJA.md#11-panel-vizrs-live)); skrypty z `Authorization: Bearer` muszą dostać nowy token. Token mostu: nowy `VIZRS_BRIDGE_TOKEN`, `docker compose up -d` (obie usługi).
 
 ## 7. Wydanie nowej wersji (opiekun repozytorium)
 
-1. `tests/gate.sh` zielony; wspólna wersja produktu w: `Cargo.toml` w korzeniu repozytorium, `panel/server/Cargo.toml`, `panel/desktop/Cargo.toml`, `panel/desktop/tauri.conf.json` oraz `panel/bridge/VizRS.Bridge.csproj` i stała `Version` w `panel/bridge/Bridge.cs`; CHANGELOG. Po publikacji obrazów – nowe tagi `LIVE_IMAGE` i `LIVE_LEGACY_IMAGE` w `docker-compose.live.yml` (osobny commit: wcześniej obrazów jeszcze nie ma w ghcr).
-2. `git tag v<wersja> && git push origin main v<wersja>` – workflow `.github/workflows/release.yml` sprawdza zgodność wersji we wszystkich manifestach, uruchamia bramkę panelu (`panel/tests/gate.sh`) i test akceleracji (`panel/tests/hwaccel.sh`), publikuje obrazy Dockera (`vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy`), buduje binarki sidecara i panelu `VizRS-CG-Playout-panel-<wersja>-linux-{x86_64,arm64}.tar.gz`, buduje aplikację okienną `VizRS-CG-Playout-<wersja>-x86_64.AppImage` oraz zakłada wydanie na GitHubie z sumami `SHA256SUMS.txt`. Próba bez znacznika: Actions → Release → Run workflow z wersją – szkic wydania.
-3. Pakiety `vizrs-live` i `vizrs-live-legacy` na GitHubie ustawione jako publiczne.
+Od połączenia P2 panel kanału, most VizRS Bridge oraz aplikacja okienna są wydawane wspólnie z sidecarem w jednym workflow wydania produktu `.github/workflows/release.yml`.
 
-Bez dostępu do Actions – ręcznie: `docker build -f panel/docker/live.Dockerfile -t ghcr.io/sdorpl/vizrs-live:<w> panel`, `docker build -f panel/docker/legacy-bridge.Dockerfile -t ghcr.io/sdorpl/vizrs-live-legacy:<w>-legacy<l> panel`, `docker login ghcr.io`, `docker push …`.
+### Obrazy i wersje
+
+| Obraz | Tag | Z czego |
+|---|---|---|
+| `ghcr.io/sdorpl/vizrs-live` | `<wersja>` i `latest`, amd64 + arm64 | `panel/docker/live.Dockerfile` (statyczna binarka musl w `scratch`, kompilacja z `-C target-cpu=neoverse-n1` na arm64) |
+| `ghcr.io/sdorpl/vizrs-live-legacy` | `<wersja>` i `<wersja>-legacy<legacy>`, amd64 + arm64 | `panel/docker/legacy-bridge.Dockerfile` na `LEGACY_IMAGE` z `.env.example` (domyślnie najnowszy `ghcr.io/ersatztv/legacy:latest`); akceleracja Intel VAAPI/QSV, AMD VAAPI i NVIDIA NVENC z obrazu upstream weryfikowana przez `panel/tests/hwaccel.sh` przed publikacją |
+| `ghcr.io/sdorpl/vizrs-cg`, `vizrs-seed` | `<wersja>` i `latest`, amd64 + arm64 | sidecar i dane startowe w korzeniu repozytorium |
+| `caddy` (proxy) | `alpine` (zawsze najnowszy) | obraz oficjalny |
+
+W Portainerze obowiązują wartości domyślne `docker-compose.live.yml`: panel i legacy z mostem przypięte do wydania (`LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`; dziś 26.11.8), podnoszone commitem po publikacji obrazów. Dla lokalnego stosu (`panel/.env.example`, `panel/tests/deploy.sh`) domyślne to najnowsze wydania: `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:latest`, `PROXY_IMAGE=caddy:alpine`; konkretną wersję daje `LIVE_IMAGE=…:<wersja>` w `.env`. Legacy – od 2026-11-07 zawsze najnowsze ([DOKUMENTACJA.md §14](DOKUMENTACJA.md#14-aktualizacja-legacy)): `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:latest`, `LIVE_LEGACY_IMAGE=vizrs-live-legacy:local` (lokalny obraz z mostem, budowany nakładką `panel/compose.build.yml`); inna wersja: `LEGACY_IMAGE=…` w `.env`.
+
+### Procedura wydania
+
+1. `panel/tests/gate.sh` i bramka korzenia zielone; wspólna wersja produktu we wszystkich manifestach:
+   - `Cargo.toml` w korzeniu repozytorium,
+   - `panel/server/Cargo.toml`,
+   - `panel/desktop/Cargo.toml`,
+   - `panel/desktop/tauri.conf.json`,
+   - `panel/bridge/VizRS.Bridge.csproj` i stała `Version` w `panel/bridge/Bridge.cs`;
+   - wpis w `CHANGELOG.md` w sekcji z numerem wersji.
+   Po publikacji obrazów – nowe tagi `LIVE_IMAGE` i `LIVE_LEGACY_IMAGE` w `docker-compose.live.yml` (osobny commit: wcześniej obrazów jeszcze nie ma w ghcr).
+2. `git tag v<wersja> && git push origin main v<wersja>` – workflow `.github/workflows/release.yml`:
+   - sprawdza zgodność jednej wersji produktu we wszystkich manifestach;
+   - uruchamia bramkę panelu `panel/tests/gate.sh` oraz weryfikację akceleracji sprzętowej `panel/tests/hwaccel.sh`;
+   - buduje binarki panelu `VizRS-CG-Playout-panel-<wersja>-linux-{x86_64,arm64}.tar.gz` (statyczne musl) oraz sidecara;
+   - buduje obrazy Dockera (`vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy`) na amd64 i arm64;
+   - buduje aplikację okienną (Tauri 2): `VizRS-CG-Playout-<wersja>-x86_64.AppImage` (natywny klient panelu na serwerze; wydania: https://github.com/sdorpl/VizRS-CG-Playout/releases);
+   - zakłada wydanie na GitHubie z plikami i sumami `SHA256SUMS.txt`.
+   Próba bez znacznika: Actions → Release → Run workflow z wersją – szkic wydania.
+3. Pakiety `vizrs-live` i `vizrs-live-legacy` na GitHubie ustawione jako publiczne.
+4. Bez dostępu do Actions – ręczna budowa:
+   ```bash
+   docker build -f panel/docker/live.Dockerfile -t ghcr.io/sdorpl/vizrs-live:<wersja> panel
+   docker build -f panel/docker/legacy-bridge.Dockerfile -t ghcr.io/sdorpl/vizrs-live-legacy:<wersja>-legacy<legacy> panel
+   docker login ghcr.io
+   docker push ghcr.io/sdorpl/vizrs-live:<wersja>
+   docker push ghcr.io/sdorpl/vizrs-live-legacy:<wersja>-legacy<legacy>
+   ```
+
+### Decyzje dotyczące wydań
+
+- **Tag obrazu legacy** niesie wersję panelu oraz wersję upstream legacy (`<wersja>-legacy<legacy>`), co precyzuje wersję bazową.
+- **Wydanie z tagu bez łącznika** przesuwa tag `:latest`, a wersja z łącznikiem (`v26.11.11-rc1`) to wydanie wstępne bez przesuwania `:latest`.
+- **TLS**: panel i proxy działają po HTTP; dostęp z zewnątrz – za odwrotnym proxy z TLS (np. nginx, §2).
+- **Zmienne**: nazwy obrazów oraz zmienne środowiskowe `VIZRS_LIVE_*` pozostają bez zmian (stosy produkcyjne ich używają).
+
+### Przegląd bezpieczeństwa
+
+| Obszar | Stan | Zmiana w 1.0 |
+|---|---|---|
+| tokeny | panel i most: min. 16 znaków, porównanie w stałym czasie (`eq_ct`); most bez tokenu = 503; panel poza 127.0.0.1 nie startuje bez tokenu; token CG zostaje w serwerze | **limit logowań na IP**: 10 błędów w oknie 60 s → 429 dla adresu (bezpiecznik łączny 100/60 s, pamięć do 4096 IP, bez zaufania do `X-Forwarded-For`), wpis w dzienniku: `login: zły token (<IP>)` |
+| sesja | ciasteczko `HttpOnly`, `SameSite=Strict`, 30 dni bezczynności; wartość = losowy identyfikator sesji z magazynu w pamięci (K1), „Wyloguj” unieważnia sesję, restart panelu – wszystkie | `Secure` za proxy TLS |
+| CSRF | `X-VizRS-Live: 1` na każde żądanie zmieniające (też logowanie, `PUT`, `DELETE`), `SameSite=Strict` | e2e na osobnym panelu z tokenem |
+| CSP / XSS | tekst do DOM tylko `textContent`, brak `innerHTML`/`eval` w `server/web/` (sprawdzone `grep`), bez inline | CSP na **wszystkich** odpowiedziach (wcześniej tylko wbudowane UI), dodane `object-src`, `base-uri`, `form-action`, `frame-ancestors` |
+| limity | nagłówki 16 KB, treść 1 MB (wgrywanie 10 MB, tylko PNG/JPEG/GIF/WebP z sygnaturą), 64 połączenia, czas 15 s, bez `Transfer-Encoding` | – |
+| most | biała lista komend, 403 spoza niej; bez `Get…ConnectionParameters`, `TryCompletePlexPinFlow`, `RebuildSearchIndex`; most tylko w sieci Dockera, przez proxy 403 | – |
+| sekrety (R8) | maskowanie `…apikey/token/password/secret` w odpowiedziach komend i CG | – |
+| proxy (R10) | na zewnątrz tylko `GET/HEAD` strumieni, `/artwork/*`, HDHomeRun | obraz `caddy:alpine` (najnowszy) |
+| obrazy | panel: `scratch`, użytkownik 10001, statyczna binarka; legacy: obraz upstream bez zmian + 2 pliki | panel i proxy – najnowsze wydania (`latest`, od 2026-11-09); legacy zawsze najnowsze ([DOKUMENTACJA.md §14](DOKUMENTACJA.md#14-aktualizacja-legacy)) – kopia `etv-config` przed `up` |
+
+Świadomie pozostawione (ryzyko przyjęte):
+- `frame-src` przy `--vizrs-url` w postaci samego portu dopuszcza ten port na dowolnym hoście (CSP nie wyraża „host panelu”; podaj pełny adres, by zawęzić);
+- token wyjścia VizRS (`--vizrs-output-token`) jest widoczny w przeglądarce zalogowanego operatora – daje tylko podgląd wyjścia, jak adres w OBS, bez sterowania (VizRS DOKUMENTACJA „Token wyjścia”);
+- bezpiecznik łączny limitu logowań (100 błędów/60 s) przy rozproszonym ataku oraz wspólny adres IP klientów za proxy/NAT lub przy userland-proxy Dockera (brak zaufania do `X-Forwarded-For`) mogą zablokować logowanie innym (operator z ważnym ciasteczkiem pracuje dalej);
+- legacy w kontenerze działa jako root (obraz upstream – bez zmian legacy).

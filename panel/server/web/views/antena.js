@@ -250,7 +250,7 @@ VIEWS.antena = async () => {
   ];
 };
 
-// ---------- K12 / K13: warstwy VizRS na antenie, ręczne TAKE / CONTINUE / OUT (kontrakt CG – DOKUMENTACJA §3) ----------
+// ---------- K12 / K13: warstwy VizRS na antenie, ręczne TAKE / CONTINUE / OUT (kontrakt CG – DOKUMENTACJA §11) ----------
 // CG Playout podaje w /api/live/state: kanał.layers = [{ layer, page, name?, scene?, since? }] i features: ['layers', 'take', …].
 // Starszy CG Playout bez tych pól – pigułek i przycisków nie ma.
 const cgFeature = (st, f) => !!(st && !(st instanceof Error) && Array.isArray(st.features) && st.features.includes(f));

@@ -1,6 +1,6 @@
 // Wyniki zadań w tle legacy (K6). Zadania `queued` (sprawdzanie nakładania, konserwacja) nie zwracają wyniku –
 // legacy zapisuje go tylko w swoim logu. Panel po zleceniu czyta GetRecentLogEntries (≤ 60 s) i pokazuje
-// wpisy z czasem po zleceniu, pasujące do zadania. Wzorce komunikatów legacy: DOKUMENTACJA §4 „Wyniki zadań w tle”.
+// wpisy z czasem po zleceniu, pasujące do zadania. Wzorce komunikatów legacy: DOKUMENTACJA §12 „Wyniki zadań w tle”.
 
 import { h, cmd, has, dialog, toast, table, pill, hms } from './core.js';
 
