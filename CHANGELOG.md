@@ -9,7 +9,7 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 - **Jedna nakładka `docker-compose.live.yml`:** ujednolicone wdrożenie panelu w Portainerze i lokalnie (usunięto `panel/compose*.yml`), konfiguracja Caddy wbudowana w `configs:` nakładki z weryfikacją przez `panel/scripts/check-caddy.sh`; lokalna budowa obrazów przez nakładkę `panel/compose.build.yml`.
 - **Nazwa „VizRS CG Playout” w panelu i oknie:** ujednolicona nazwa interfejsu panelu i aplikacji okiennej z dopiskiem „Powered by ErsatzTV” w oknie „O programie”.
 - **Aplikacja okienna (AppImage):** wyłącznie natywny klient panelu działającego na serwerze produkcyjnym (usunięty tryb panelu lokalnego); połączenie przez HTTPS/TLS i token panelu.
-- **Stos z VizRS Live:** aktualizacja obrazów do 26.11.8 (logo na przejęcie kanału przez live ingest).
+- **Obrazy panelu z `:latest`:** `docker-compose.live.yml` bierze `vizrs-live:latest` i `vizrs-live-legacy:latest` (wcześniej przypięte 26.11.8, logo na przejęcie kanału przez live ingest), jak `vizrs-cg` – stos odświeża je razem z wydaniem produktu.
 
 ## 26.11.10 (2026-11-14)
 

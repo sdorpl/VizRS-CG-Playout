@@ -16,7 +16,7 @@ Wydanie 26.11.10 (2026-11-14): logo na przejęcie kanału przez live ingest (`on
    - w Portainerze na stosach s1 i s2 zmienić `COMPOSE_PROFILES=ingest` na `grafika,ingest` (bezpieczne też ze starym compose),
    - scalenie gałęzi `polaczenie-live` do `main`,
    - tag `v26.11.11` (najpierw próbny `v26.11.11-test.1`),
-   - potem commit z nowymi tagami obrazów panelu w `docker-compose.live.yml` (dziś przypięte 26.11.8).
+   - obrazy panelu w nakładce idą z `:latest` (decyzja 2026-11-16): scalenie przeniesie s1/s2 z panelu 26.11.8 na 26.11.10 (`:latest` z repo VizRS Live; ta sama warstwa legacy co 26.11.8, bez migracji bazy), a wydanie 26.11.11 – na 26.11.11 przez `stack-refresh`; przed wydaniem kopia `etv-config` (obraz legacy z mostem budowany na najnowszym legacy).
 2. **P4 – domknięcie połączenia repozytoriów:**
    - archiwizacja repo `sdorpl/VizRS-Live-Playout`,
    - linki w VizRS CG System i Artist,

@@ -20,7 +20,7 @@
 # zgodność sprawdza panel/scripts/check-caddy.sh (bramka i CI panelu).
 services:
   ersatztv:
-    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:26.11.8}
+    image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:latest}
     environment:
       VIZRS_BRIDGE_TOKEN: ${VIZRS_BRIDGE_TOKEN:?ustaw VIZRS_BRIDGE_TOKEN}
     ports: !reset []
@@ -39,7 +39,7 @@ services:
       - "${ETV_PORT:-8409}:8409"
 
   live:
-    image: ${LIVE_IMAGE:-ghcr.io/sdorpl/vizrs-live:26.11.8}
+    image: ${LIVE_IMAGE:-ghcr.io/sdorpl/vizrs-live:latest}
     labels:
       com.centurylinklabs.watchtower.enable: "false"
     restart: unless-stopped

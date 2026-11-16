@@ -8,8 +8,8 @@ Wdrożenie opiera się na głównym pliku `docker-compose.yml` w korzeniu repozy
 
 | Usługa (`docker-compose.live.yml`) | Obraz | Port na zewnątrz |
 |---|---|---|
-| `live` – panel | `ghcr.io/sdorpl/vizrs-live:<wersja>` – przypięta w nakładce (`LIVE_IMAGE`, dziś 26.11.8) | 8090 – operatorzy (w produkcji zalecane za proxy TLS) |
-| `ersatztv` – legacy z mostem | `ghcr.io/sdorpl/vizrs-live-legacy:<wersja>` – przypięta w nakładce (`LIVE_LEGACY_IMAGE`, dziś 26.11.8); lokalnie budowany nakładką `panel/compose.build.yml` na `ghcr.io/ersatztv/legacy:latest` + VizRS Bridge | brak (`expose`, sieć Dockera) |
+| `live` – panel | `ghcr.io/sdorpl/vizrs-live:latest` (`LIVE_IMAGE`) | 8090 – operatorzy (w produkcji zalecane za proxy TLS) |
+| `ersatztv` – legacy z mostem | `ghcr.io/sdorpl/vizrs-live-legacy:latest` (`LIVE_LEGACY_IMAGE`); lokalnie budowany nakładką `panel/compose.build.yml` na `ghcr.io/ersatztv/legacy:latest` + VizRS Bridge | brak (`expose`, sieć Dockera) |
 | `proxy` – Caddy | `caddy:alpine` | 8409 – widzowie: strumienie, M3U, XMLTV, HDHomeRun |
 
 W stosie z grafiką VizRS (`COMPOSE_PROFILES=grafika`) dochodzą usługi z `docker-compose.yml`:
@@ -189,7 +189,7 @@ docker compose start ersatztv
 > [!WARNING]
 > **Portainer:** Przed aktualizacją stosu z grafiką upewnij się, że w zmiennych środowiskowych stosu ustawione jest `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest`). Bez niej nowa wersja nie wejdzie albo zdejmie grafikę z anteny (§2).
 
-**Panel:** obrazy panelu i legacy z mostem są przypięte w `docker-compose.live.yml` (`LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`); nowe wydanie = commit z nowymi tagami w nakładce na `main` (Portainer przeładuje stos). Inną wersję daje zmienna stosu `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:<wersja>`.
+**Panel:** obrazy panelu i legacy z mostem idą z `:latest` (decyzja 2026-11-16), jak `vizrs-cg`: nowe wydanie przesuwa `:latest`, `stack-refresh` zapisuje je w `.release`, a Portainer przeładowuje stos z „Re-pull image”. Obraz legacy z mostem w wydaniu jest budowany na najnowszym `ghcr.io/ersatztv/legacy`, więc wydanie może przynieść nowsze legacy, które migruje bazę – przed wydaniem (albo przy każdym tagu bez łącznika) kopia `etv-config` (§3). Inną wersję daje zmienna stosu `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:<wersja>`.
 
 **Legacy** – zawsze najnowsze `ghcr.io/ersatztv/legacy` (decyzja 2026-11-07, jak w CG Playout): każde `docker compose up -d` pobiera nowsze legacy, jeśli jest, i buduje na nim most. Nowsze legacy migruje bazę bez pytania, więc:
 1. Przed `up`, które może przynieść nowe legacy, zrób kopię `etv-config` (§3). Wcześniejsze sprawdzenie: `tests/stack.sh up && tests/stack.sh seed && tests/stack.sh test` na maszynie testowej ([DOKUMENTACJA.md §14](DOKUMENTACJA.md#14-aktualizacja-legacy)) – stos testowy też bierze najnowsze.
@@ -241,7 +241,7 @@ Od połączenia P2 panel kanału, most VizRS Bridge oraz aplikacja okienna są w
 | `ghcr.io/sdorpl/vizrs-cg`, `vizrs-seed` | `<wersja>` i `latest`, amd64 + arm64 | sidecar i dane startowe w korzeniu repozytorium |
 | `caddy` (proxy) | `alpine` (zawsze najnowszy) | obraz oficjalny |
 
-W Portainerze obowiązują wartości domyślne `docker-compose.live.yml`: panel i legacy z mostem przypięte do wydania (`LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`; dziś 26.11.8), podnoszone commitem po publikacji obrazów. Dla lokalnego stosu (`panel/.env.example`, `panel/tests/deploy.sh`) domyślne to najnowsze wydania: `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:latest`, `PROXY_IMAGE=caddy:alpine`; konkretną wersję daje `LIVE_IMAGE=…:<wersja>` w `.env`. Legacy – od 2026-11-07 zawsze najnowsze ([DOKUMENTACJA.md §14](DOKUMENTACJA.md#14-aktualizacja-legacy)): `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:latest`, `LIVE_LEGACY_IMAGE=vizrs-live-legacy:local` (lokalny obraz z mostem, budowany nakładką `panel/compose.build.yml`); inna wersja: `LEGACY_IMAGE=…` w `.env`.
+W Portainerze obowiązują wartości domyślne `docker-compose.live.yml`: panel i legacy z mostem z `:latest` (`LIVE_IMAGE`, `LIVE_LEGACY_IMAGE`), przesuwane wydaniem produktu. Dla lokalnego stosu (`panel/.env.example`, `panel/tests/deploy.sh`) domyślne to najnowsze wydania: `LIVE_IMAGE=ghcr.io/sdorpl/vizrs-live:latest`, `PROXY_IMAGE=caddy:alpine`; konkretną wersję daje `LIVE_IMAGE=…:<wersja>` w `.env`. Legacy – od 2026-11-07 zawsze najnowsze ([DOKUMENTACJA.md §14](DOKUMENTACJA.md#14-aktualizacja-legacy)): `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:latest`, `LIVE_LEGACY_IMAGE=vizrs-live-legacy:local` (lokalny obraz z mostem, budowany nakładką `panel/compose.build.yml`); inna wersja: `LEGACY_IMAGE=…` w `.env`.
 
 ### Procedura wydania
 
@@ -252,7 +252,6 @@ W Portainerze obowiązują wartości domyślne `docker-compose.live.yml`: panel 
    - `panel/desktop/tauri.conf.json`,
    - `panel/bridge/VizRS.Bridge.csproj` i stała `Version` w `panel/bridge/Bridge.cs`;
    - wpis w `CHANGELOG.md` w sekcji z numerem wersji.
-   Po publikacji obrazów – nowe tagi `LIVE_IMAGE` i `LIVE_LEGACY_IMAGE` w `docker-compose.live.yml` (osobny commit: wcześniej obrazów jeszcze nie ma w ghcr).
 2. `git tag v<wersja> && git push origin main v<wersja>` – workflow `.github/workflows/release.yml`:
    - sprawdza zgodność jednej wersji produktu we wszystkich manifestach;
    - uruchamia bramkę panelu `panel/tests/gate.sh` oraz weryfikację akceleracji sprzętowej `panel/tests/hwaccel.sh`;

@@ -1803,7 +1803,7 @@ Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
 `VIZRS_BRIDGE_TOKEN` (most), `VIZRS_LIVE_TOKEN` (logowanie do panelu oraz okna AppImage),
 `VIZRS_PANEL_TOKEN` (Live API sidecara, [API.md §1](API.md#1-live-api-sidecara-apilive-etv-ffmpeg-ingest-health)); opcjonalnie
 `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Panel (`LIVE_IMAGE`), ErsatzTV z mostem
-(`LIVE_LEGACY_IMAGE`) są przypięte do wydania produktu (dziś 26.11.8) i podnoszone razem commitem po publikacji obrazów; sidecar (`vizrs-cg`) idzie z `:latest`; proxy to zawsze najnowsze `caddy:alpine`.
+(`LIVE_LEGACY_IMAGE`) idą z `:latest`, jak sidecar (`vizrs-cg`) – decyzja użytkownika 2026-11-16; wydanie produktu przesuwa `:latest` wszystkich obrazów naraz, a stos pobiera je przy każdym przeładowaniu stosu (Portainer „Re-pull image”, np. po commicie `.release` ze `stack-refresh`); konkretną wersję daje zmienna stosu `LIVE_IMAGE`/`LIVE_LEGACY_IMAGE`; proxy to zawsze najnowsze `caddy:alpine`.
 Caddyfile jest wpisany bezpośrednio w sekcję `configs:` nakładki `docker-compose.live.yml`
 (Portainer ze stosu GitHuba nie montuje plików z repozytorium). Zgodność kopii z `panel/docker/proxy.Caddyfile`
 sprawdza `panel/scripts/check-caddy.sh` w CI (`panel-ci.yml`) i `panel/tests/deploy.sh`.
