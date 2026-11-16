@@ -116,14 +116,15 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then R=$GITHUB_REF_NAME; else R=$INPUT; fi
           V=${R#v}
-          # jedna wersja produktu: sidecar, panel, okno, most
+          # jedna wersja produktu: sidecar, panel, okno, most (wydanie wstępne v26.11.11-test.1 → porównanie z 26.11.11)
+          VB=${V%%-*}
           for f in ../Cargo.toml server/Cargo.toml desktop/Cargo.toml; do
             C=$(sed -n 's/^version = "\(.*\)"/\1/p' "$f" | head -1)
-            [ "$V" = "$C" ] || { echo "wersja $R ≠ $C z $f"; exit 1; }
+            [ "$VB" = "$C" ] || { echo "wersja $R ≠ $C z $f"; exit 1; }
           done
           T=$(sed -n 's/^ *"version": *"\(.*\)".*/\1/p' desktop/tauri.conf.json | head -1)
           B=$(sed -n 's#.*<Version>\(.*\)</Version>.*#\1#p' bridge/VizRS.Bridge.csproj | head -1)
-          [ "$V" = "$T" ] && [ "$V" = "$B" ] || { echo "wersja $R ≠ tauri.conf.json $T / VizRS.Bridge.csproj $B"; exit 1; }
+          [ "$VB" = "$T" ] && [ "$VB" = "$B" ] || { echo "wersja $R ≠ tauri.conf.json $T / VizRS.Bridge.csproj $B"; exit 1; }
           L=$(sed -n 's#^LEGACY_IMAGE=##p' .env.example)
           case "$L" in *:v*) LV="-legacy${L##*:v}";; *) LV="";; esac
           latest=false
