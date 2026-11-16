@@ -1,6 +1,6 @@
 # Współpraca agentów: Claude i Gemini (pakiet VizRS)
 
-Zasady podziału pracy między Claude Code i Gemini (Antigravity CLI) w pakiecie VizRS. Cel: tokeny Claude idą na myślenie i kod, a zadania lekkie i wykonawcze (dokumentacja, kompilacja, długie wyjścia) bierze Gemini. Plik jest wspólny dla wszystkich repozytoriów pakietu VizRS (VizRS CG System, VizRS CG Artist, VizRS CG Playout, VizRS Live), identyczny w każdym; źródłem jest VizRS CG System, a kopie aktualizuje `tools/sync-zasady.sh` (nie edytuje się ich ręcznie). Zasady ogólne repozytorium są w [../CLAUDE.md](../CLAUDE.md) i obowiązują obu agentów. Ten plik dodaje tylko podział ról.
+Zasady podziału pracy między Claude Code i Gemini (Antigravity CLI) w pakiecie VizRS. Cel: tokeny Claude idą na myślenie i kod, a zadania lekkie i wykonawcze (dokumentacja, kompilacja, długie wyjścia) bierze Gemini. Plik jest wspólny dla wszystkich repozytoriów pakietu VizRS (VizRS CG System, VizRS CG Artist, VizRS CG Playout z panelem – dawnym VizRS Live), identyczny w każdym; źródłem jest VizRS CG System, a kopie aktualizuje `tools/sync-zasady.sh` (nie edytuje się ich ręcznie). Zasady ogólne repozytorium są w [../CLAUDE.md](../CLAUDE.md) i obowiązują obu agentów. Ten plik dodaje tylko podział ról.
 
 ## 1. Role
 
