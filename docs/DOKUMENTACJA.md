@@ -425,6 +425,13 @@ sidecar 39%), proces na warstwę 21,5% (renderery 10%, sidecar 11%).
   warstwami to ok. 130 MB. `VIZRS_NATIVE_LAYERS=0` wraca do jednego procesu.
 - `/health`: `captures[].layers` – warstwy rysowane osobno (pusta lista =
   jeden proces albo Chromium).
+- Powiązania (`dock`) między warstwami działają także przy procesie na
+  warstwę: od `vizrs-render` z VizRS CG System 26.11.9 (`VIZRS_REF`) każdy
+  proces zna obecność wszystkich warstw anteny i liczy przesunięcia jak
+  `/output` (reguły krawędzi z obrysu celu, łańcuch, powrót po OUT celu –
+  VizRS CG System DOKUMENTACJA §4.7). Starszy renderer nie widział celów
+  z innych warstw – obejściem było `VIZRS_NATIVE_LAYERS=0`, teraz zbędne.
+  Diagnostyka: `VIZRS_RENDER_DOCK=1` w środowisku kontenera `cg`.
 
 Przy kilku obszarach `VIZRS_AREA` jeden proces `vizrs-render` (od 0.3; przy
 procesach na warstwę – obwiednia, wyżej) dostaje je wszystkie (`--area` powtórzone) i rysuje każdy osobno, nie ich obwiednię.
