@@ -10,11 +10,8 @@
 
 ## Następne
 
-1. **Wydanie 26.11.11:** obrazy panelu w ghcr (`vizrs-live`, `vizrs-live-legacy`) należą do repo `VizRS-Live-Playout` – w ustawieniach pakietów dodać `sdorpl/VizRS-CG-Playout` (Manage Actions access, Write), potem ponowić wydanie i tag `v26.11.11`.
-2. **P4 – domknięcie połączenia repozytoriów:**
-   - archiwizacja repo `sdorpl/VizRS-Live-Playout`,
-   - linki w VizRS CG System i Artist,
-   - zmiana nazwy katalogu `VirtRS CG Playout` → `VizRS CG Playout`.
+1. **P4 zrobione (2026-11-16):** repo `sdorpl/VizRS-Live-Playout` zarchiwizowane (notka w README); katalog lokalny `VirtRS CG Playout` → `VizRS CG Playout`; kopie `gpu.rs`, `scale.rs`, `screen.rs`, `vizrs-ui.css` i zasady pakietu z CG System 639f80f. Wydanie 26.11.11 na s1 i s2.
+2. **Lokalny stos `virtrs` (poza repo, decyzja użytkownika):** `.env` wskazuje w `COMPOSE_FILE` starą nakładkę `/home/maciej/vizrs-live-next-v/compose.cg-playout.yml` i nie ma `COMPOSE_PROFILES` – przed następnym `docker compose up` ustawić `COMPOSE_FILE=docker-compose.yml:docker-compose.nvidia.yml:docker-compose.live.yml:panel/compose.build.yml` i `COMPOSE_PROFILES=grafika,ingest` (RUNBOOK §2b).
 
 ## Panel – zrobione (wg planu)
 

@@ -1,5 +1,5 @@
 //! Akceleracja sprzętowa WebKitGTK (Linux) – ustawienia przed startem GTK, wspólne dla okien pakietu VizRS
-//! (ten sam plik w VizRS CG Artist `src/gpu.rs`, VizRS CG System `source/shell/src/gpu.rs`, VizRS Live `desktop/src/gpu.rs`).
+//! (ten sam plik w VizRS CG Artist `src/gpu.rs`, VizRS CG System `source/shell/src/gpu.rs`, VizRS CG Playout `panel/desktop/src/gpu.rs`).
 //!
 //! WebKitGTK sam wyłącza akcelerację przy sterowniku własnościowym NVIDIA („Policy: never” w `webkit://gpu`): kanwa rysuje się
 //! wtedy na CPU (pomiar 2026-11-13: animacja 3–5 kl./s, z akceleracją 61). Wymuszony renderer DMA-BUF działa z NVIDIA przez GBM

@@ -1,5 +1,5 @@
 //! Rozmiar okna nie większy niż ekran – wspólne dla okien pakietu VizRS (ten sam plik w VizRS CG Artist `src/screen.rs`,
-//! VizRS CG System `source/shell/src/screen.rs`, VizRS Live `desktop/src/screen.rs`).
+//! VizRS CG System `source/shell/src/screen.rs`, VizRS CG Playout `panel/desktop/src/screen.rs`).
 //!
 //! Rozmiary okien są w pikselach logicznych. Przy skalowaniu ułamkowym ekran jest „mniejszy”: 1920×1080 przy 125 % to
 //! 1536×864 logicznie, więc domyślne 1600×900 albo zapisany rozmiar z innego ekranu wychodziłyby poza krawędź

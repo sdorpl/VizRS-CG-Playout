@@ -1,5 +1,5 @@
 //! Skala ułamkowa ekranu (Linux) – ten sam plik w VizRS CG Artist `src/scale.rs`, VizRS CG System `source/shell/src/scale.rs`
-//! i VizRS Live `desktop/src/scale.rs`. GTK 3 / WebKitGTK 4.1 nie zna skalowania ułamkowego Waylanda – przy 125 % zaokrągla
+//! i VizRS CG Playout `panel/desktop/src/scale.rs`. GTK 3 / WebKitGTK 4.1 nie zna skalowania ułamkowego Waylanda – przy 125 % zaokrągla
 //! w górę do 2, rysuje stronę w buforze ×2 (`devicePixelRatio` 2), a kompozytor zmniejsza ją ×0,625. Skutek (pomiar
 //! 2026-11-14, KDE Plasma Wayland 125 %, Quadro P400): nierówne cienkie linie, 2,56× więcej pikseli (animacja 5 kl./s
 //! zamiast 18 przez XWayland) i nieprawdziwe „1:1” na kanwie.
@@ -48,7 +48,7 @@ pub fn kde_xwayland() -> Option<f64> {
 
 /// Ile pikseli ekranu przypada na piksel CSS przy powiększeniu interfejsu 100 % – dla „1:1” na kanwie.
 /// `VIZRS_SCALE` (np. `1.25`) ma pierwszeństwo; potem skala KDE; inaczej 1 (jak dawniej).
-#[allow(dead_code)] // używa tylko VizRS CG Artist („1:1” kanwy); okno Trio i VizRS Live – tylko przełączenie na XWayland
+#[allow(dead_code)] // używa tylko VizRS CG Artist („1:1” kanwy); okno Trio i okno panelu VizRS CG Playout – tylko przełączenie na XWayland
 pub fn screen_scale(env: Option<&str>, kde: Option<f64>) -> f64 {
     env.and_then(|v| valid(v.trim().replace(',', ".").parse().ok()?))
         .or(kde)

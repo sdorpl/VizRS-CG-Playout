@@ -3,7 +3,7 @@
    pasek górny, menu z ikonami (zwijane do paska ikon, na wąskim ekranie ≤ 760 px szuflada spod ☰), tabele, formularze,
    okna (.overlay/.dialog), komunikaty (.toast), karty. Kolory tylko przez zmienne z :root.
    ŹRÓDŁO: VizRS CG System, source/web/vizrs-ui.css. Kopie (muszą być identyczne, sprawdza CI):
-   VizRS Live server/web/ (scripts/sync-ui.sh), VizRS CG Artist web/ (tools/sync-cg.sh). Zmiany tylko tutaj.
+   VizRS CG Playout panel/server/web/ (panel/scripts/sync-ui.sh), VizRS CG Artist web/ (tools/sync-cg.sh). Zmiany tylko tutaj.
    To, co swoje dla aplikacji, zostaje w jej pliku (Live: style.css, Trio/Artist: ui.css), ładowanym po tym. */
 :root {
   /* powierzchnie – od najgłębszej */
