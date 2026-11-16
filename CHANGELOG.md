@@ -4,6 +4,10 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.11 (2026-11-16)
+
+Pierwsze wspólne wydanie VizRS CG Playout z panelem kanału (dawny VizRS Live): sidecar, panel, most VizRS Bridge i aplikacja okienna w jednej wersji. Stosy z grafiką wymagają `COMPOSE_PROFILES=grafika` albo `grafika,ingest`.
+
 - **Połączenie z VizRS Live:** panel kanału, most VizRS Bridge i aplikacja okienna w jednym repozytorium (`panel/`); wspólna numeracja wersji całego produktu i jedno wydanie w `.github/workflows/release.yml`.
 - **Profile compose `grafika` i `ingest`:** jeden plik `docker-compose.yml` w korzeniu repozytorium; bez profilu startuje sam ErsatzTV (np. z panelem), profil `grafika` włącza usługi `vizrs` i `cg`, a profil `ingest` – usługę `ingest` (uwaga: stosy Portainera z grafiką muszą mieć `COMPOSE_PROFILES=grafika` albo `grafika,ingest` przed wdrożeniem tej wersji – RUNBOOK panelu §2).
 - **Jedna nakładka `docker-compose.live.yml`:** ujednolicone wdrożenie panelu w Portainerze i lokalnie (usunięto `panel/compose*.yml`), konfiguracja Caddy wbudowana w `configs:` nakładki z weryfikacją przez `panel/scripts/check-caddy.sh`; lokalna budowa obrazów przez nakładkę `panel/compose.build.yml`.

@@ -6,17 +6,11 @@
 
 ## Bieżący etap
 
-**Połączenie z VizRS Live** – P1 (kod panelu, mostu i aplikacji okiennej w katalogu `panel/`) oraz P2 (jeden stos `docker-compose.yml` z profilami compose, nakładka `docker-compose.live.yml` i jedno wydanie w `.github/workflows/release.yml`) zrobione na gałęzi `polaczenie-live`. Wersja 26.11.11 przygotowana (niewydana). P4 dokumentacja w toku.
-
-Wydanie 26.11.10 (2026-11-14): logo na przejęcie kanału przez live ingest (`on_live`), grafika ramówki wstrzymana na czas przejęcia. Stosy s1 i s2 (Portainer GitOps, `.release`) – obrazy `vizrs-cg` 26.11.10 i `vizrs` z wydań VizRS CG System.
+**Połączenie z VizRS Live – P3 zrobione (2026-11-16):** stosy s1 i s2 (Portainer, stosy 7 i 11) mają `COMPOSE_PROFILES=grafika,ingest`; gałąź `polaczenie-live` scalona do `main` – stosy przeładowane z jednym compose i panelem z `:latest` (26.11.10 ze starego repo, bez migracji bazy; restart ErsatzTV dał planszę zastępczą tylko pozycji w trakcie). Kopie `etv-config` przed P3: `~/vizrs-kopie/etv-config-2026-11-16-przed-p3/` na s1 i s2. Stosy mają włączone „Re-pull image” (2026-11-16) – po wydaniu `stack-refresh` (`.release`) przeładowuje je z nowymi obrazami `:latest`. Wydanie 26.11.11 – pierwsze wspólne z panelem (CHANGELOG).
 
 ## Następne
 
-1. **P3 – przełączenie produkcji i wydanie:**
-   - w Portainerze na stosach s1 i s2 zmienić `COMPOSE_PROFILES=ingest` na `grafika,ingest` (bezpieczne też ze starym compose),
-   - scalenie gałęzi `polaczenie-live` do `main`,
-   - tag `v26.11.11` (najpierw próbny `v26.11.11-test.1`),
-   - obrazy panelu w nakładce idą z `:latest` (decyzja 2026-11-16): scalenie przeniesie s1/s2 z panelu 26.11.8 na 26.11.10 (`:latest` z repo VizRS Live; ta sama warstwa legacy co 26.11.8, bez migracji bazy), a wydanie 26.11.11 – na 26.11.11 przez `stack-refresh`; przed wydaniem kopia `etv-config` (obraz legacy z mostem budowany na najnowszym legacy).
+1. **Wydanie 26.11.11:** obrazy panelu w ghcr (`vizrs-live`, `vizrs-live-legacy`) należą do repo `VizRS-Live-Playout` – w ustawieniach pakietów dodać `sdorpl/VizRS-CG-Playout` (Manage Actions access, Write), potem ponowić wydanie i tag `v26.11.11`.
 2. **P4 – domknięcie połączenia repozytoriów:**
    - archiwizacja repo `sdorpl/VizRS-Live-Playout`,
    - linki w VizRS CG System i Artist,
