@@ -1,4 +1,4 @@
-//! Okno „Połącz z panelem”: adres i token panelu VizRS Live (np. na VPS), lista zapisanych połączeń.
+//! Okno „Połącz z panelem”: adres i token panelu VizRS CG Playout (np. na VPS), lista zapisanych połączeń.
 //! Wzór: okno połączenia VizRS CG System (`source/shell/src/connect.rs`) – bez wspólnego crate'a.
 //!
 //! Strona okna jest wbudowana w program (nie pochodzi z panelu), więc tylko ona może wysłać przez most

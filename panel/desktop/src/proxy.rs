@@ -1,5 +1,5 @@
 //! Pośrednik panelu zdalnego: serwer strony okna na `127.0.0.1` (losowy port). Każde żądanie strony idzie do panelu
-//! VizRS Live z tokenem okna (`Authorization: Bearer …`), więc **token nie trafia do strony** (wzór: pośrednik
+//! VizRS CG Playout z tokenem okna (`Authorization: Bearer …`), więc **token nie trafia do strony** (wzór: pośrednik
 //! VizRS CG Artist, `local::start_remote`). Dostęp tylko dla okna: sekret w pierwszym adresie → ciasteczko
 //! `HttpOnly`, kontrola `Host` (ochrona przed DNS rebinding) i `Origin`. Odpowiedzi idą strumieniem (podgląd HLS,
 //! odtwarzanie pliku z `Range`), bez buforowania całości.
@@ -102,7 +102,7 @@ fn agent(timeout: Option<Duration>) -> ureq::Agent {
         .into()
 }
 
-/// Przed przełączeniem okna: `GET /api/status` z tokenem – dostępność, token, czy to panel VizRS Live.
+/// Przed przełączeniem okna: `GET /api/status` z tokenem – dostępność, token, czy to panel VizRS CG Playout.
 pub fn check(url: &str, token: Option<&str>) -> Result<(), String> {
     let target = clean_target(url)?;
     let mut b = http::Request::builder()

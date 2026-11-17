@@ -1,4 +1,4 @@
-//! VizRS Live – aplikacja panelu kanału na Tauri 2 (Linux, Windows, macOS).
+//! VizRS CG Playout – aplikacja panelu kanału (dawniej VizRS Live) na Tauri 2 (Linux, Windows, macOS).
 //!
 //!   vizrs-live-desktop [connect] [--connect URL] [--token T]
 //!
