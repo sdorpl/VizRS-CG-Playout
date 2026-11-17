@@ -11,7 +11,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>VizRS.Bridge</AssemblyName>
     <RootNamespace>VizRS.Bridge</RootNamespace>
-    <Version>26.11.12</Version>
+    <Version>26.11.13</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>

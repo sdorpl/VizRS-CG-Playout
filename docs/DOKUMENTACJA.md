@@ -426,7 +426,7 @@ sidecar 39%), proces na warstwę 21,5% (renderery 10%, sidecar 11%).
 - `/health`: `captures[].layers` – warstwy rysowane osobno (pusta lista =
   jeden proces albo Chromium).
 - Powiązania (`dock`) między warstwami działają także przy procesie na
-  warstwę: od `vizrs-render` z VizRS CG System 26.11.9 (`VIZRS_REF`) każdy
+  warstwę: od `vizrs-render` z VizRS CG System 26.11.9 (`VIZRS_REF`; obrys celu z fontem z zasobów – od 26.11.10) każdy
   proces zna obecność wszystkich warstw anteny i liczy przesunięcia jak
   `/output` (reguły krawędzi z obrysu celu, łańcuch, powrót po OUT celu –
   VizRS CG System DOKUMENTACJA §4.7). Starszy renderer nie widział celów

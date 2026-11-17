@@ -4,6 +4,10 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.13 (2026-11-17)
+
+- **Renderer natywny z VizRS CG System 26.11.10** (`VIZRS_REF`): reguła krawędzi powiązań przelicza obrys celu po wczytaniu jego fontu z zasobów – kafel programu odsuwa się od dwuwierszowej belki o jej pełną wysokość (dotąd o wysokość zmierzoną bez tekstu, S2 kanał 4).
+
 ## 26.11.12 (2026-11-16)
 
 - **Renderer natywny z VizRS CG System 26.11.9** (`VIZRS_REF`, dotąd 26.11.3): powiązania (`dock`) z celem na innej warstwie działają na antenie przy procesie na warstwę (`native_layers`, domyślnie) – dotąd proces warstwy nie widział celów z innych warstw i grafika stała w miejscu (obejście `VIZRS_NATIVE_LAYERS=0` przestaje być potrzebne). Do tego reguły krawędzi z obrysu celu (dynamiczna wysokość belki), łańcuch, krzywa `ease` i powrót po OUT celu, a także zmiany renderera z wydań 26.11.4–26.11.8 (m.in. wejście przy celu na antenie od razu na miejscu, maska warstwy, miniatury stron). DOKUMENTACJA §1.
