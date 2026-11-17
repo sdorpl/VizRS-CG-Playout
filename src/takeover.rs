@@ -288,6 +288,16 @@ pub fn live_args(
     format: &Format,
     graphics: Option<&Graphics>,
 ) -> Vec<OsString> {
+    let mut out = global_options(args);
+    let (inputs, audio_input) = picture_inputs(&mut out, job, elapsed, picture, format);
+    filter_graph(&mut out, args, format, graphics, inputs, &audio_input);
+    output_options(&mut out, args);
+    job.timing(&mut out, elapsed);
+    out
+}
+
+/// The global options of ErsatzTV's command (before its first `-i`).
+fn global_options(args: &[OsString]) -> Vec<OsString> {
     let first = (0..args.len()).find(|&i| args[i] == "-i").unwrap_or(args.len());
     let mut out: Vec<OsString> = Vec::new();
     let mut i = 0;
@@ -300,6 +310,12 @@ pub fn live_args(
         }
         i += 1;
     }
+    out
+}
+
+/// The live picture (or the standby picture) and its sound as inputs; the number of inputs
+/// and the audio stream to use.
+fn picture_inputs(out: &mut Vec<OsString>, job: &Job, elapsed: f64, picture: Picture, format: &Format) -> (usize, String) {
     let (w, h) = (format.width, format.height);
     let silence = |out: &mut Vec<OsString>, realtime: bool| {
         let pace: &[&str] = if realtime { &["-re"] } else { &[] };
@@ -333,7 +349,7 @@ pub fn live_args(
             if source.audio {
                 "0:a:0".to_owned()
             } else {
-                silence(&mut out, false);
+                silence(out, false);
                 inputs += 1;
                 "1:a".to_owned()
             }
@@ -345,11 +361,24 @@ pub fn live_args(
                 None => ["-re", "-f", "lavfi", "-i", &format!("color=c=black:s={w}x{h}:r={}", format.rate)].map(str::to_owned).to_vec(),
             };
             out.extend(video.into_iter().map(OsString::from));
-            silence(&mut out, true);
+            silence(out, true);
             inputs += 1;
             "1:a".to_owned()
         }
     };
+    (inputs, audio_input)
+}
+
+/// `-filter_complex`: the picture scaled to the channel's format, the graphics over it, the sound.
+fn filter_graph(
+    out: &mut Vec<OsString>,
+    args: &[OsString],
+    format: &Format,
+    graphics: Option<&Graphics>,
+    inputs: usize,
+    audio_input: &str,
+) {
+    let (w, h) = (format.width, format.height);
     let mut video = format!(
         "[0:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color=black,setsar=1,fps={},format=yuv420p",
         format.rate
@@ -381,7 +410,10 @@ pub fn live_args(
         "-map".into(),
         "[vz_a]".into(),
     ]);
+}
 
+/// ErsatzTV's output options without those the run sets itself, then its output.
+fn output_options(out: &mut Vec<OsString>, args: &[OsString]) {
     let last = last_input(args).map_or(0, |i| i + 2);
     let output = &args[last..args.len().saturating_sub(1)];
     let mut j = 0;
@@ -399,8 +431,6 @@ pub fn live_args(
         j += 1;
     }
     out.push(args[args.len() - 1].clone());
-    job.timing(&mut out, elapsed);
-    out
 }
 
 /// Names and lengths (EXTINF) of the segments in an HLS playlist.
