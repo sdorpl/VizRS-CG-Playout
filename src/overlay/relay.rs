@@ -1,4 +1,4 @@
-//! Strumień klatek grafiki: przekazywanie z gniazda sidecara do ffmpeg, argumenty wejścia surowego, wspólne przesyłanie na GPU.
+//! The graphics frame stream: relayed from the sidecar socket to ffmpeg, raw input arguments, shared GPU upload.
 
 use super::*;
 

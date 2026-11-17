@@ -1,4 +1,4 @@
-//! Wejście kanwy w komendzie ffmpeg: kanał, nagłówki.
+//! The canvas input of an ffmpeg command: channel, headers.
 
 use super::*;
 

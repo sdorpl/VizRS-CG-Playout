@@ -1,4 +1,4 @@
-//! Przebieg nakładki: zwykłe ffmpeg albo z grafiką, przejęcie anteny (live), sekwencja, przekazywanie sygnałów.
+//! A run of the overlay: plain ffmpeg or with graphics, live takeover, the sequence, forwarded signals.
 
 use super::*;
 

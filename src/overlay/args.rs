@@ -1,4 +1,4 @@
-//! Argumenty ffmpeg: położenie grafiki, klatkaż i mieszanie, presety, profil, parametry x264, klatki B, nadrabianie.
+//! ffmpeg arguments: graphics position, frame rate and blending, presets, profile, x264 parameters, B-frames, catch-up.
 
 use super::*;
 

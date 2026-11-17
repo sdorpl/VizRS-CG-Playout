@@ -1,4 +1,4 @@
-//! Ustawienia nakładki ze środowiska: ffmpeg, kodowanie, CUDA, strefy, pobieranie klatek.
+//! The overlay's settings from the environment: ffmpeg, encoding, CUDA, zones, frame fetching.
 
 use super::*;
 

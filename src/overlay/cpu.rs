@@ -1,4 +1,4 @@
-//! Graf filtrów na CPU: łańcuchy, skalowanie, nakładanie, tempo materiału.
+//! The filter graph on the CPU: chains, scaling, overlaying, media pacing.
 
 use super::*;
 

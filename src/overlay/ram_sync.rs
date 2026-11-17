@@ -1,4 +1,4 @@
-//! Synchronizacja materiału z grafiką w pamięci RAM i siatka klatek grafiki.
+//! Media synchronised with the graphics in RAM, and the graphics frame grid.
 
 use super::*;
 

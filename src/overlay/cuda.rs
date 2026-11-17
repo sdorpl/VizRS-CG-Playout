@@ -1,4 +1,4 @@
-//! CUDA: wybór według wolnej pamięci GPU, kodowanie na GPU z dekodowaniem na CPU, rozmieszczanie klatek.
+//! CUDA: chosen by free GPU memory, encoding on the GPU with decoding on the CPU, frame placement.
 
 use super::*;
 

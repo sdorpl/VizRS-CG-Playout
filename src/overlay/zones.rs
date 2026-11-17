@@ -1,4 +1,4 @@
-//! Strefy grafiki (`area: auto`) i obserwacja ich zmian w trakcie materiału.
+//! Graphics zones (`area: auto`) and watching them change during a piece.
 
 use super::*;
 
