@@ -580,7 +580,7 @@ sidecar (równe 25 kl./s), ani główny ffmpeg (ok. 5× z grafiką z pliku) tego
 nie ograniczają, a `render_size` nie pomaga, bo płótno ErsatzTV zawsze ma
 rozmiar kanału.
 
-Nakładka `vizrs-ffmpeg` ([src/overlay.rs](../src/overlay.rs)) omija ten
+Nakładka `vizrs-ffmpeg` ([src/overlay/](../src/overlay/mod.rs)) omija ten
 łańcuch. To
 też statyczna binarka (musl), więc działa w obrazie ErsatzTV na amd64
 i arm64 bez względu na jego glibc; `seed` kładzie ją do `/vizrs` (§4). W ErsatzTV ustawia się ją jako ścieżkę FFmpeg
