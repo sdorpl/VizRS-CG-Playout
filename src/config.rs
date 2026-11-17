@@ -384,77 +384,94 @@ impl Config {
         let mut warnings = Vec::new();
 
         if let Some(file) = file {
-            let Value::Object(members) = file else { return Err("config file: expected a JSON object".into()) };
-            for (key, value) in members {
-                match key.as_str() {
-                    "listen" => config.listen = string(value, key)?,
-                    "vizrs" => {
-                        if let Some(v) = value.get("address") {
-                            config.vizrs.address = string(v, "vizrs.address")?;
-                        }
-                        if let Some(v) = value.get("token") {
-                            config.vizrs.token = string(v, "vizrs.token")?;
-                        }
+            config.apply_file(file, &mut warnings)?;
+        }
+        config.apply_env_vizrs(env, &mut warnings);
+        config.apply_env_timing(env, &mut warnings);
+        config.apply_env_ingest(env, &mut warnings)?;
+        config.apply_env_panel(env);
+
+        Ok((config, warnings))
+    }
+
+    /// Options from the JSON config file; unknown keys are warnings.
+    fn apply_file(&mut self, file: &Value, warnings: &mut Vec<String>) -> Result<(), String> {
+        let config = self;
+        let Value::Object(members) = file else { return Err("config file: expected a JSON object".into()) };
+        for (key, value) in members {
+            match key.as_str() {
+                "listen" => config.listen = string(value, key)?,
+                "vizrs" => {
+                    if let Some(v) = value.get("address") {
+                        config.vizrs.address = string(v, "vizrs.address")?;
                     }
-                    "output_url" => config.output_url = string(value, key)?,
-                    "on_clip" => config.on_clip = string(value, key)?,
-                    "on_ad" => config.on_ad = string(value, key)?,
-                    "ad_match" => {
-                        if let Some(v) = value.get("path") {
-                            config.ad_match.path = string(v, "ad_match.path")?;
-                        }
-                        if let Some(v) = value.get("title") {
-                            config.ad_match.title = string(v, "ad_match.title")?;
-                        }
+                    if let Some(v) = value.get("token") {
+                        config.vizrs.token = string(v, "vizrs.token")?;
                     }
-                    "shows" => {
-                        config.shows = show_overrides(value, "shows")?;
-                    }
-                    "channels" => config.channels = channel_overrides(value)?,
-                    "channel_buses" => config.channel_buses = boolean(value, key)?,
-                    "etv_config" => config.etv_config = string(value, key)?,
-                    "etv_url" => config.etv_url = string(value, key)?,
-                    "client_source" => config.client_source = string(value, key)?,
-                    "client_dir" => config.client_dir = string(value, key)?,
-                    "sync_seconds" => config.sync_seconds = number(value, key)?,
-                    "ad_without_element" => config.ad_without_element = boolean(value, key)?,
-                    "in_seconds" => config.in_seconds = number(value, key)?,
-                    "out_seconds" => config.out_seconds = number(value, key)?,
-                    "on_end" => config.on_end = string(value, key)?,
-                    "end_seconds" => config.end_seconds = seconds(value, key)?,
-                    "end_out_seconds" => config.end_out_seconds = seconds(value, key)?,
-                    "end_ref" => config.end_ref = end_ref(&string(value, key)?, key)?,
-                    "lead_seconds" => config.lead_seconds = number(value, key)?,
-                    "render_size" => config.render_size = string(value, key)?,
-                    "area" => config.area = string(value, key)?,
-                    "max_fps" => config.max_fps = number(value, key)?,
-                    "capture_mode" => config.capture_mode = string(value, key)?,
-                    "clock_offset_seconds" => config.clock_offset_seconds = number(value, key)?,
-                    "tape" => config.tape = boolean(value, key)?,
-                    "renderer" => config.renderer = string(value, key)?,
-                    "renderer_bin" => config.renderer_bin = string(value, key)?,
-                    "native_layers" => config.native_layers = boolean(value, key)?,
-                    "ingest_token" => config.ingest_token = string(value, key)?,
-                    "ingest_anytime" => config.ingest_anytime = boolean(value, key)?,
-                    "ingest_idle_seconds" => config.ingest_idle_seconds = number(value, key)?,
-                    "ingest" => config.ingest_listeners = string(value, key)?,
-                    "ingest_public" => config.ingest_public = string(value, key)?.trim().to_owned(),
-                    "live_shows" => config.live_shows = live_shows(value)?,
-                    "panel_token" => config.panel_token = string(value, key)?.trim().to_owned(),
-                    "alert_webhook" => config.alert_webhook = string(value, key)?.trim().to_owned(),
-                    "browser" => config.browser = string(value, key)?,
-                    "no_sandbox" => config.no_sandbox = boolean(value, key)?,
-                    "browser_gpu" => config.browser_gpu = boolean(value, key)?,
-                    "browser_args" => {
-                        let items = value.as_array().ok_or("browser_args: expected an array of strings")?;
-                        config.browser_args = items.iter().map(|v| string(v, "browser_args")).collect::<Result<_, _>>()?;
-                    }
-                    "gap_grace_ms" => config.gap_grace_ms = Some(number(value, key)?),
-                    _ => warnings.push(format!("config: unknown option \"{key}\" ignored")),
                 }
+                "output_url" => config.output_url = string(value, key)?,
+                "on_clip" => config.on_clip = string(value, key)?,
+                "on_ad" => config.on_ad = string(value, key)?,
+                "ad_match" => {
+                    if let Some(v) = value.get("path") {
+                        config.ad_match.path = string(v, "ad_match.path")?;
+                    }
+                    if let Some(v) = value.get("title") {
+                        config.ad_match.title = string(v, "ad_match.title")?;
+                    }
+                }
+                "shows" => {
+                    config.shows = show_overrides(value, "shows")?;
+                }
+                "channels" => config.channels = channel_overrides(value)?,
+                "channel_buses" => config.channel_buses = boolean(value, key)?,
+                "etv_config" => config.etv_config = string(value, key)?,
+                "etv_url" => config.etv_url = string(value, key)?,
+                "client_source" => config.client_source = string(value, key)?,
+                "client_dir" => config.client_dir = string(value, key)?,
+                "sync_seconds" => config.sync_seconds = number(value, key)?,
+                "ad_without_element" => config.ad_without_element = boolean(value, key)?,
+                "in_seconds" => config.in_seconds = number(value, key)?,
+                "out_seconds" => config.out_seconds = number(value, key)?,
+                "on_end" => config.on_end = string(value, key)?,
+                "end_seconds" => config.end_seconds = seconds(value, key)?,
+                "end_out_seconds" => config.end_out_seconds = seconds(value, key)?,
+                "end_ref" => config.end_ref = end_ref(&string(value, key)?, key)?,
+                "lead_seconds" => config.lead_seconds = number(value, key)?,
+                "render_size" => config.render_size = string(value, key)?,
+                "area" => config.area = string(value, key)?,
+                "max_fps" => config.max_fps = number(value, key)?,
+                "capture_mode" => config.capture_mode = string(value, key)?,
+                "clock_offset_seconds" => config.clock_offset_seconds = number(value, key)?,
+                "tape" => config.tape = boolean(value, key)?,
+                "renderer" => config.renderer = string(value, key)?,
+                "renderer_bin" => config.renderer_bin = string(value, key)?,
+                "native_layers" => config.native_layers = boolean(value, key)?,
+                "ingest_token" => config.ingest_token = string(value, key)?,
+                "ingest_anytime" => config.ingest_anytime = boolean(value, key)?,
+                "ingest_idle_seconds" => config.ingest_idle_seconds = number(value, key)?,
+                "ingest" => config.ingest_listeners = string(value, key)?,
+                "ingest_public" => config.ingest_public = string(value, key)?.trim().to_owned(),
+                "live_shows" => config.live_shows = live_shows(value)?,
+                "panel_token" => config.panel_token = string(value, key)?.trim().to_owned(),
+                "alert_webhook" => config.alert_webhook = string(value, key)?.trim().to_owned(),
+                "browser" => config.browser = string(value, key)?,
+                "no_sandbox" => config.no_sandbox = boolean(value, key)?,
+                "browser_gpu" => config.browser_gpu = boolean(value, key)?,
+                "browser_args" => {
+                    let items = value.as_array().ok_or("browser_args: expected an array of strings")?;
+                    config.browser_args = items.iter().map(|v| string(v, "browser_args")).collect::<Result<_, _>>()?;
+                }
+                "gap_grace_ms" => config.gap_grace_ms = Some(number(value, key)?),
+                _ => warnings.push(format!("config: unknown option \"{key}\" ignored")),
             }
         }
+        Ok(())
+    }
 
+    /// Environment: VizRS connection, ad and clip commands, channels, ErsatzTV, encoder, client.
+    fn apply_env_vizrs(&mut self, env: &dyn Fn(&str) -> Option<String>, warnings: &mut Vec<String>) {
+        let config = self;
         if let Some(v) = env("LISTEN").filter(|v| !v.is_empty()) {
             config.listen = v;
         }
@@ -518,6 +535,11 @@ impl Config {
         if let Some(v) = env("VIZRS_AD_WITHOUT_ELEMENT") {
             config.ad_without_element = v != "0";
         }
+    }
+
+    /// Environment: timing (lead, in/out, end of show), render size and area, frame rate, capture, renderer.
+    fn apply_env_timing(&mut self, env: &dyn Fn(&str) -> Option<String>, warnings: &mut Vec<String>) {
+        let config = self;
         if let Some(v) = env("LEAD_SECONDS").filter(|v| !v.is_empty()) {
             match v.trim().parse() {
                 Ok(seconds) => config.lead_seconds = seconds,
@@ -582,6 +604,11 @@ impl Config {
         if let Some(v) = env("VIZRS_RENDERER_BIN").filter(|v| !v.is_empty()) {
             config.renderer_bin = v;
         }
+    }
+
+    /// Environment: live ingest (token, listeners, ports, idle time, live shows).
+    fn apply_env_ingest(&mut self, env: &dyn Fn(&str) -> Option<String>, warnings: &mut Vec<String>) -> Result<(), String> {
+        let config = self;
         if let Some(v) = env("VIZRS_INGEST_TOKEN") {
             config.ingest_token = v.trim().to_owned();
         }
@@ -616,6 +643,12 @@ impl Config {
                 Err(error) => warnings.push(format!("VIZRS_LIVE_SHOWS: {error}; ignored")),
             }
         }
+        Ok(())
+    }
+
+    /// Environment: panel token, alert webhook, browser.
+    fn apply_env_panel(&mut self, env: &dyn Fn(&str) -> Option<String>) {
+        let config = self;
         if let Some(v) = env("VIZRS_PANEL_TOKEN") {
             config.panel_token = v.trim().to_owned();
         }
@@ -634,8 +667,6 @@ impl Config {
         if let Some(v) = env("VIZRS_BROWSER_ARGS").filter(|v| !v.is_empty()) {
             config.browser_args = v.split_whitespace().map(str::to_owned).collect();
         }
-
-        Ok((config, warnings))
     }
 
     /// The configuration of one ErsatzTV channel.
