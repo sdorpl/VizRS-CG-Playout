@@ -3,8 +3,10 @@
 //! Serwer podaje UI panelu i przekazuje komendy do mostu VizRS Bridge (w procesie legacy).
 //! Token mostu zostaje po stronie serwera; przeglądarka zna tylko (opcjonalny) token panelu.
 
+mod accounts;
 mod bridge;
 mod config;
+mod crypto;
 mod http;
 mod json;
 mod proxy;
@@ -14,6 +16,7 @@ mod session;
 mod upload;
 mod vod;
 
+use accounts::*;
 use config::*;
 use proxy::*;
 use routes::*;
@@ -42,14 +45,9 @@ struct App {
     cg: Option<Bridge>,
     /// nieudane logowania w bieżących oknach: na adres klienta i łącznie
     login_fails: std::sync::Mutex<LoginFails>,
-    /// sesje przeglądarek (K1): losowy identyfikator w ciasteczku → ostatnie użycie
-    sessions: std::sync::Mutex<Sessions>,
+    /// konta operatorów i sesje przeglądarek (K1: losowy identyfikator w ciasteczku → kto, ostatnie użycie)
+    accounts: std::sync::Mutex<Store>,
 }
-
-/// Sesja wygasa po tylu sekundach bezczynności (30 dni – jak dawne `Max-Age` ciasteczka).
-pub const SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(2_592_000);
-/// Najwyżej tyle sesji naraz; przy nadmiarze najpierw wygasłe, potem najdawniej używana.
-pub const SESSION_MAX: usize = 256;
 
 /// Najwyżej tyle nieudanych logowań z jednego adresu na [`LOGIN_WINDOW`] – potem 429 dla tego adresu do końca okna.
 pub const LOGIN_MAX_FAILS: u32 = 10;
@@ -95,7 +93,7 @@ fn main() {
         },
         cg: cg_client(&cfg),
         login_fails: std::sync::Mutex::new(LoginFails::default()),
-        sessions: std::sync::Mutex::new(Sessions::default()),
+        accounts: std::sync::Mutex::new(Store::open(cfg.data.clone(), unix_now())),
         cfg,
     });
 
@@ -117,9 +115,10 @@ fn main() {
         if app.cfg.token.is_some() {
             "tak"
         } else {
-            "nie (tylko lokalnie)"
+            "nie"
         }
     );
+    log_accounts(&app);
 
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
@@ -134,6 +133,32 @@ fn main() {
             handle(&app, stream);
             active.fetch_sub(1, Ordering::SeqCst);
         });
+    }
+}
+
+/// Stan kont na starcie; bez kont – jednorazowy kod pierwszej konfiguracji (widać go w logu kontenera, np. w Portainerze).
+fn log_accounts(app: &App) {
+    let a = app.accounts.lock().unwrap_or_else(|e| e.into_inner());
+    match (&app.cfg.data, a.broken()) {
+        (None, _) if app.cfg.token.is_some() => {
+            eprintln!("vizrs-live: konta wyłączone (bez --data / VIZRS_LIVE_DATA) – logowanie tokenem")
+        }
+        (None, _) => eprintln!("vizrs-live: bez logowania (tylko 127.0.0.1, bez tokenu i kont)"),
+        (Some(d), Some(e)) => eprintln!(
+            "vizrs-live: KONTA WYŁĄCZONE – {e} (katalog {}); logowanie tylko tokenem awaryjnym",
+            d.display()
+        ),
+        (Some(d), None) => match a.setup_code() {
+            Some(code) => eprintln!(
+                "vizrs-live: brak kont – otwórz panel i utwórz konto administratora; kod pierwszej konfiguracji: {code}{}",
+                if app.cfg.token.is_some() {
+                    " (albo token VIZRS_LIVE_TOKEN)"
+                } else {
+                    ""
+                }
+            ),
+            None => eprintln!("vizrs-live: konta w {}", d.display()),
+        },
     }
 }
 
@@ -597,15 +622,15 @@ mod tests {
         );
         assert_eq!(cg_path("DELETE", "live/encoder"), None);
         assert_eq!(cg_path("PUT", "live/encoder/x"), None);
-        assert_eq!(operator_name(None), "VizRS Live");
-        assert_eq!(operator_name(Some("  ")), "VizRS Live");
+        assert_eq!(operator_for("", None), "VizRS Live");
+        assert_eq!(operator_for("", Some("  ")), "VizRS Live");
         assert_eq!(
-            operator_name(Some("Stanowisko%20%C5%81%0D%0AX-Evil:%201")),
+            operator_for("", Some("Stanowisko%20%C5%81%0D%0AX-Evil:%201")),
             "VizRS Live · Stanowisko ŁX-Evil: 1"
         );
-        assert_eq!(operator_name(Some("a%zz")), "VizRS Live · a%zz");
+        assert_eq!(operator_for("", Some("a%zz")), "VizRS Live · a%zz");
         assert_eq!(
-            operator_name(Some(&"x".repeat(99))).chars().count(),
+            operator_for("", Some(&"x".repeat(99))).chars().count(),
             13 + 40
         );
         assert_eq!(cg_path("GET", "ingest/24&x=1"), None);
@@ -660,7 +685,7 @@ mod tests {
             },
             cg: None,
             login_fails: std::sync::Mutex::new(LoginFails::default()),
-            sessions: std::sync::Mutex::new(Sessions::default()),
+            accounts: std::sync::Mutex::new(Store::default()),
             cfg: c,
         }
     }
@@ -723,10 +748,7 @@ mod tests {
     #[test]
     fn routes_and_guards() {
         let a = app(Some(T));
-        a.sessions
-            .lock()
-            .unwrap()
-            .create(T.into(), std::time::Instant::now());
+        a.accounts.lock().unwrap().session_new(T, "", unix_now());
         assert_eq!(route(&a, &req("GET", "/", &[])).status, 200);
         assert_eq!(
             route(&a, &req("GET", "/health", &[])).status,
@@ -903,29 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_expire_limit_logout() {
-        let t0 = std::time::Instant::now();
-        let mut s = Sessions::default();
-        s.create("a".into(), t0);
-        assert!(s.touch("a", t0 + std::time::Duration::from_secs(10)));
-        assert!(!s.touch("b", t0));
-        // bezczynność liczona od ostatniego użycia
-        assert!(s.touch("a", t0 + SESSION_IDLE));
-        assert!(!s.touch(
-            "a",
-            t0 + SESSION_IDLE * 2 + std::time::Duration::from_secs(11)
-        ));
-        assert_eq!(s.len(), 0, "wygasła sesja usunięta");
-        for n in 0..SESSION_MAX + 5 {
-            s.create(
-                format!("s{n}"),
-                t0 + std::time::Duration::from_secs(n as u64),
-            );
-        }
-        assert_eq!(s.len(), SESSION_MAX, "limit sesji");
-        assert!(!s.touch("s0", t0), "najdawniej używana wypada pierwsza");
-        s.remove("s10");
-        assert!(!s.touch("s10", t0 + std::time::Duration::from_secs(1000)));
+    fn random_session_ids() {
         let id = random_id().unwrap();
         assert_eq!(id.len(), 64);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
@@ -1013,5 +1013,282 @@ mod tests {
             route(&app(Some("t")), &req("GET", "/api/exposure", &[])).status,
             401
         );
+    }
+
+    fn post(path: &str, body: &str, cookie: Option<&str>) -> Request {
+        let mut h = vec![("X-VizRS-Live", "1")];
+        if let Some(c) = cookie {
+            h.push(("Cookie", c));
+        }
+        let mut r = req("POST", path, &h);
+        r.body = body.as_bytes().to_vec();
+        r
+    }
+    fn cookie_of(r: &Response) -> String {
+        let c = &r.headers.iter().find(|h| h.0 == "Set-Cookie").unwrap().1;
+        c.split(';').next().unwrap().to_string()
+    }
+    fn body(r: &Response) -> String {
+        String::from_utf8_lossy(&r.body).into_owned()
+    }
+
+    #[test]
+    fn accounts_setup_login_roles() {
+        let dir = std::env::temp_dir().join(format!("vizrs-live-routes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = app(Some("0123456789abcdef"));
+        a.cfg.data = Some(dir.clone());
+        a.accounts = std::sync::Mutex::new(Store::open(Some(dir.clone()), unix_now()));
+        let code = a.accounts.lock().unwrap().setup_code().unwrap().to_string();
+        let st = body(&route(&a, &req("GET", "/api/auth", &[])));
+        assert!(
+            st.contains("\"setup\":true") && st.contains("\"user\":null"),
+            "{st}"
+        );
+        assert!(!st.contains(&code), "kodu nie ma w odpowiedzi");
+        assert_eq!(route(&a, &req("GET", "/api/status", &[])).status, 401);
+        // pierwsze konto: zły kod, słabe hasło, potem kod z logu
+        assert_eq!(
+            route(
+                &a,
+                &post(
+                    "/api/setup",
+                    r#"{"code":"ZLY","user":"jan","password":"hasło-jana"}"#,
+                    None
+                )
+            )
+            .status,
+            401
+        );
+        let weak = format!(r#"{{"code":"{code}","user":"jan","password":"krótkie"}}"#);
+        assert_eq!(route(&a, &post("/api/setup", &weak, None)).status, 400);
+        let ok = format!(
+            r#"{{"code":"{}","user":"Jan","password":"hasło-jana"}}"#,
+            code.to_lowercase()
+        );
+        let r = route(&a, &post("/api/setup", &ok, None));
+        assert_eq!(r.status, 200, "{}", body(&r));
+        let jan = cookie_of(&r);
+        assert_eq!(
+            route(&a, &post("/api/setup", &ok, None)).status,
+            409,
+            "drugi raz już nie"
+        );
+        let me = body(&route(&a, &req("GET", "/api/auth", &[("Cookie", &jan)])));
+        assert!(
+            me.contains(r#""user":{"name":"jan","role":"admin"}"#),
+            "{me}"
+        );
+        // administrator dodaje operatora
+        let add = route(
+            &a,
+            &post(
+                "/api/users",
+                r#"{"user":"ola","password":"hasło-oli","role":"operator"}"#,
+                Some(&jan),
+            ),
+        );
+        assert_eq!(add.status, 200, "{}", body(&add));
+        let list = body(&route(&a, &req("GET", "/api/users", &[("Cookie", &jan)])));
+        assert!(list.contains("\"ola\"") && !list.contains("salt"), "{list}");
+        // logowanie loginem i hasłem
+        assert_eq!(
+            route(
+                &a,
+                &post(
+                    "/api/login",
+                    r#"{"user":"ola","password":"zle-haslo"}"#,
+                    None
+                )
+            )
+            .status,
+            401
+        );
+        assert_eq!(
+            route(
+                &a,
+                &post(
+                    "/api/login",
+                    r#"{"user":"nikt","password":"hasło-oli"}"#,
+                    None
+                )
+            )
+            .status,
+            401
+        );
+        let r = route(
+            &a,
+            &post(
+                "/api/login",
+                r#"{"user":"OLA","password":"hasło-oli"}"#,
+                None,
+            ),
+        );
+        assert_eq!(r.status, 200);
+        let ola = cookie_of(&r);
+        assert_eq!(
+            route(&a, &req("GET", "/api/exposure", &[("Cookie", &ola)])).status,
+            200
+        );
+        assert_eq!(
+            route(&a, &req("GET", "/api/users", &[("Cookie", &ola)])).status,
+            403,
+            "operator nie zarządza kontami"
+        );
+        // własne hasło
+        assert_eq!(
+            route(
+                &a,
+                &post(
+                    "/api/password",
+                    r#"{"old":"zle","new":"nowe-hasło-oli"}"#,
+                    Some(&ola)
+                )
+            )
+            .status,
+            403
+        );
+        assert_eq!(
+            route(
+                &a,
+                &post(
+                    "/api/password",
+                    r#"{"old":"hasło-oli","new":"nowe-hasło-oli"}"#,
+                    Some(&ola)
+                )
+            )
+            .status,
+            200
+        );
+        // token awaryjny dalej działa (tekst i JSON), sesja tokenu = administrator
+        let t = route(&a, &post("/api/login", "0123456789abcdef", None));
+        assert_eq!(t.status, 200);
+        let tj = route(
+            &a,
+            &post("/api/login", r#"{"token":"0123456789abcdef"}"#, None),
+        );
+        assert_eq!(tj.status, 200);
+        assert_eq!(
+            route(&a, &req("GET", "/api/users", &[("Cookie", &cookie_of(&t))])).status,
+            200
+        );
+        // jedyny administrator zostaje; usunięcie konta kończy jego sesję
+        let mut del = req(
+            "DELETE",
+            "/api/users/jan",
+            &[("X-VizRS-Live", "1"), ("Cookie", &jan)],
+        );
+        assert_eq!(route(&a, &del).status, 409);
+        del.path = "/api/users/ola".into();
+        assert_eq!(route(&a, &del).status, 200);
+        assert_eq!(
+            route(&a, &req("GET", "/api/exposure", &[("Cookie", &ola)])).status,
+            401
+        );
+        // wspólne logowanie w pakiecie: domyślnie wyłączone, przełącza tylko administrator
+        let sso = |a: &App| body(&route(a, &req("GET", "/api/sso", &[])));
+        assert!(
+            sso(&a).contains(r#""available":true,"enabled":false"#),
+            "{}",
+            sso(&a)
+        );
+        let verify = r#"{"user":"jan","password":"hasło-jana"}"#;
+        assert_eq!(
+            route(&a, &post("/api/sso/verify", verify, None)).status,
+            403
+        );
+        let mut on = req(
+            "PUT",
+            "/api/sso",
+            &[("X-VizRS-Live", "1"), ("Cookie", &jan)],
+        );
+        on.body = br#"{"enabled":true}"#.to_vec();
+        assert_eq!(route(&a, &on).status, 200);
+        assert!(sso(&a).contains(r#""enabled":true"#));
+        assert_eq!(
+            route(
+                &a,
+                &post(
+                    "/api/sso/verify",
+                    r#"{"user":"jan","password":"zle-haslo"}"#,
+                    None
+                )
+            )
+            .status,
+            401
+        );
+        let v = route(&a, &post("/api/sso/verify", verify, None));
+        assert_eq!(v.status, 200);
+        let vb = body(&v);
+        assert!(
+            vb.contains(r#""user":{"name":"jan","role":"admin"}"#),
+            "{vb}"
+        );
+        let sid = vb
+            .split("\"session\":\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .to_string();
+        assert_eq!(sid.len(), 64);
+        let by_cookie =
+            |a: &App, c: &str| route(a, &req("GET", "/api/sso/session", &[("Cookie", c)])).status;
+        assert_eq!(
+            by_cookie(&a, &format!("vizrs_live={sid}")),
+            200,
+            "sesja z verify"
+        );
+        assert_eq!(by_cookie(&a, &jan), 200, "sesja przeglądarki panelu");
+        assert_eq!(
+            by_cookie(&a, &cookie_of(&t)),
+            401,
+            "sesja tokenu to nie konto"
+        );
+        assert_eq!(by_cookie(&a, "vizrs_live=zly"), 401);
+        on.body = br#"{"enabled":false}"#.to_vec();
+        assert_eq!(route(&a, &on).status, 200);
+        assert_eq!(
+            by_cookie(&a, &jan),
+            403,
+            "wyłączone = koniec sesji w CG System"
+        );
+        // sesje przetrwały „restart” (nowy magazyn z tego samego katalogu)
+        a.accounts = std::sync::Mutex::new(Store::open(Some(dir.clone()), unix_now()));
+        assert_eq!(
+            route(&a, &req("GET", "/api/exposure", &[("Cookie", &jan)])).status,
+            200
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn operator_signature_with_account() {
+        assert_eq!(operator_for("jan", None), "VizRS Live · jan");
+        assert_eq!(
+            operator_for("jan", Some("Studio%201")),
+            "VizRS Live · jan (Studio 1)"
+        );
+        assert_eq!(operator_for("jan", Some("JAN")), "VizRS Live · jan");
+    }
+
+    #[test]
+    fn data_dir_allows_network_without_token() {
+        assert!(cfg(
+            &["--bridge-token", T, "--bind", "0.0.0.0", "--data", "/x"],
+            &[]
+        )
+        .is_ok());
+        assert!(cfg(
+            &["--bridge-token", T, "--bind", "0.0.0.0"],
+            &[("VIZRS_LIVE_DATA", "/x")]
+        )
+        .is_ok());
+        assert!(cfg(
+            &["--bridge-token", T, "--bind", "0.0.0.0"],
+            &[("VIZRS_LIVE_DATA", "")]
+        )
+        .is_err());
     }
 }

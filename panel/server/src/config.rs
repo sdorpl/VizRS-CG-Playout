@@ -20,6 +20,8 @@ pub struct Config {
     pub web: Option<PathBuf>,
     /// najwyżej tyle podglądów w mozaice Na antenie (K10; każdy to sesja Next, która koduje); 0 = bez mozaiki
     pub multiview_max: u32,
+    /// katalog danych panelu (konta i sesje); `None` = bez kont, logowanie tylko tokenem
+    pub data: Option<PathBuf>,
 }
 
 pub(crate) const HELP: &str = "vizrs-live – panel kanału nad ErsatzTV legacy
@@ -30,7 +32,9 @@ Użycie: vizrs-live [opcje]
   --port N              port panelu (VIZRS_LIVE_PORT, domyślnie 8090)
   --bridge URL          ErsatzTV legacy z mostem (VIZRS_LIVE_BRIDGE, domyślnie http://127.0.0.1:8409)
   --bridge-token T      token mostu, = VIZRS_BRIDGE_TOKEN w legacy (VIZRS_LIVE_BRIDGE_TOKEN, wymagany)
-  --token T             token panelu dla operatorów (VIZRS_LIVE_TOKEN; wymagany poza 127.0.0.1)
+  --token T             token awaryjny panelu: skrypty (Bearer) i pierwsze konto (VIZRS_LIVE_TOKEN)
+  --data KATALOG        konta operatorów i sesje (VIZRS_LIVE_DATA; w obrazie /data); poza 127.0.0.1
+                        wymagany token albo katalog danych
   --stream-url URL      publiczny adres strumieni legacy do odnośników (VIZRS_LIVE_STREAM_URL)
   --vizrs-url URL       VizRS CG System widziany z przeglądarki: podgląd /output i odnośnik do Trio;
                         sam port (:8788) = ten sam host co panel (VIZRS_LIVE_VIZRS_URL)
@@ -75,6 +79,9 @@ pub fn parse_config(
                 .map_err(|_| format!("zły VIZRS_LIVE_MULTIVIEW_MAX: {v}"))?,
             None => 4,
         },
+        data: env("VIZRS_LIVE_DATA")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from),
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -100,6 +107,7 @@ pub fn parse_config(
             "--cg-url" => c.cg_url = val()?,
             "--cg-token" => c.cg_token = val()?,
             "--web" => c.web = Some(PathBuf::from(val()?)),
+            "--data" => c.data = Some(PathBuf::from(val()?)).filter(|d| !d.as_os_str().is_empty()),
             "--multiview-max" => {
                 c.multiview_max = val()?
                     .parse()
@@ -139,9 +147,9 @@ pub fn parse_config(
         .parse::<IpAddr>()
         .map(|ip| ip.is_loopback())
         .unwrap_or(c.bind == "localhost");
-    if !loopback && c.token.is_none() {
+    if !loopback && c.token.is_none() && c.data.is_none() {
         return Err(format!(
-            "panel na {} wymaga tokenu (--token / VIZRS_LIVE_TOKEN)",
+            "panel na {} wymaga kont (--data / VIZRS_LIVE_DATA) albo tokenu (--token / VIZRS_LIVE_TOKEN)",
             c.bind
         ));
     }

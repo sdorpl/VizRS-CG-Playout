@@ -7,7 +7,10 @@ Web GUI ErsatzTV legacy **nie jest potrzebne** i jest zamknięte – wszystko ro
 ## 1. Wejście do panelu
 
 1. Otwórz `http://<serwer>:8090/` (adres poda administrator).
-2. Wpisz **token panelu** (`VIZRS_LIVE_TOKEN`) i „Zaloguj”. Sesja trwa 30 dni w tej przeglądarce; „wyloguj” = wyczyść ciasteczka strony.
+2. Wpisz swój **login i hasło** i „Zaloguj” (Enter też loguje). Sesja trwa 30 dni w tej przeglądarce i przeżywa aktualizację panelu; **Wyloguj** w pasku górnym kończy ją. Konto zakłada administrator (System → **Użytkownicy**). Hasło zmienisz sam: klik w **konto: …** w pasku górnym → **Moje konto** (tam też nazwa stanowiska do dziennika).
+   - **Pierwsze uruchomienie** (panel bez kont): okno „pierwsze uruchomienie” prosi o **kod z logu panelu** – w Portainerze: stos → kontener `live` → **Logs**, wiersz „kod pierwszej konfiguracji: XXXX-XXXX-XXXX” (wielkość liter i myślniki bez znaczenia; zamiast kodu można wpisać token `VIZRS_LIVE_TOKEN`). Podaj login i hasło (co najmniej 8 znaków) – to konto administratora. Potem dodaj konta operatorów w **Użytkownicy** (rola „operator” – wszystko poza kontami).
+   - **Jedno konto także w Trio** (opcja, administrator): Użytkownicy → „Logowanie w pakiecie VizRS” → zaznacz „Konta panelu logują też do VizRS Trio i Artist”. Wtedy ekran logowania Trio przyjmuje login i hasło z panelu, a kto jest zalogowany w panelu, wchodzi do Trio od razu (odnośnik „Trio ↗”). Odznaczenie albo usunięcie konta zamyka jego sesje w Trio w ciągu minuty.
+   - **Token awaryjny**: przycisk w oknie logowania (gdy stos ma `VIZRS_LIVE_TOKEN`) – logowanie tokenem jak dawniej, np. gdy nikt nie pamięta hasła administratora (potem w Użytkownicy ustaw nowe hasło).
 3. Po 10 nieudanych próbach w ciągu minuty panel przez minutę nie przyjmuje logowania („za dużo nieudanych logowań”) – odczekaj.
 
 Pasek górny: **wybór kanału** (obok nazwy panelu – Na antenie, EPG, Playouty i Sloty pokazują wtedy tylko ten kanał; „Wszystkie kanały” wyłącza filtr; przeglądarka pamięta wybór), stan mostu do legacy (zielony = działa), licznik playoutów z błędem budowy (klik → Playouty) i stan CG Playout. Liczby w menu – ile jest kanałów, kolekcji, playoutów itd. Przycisk **☰** (lewy górny róg) zwija menu do samych ikon – więcej miejsca na ekran, nazwa pod kursorem; przeglądarka pamięta wybór. Na telefonie ☰ wysuwa menu z boku.
@@ -72,7 +75,8 @@ Czerwony komunikat „legacy odrzucił: …” to odmowa ErsatzTV legacy z jego 
 | brak nowych plików | **Biblioteki** → „Skanuj”; plik w katalogu, którego biblioteka nie obejmuje, nie pojawi się |
 | EPG puste u widzów | „Przebuduj”; XMLTV pokazuje tylko zbudowane dni (Ustawienia → panel Przewodnik XMLTV) |
 | „wymaga komendy X na białej liście mostu” | wersja mostu nie zna funkcji – administrator |
-| „za dużo nieudanych logowań” | odczekaj minutę, wpisz token ponownie |
+| „za dużo nieudanych logowań” | odczekaj minutę, zaloguj się ponownie |
+| „zły login albo hasło” | sprawdź login i hasło; administrator ustawi nowe hasło w Użytkownicy (albo zaloguj się tokenem awaryjnym) |
 | studio nie wchodzi na antenę | **Sloty na żywo**: czy jest sygnał, czy kanał nie jest WSTRZYMANY (WPUŚĆ), czy w **Wejście** nie wybrano innego wejścia (sygnał czeka → wybierz je albo „automatycznie”) |
 
 Zawsze przy zgłoszeniu do administratora: godzina, kanał, treść komunikatu (albo zrzut ekranu).

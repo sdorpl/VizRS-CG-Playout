@@ -154,6 +154,11 @@ pub(crate) const STATIC: &[(&str, &str, &str)] = &[
         include_str!("../web/views/asrun.js"),
     ),
     (
+        "/views/uzytkownicy.js",
+        "text/javascript; charset=utf-8",
+        include_str!("../web/views/uzytkownicy.js"),
+    ),
+    (
         "/views/import.js",
         "text/javascript; charset=utf-8",
         include_str!("../web/views/import.js"),
@@ -195,52 +200,21 @@ pub(crate) fn route(app: &App, req: &Request) -> Response {
         );
     }
     match (req.method.as_str(), path) {
-        ("POST", "/api/login") => {
-            let given = String::from_utf8_lossy(&req.body).trim().to_string();
-            if app.cfg.token.is_some() && login_limited(app, req.peer, false) {
-                return Response::error(429, "za dużo nieudanych logowań – odczekaj minutę");
-            }
-            match &app.cfg.token {
-                Some(t) if eq_ct(&given, t) => {
-                    let id = match random_id() {
-                        Ok(id) => id,
-                        Err(e) => {
-                            eprintln!("login: {e}");
-                            return Response::error(500, "brak źródła losowości dla sesji");
-                        }
-                    };
-                    app.sessions
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .create(id.clone(), std::time::Instant::now());
-                    Response::json(200, "{\"ok\":true}").with_header(
-                        "Set-Cookie",
-                        session_cookie(req, &id, SESSION_IDLE.as_secs() as u32),
-                    )
-                }
-                Some(_) => {
-                    login_limited(app, req.peer, true);
-                    match req.peer {
-                        Some(ip) => eprintln!("login: zły token ({ip})"),
-                        None => eprintln!("login: zły token"),
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    Response::error(401, "zły token panelu")
-                }
-                None => Response::json(200, "{\"ok\":true}"),
-            }
-        }
-        ("POST", "/api/logout") => {
-            if let Some(id) = req.cookie(COOKIE) {
-                app.sessions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(id);
-            }
-            Response::json(200, "{\"ok\":true}")
-                .with_header("Set-Cookie", session_cookie(req, "", 0))
-        }
-        _ if !authorized(app, req) => Response::error(401, "zaloguj się tokenem panelu"),
+        ("GET", "/api/auth") => return auth_state(app, req),
+        ("POST", "/api/login") => return login(app, req),
+        ("POST", "/api/setup") => return setup(app, req),
+        ("POST", "/api/logout") => return logout(app, req),
+        (_, "/api/sso") => return sso(app, req, ""),
+        (_, p) if p.starts_with("/api/sso/") => return sso(app, req, &p["/api/sso/".len()..]),
+        _ => {}
+    }
+    let Some(who) = authorized(app, req) else {
+        return Response::error(401, "zaloguj się");
+    };
+    match (req.method.as_str(), path) {
+        ("POST", "/api/password") => change_password(app, req, &who),
+        (_, "/api/users") => users(app, req, &who, ""),
+        (_, p) if p.starts_with("/api/users/") => users(app, req, &who, &p["/api/users/".len()..]),
         ("GET", "/api/status") => status(app),
         ("GET", "/api/exposure") => exposure(app),
         ("GET", p) if p.starts_with("/api/cg/live/thumbs/") => {
@@ -251,7 +225,7 @@ pub(crate) fn route(app: &App, req: &Request) -> Response {
             m,
             &p["/api/cg/".len()..],
             &req.body,
-            &operator_name(req.header("x-operator")),
+            &operator_for(&who.user, req.header("x-operator")),
         ),
         ("GET", p) if p.starts_with("/api/stream/") => {
             stream_proxy(app, &p["/api/stream/".len()..])
@@ -364,7 +338,7 @@ pub(crate) fn status(app: &App) -> Response {
             app.cfg.vizrs_channels,
             app.cfg.multiview_max,
             app.cg.is_some(),
-            app.cfg.token.is_some()
+            auth_required(app)
         ),
     )
 }

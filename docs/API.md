@@ -87,8 +87,20 @@ Przeniesione z dokumentacji panelu (dawniej §3 „API panelu”); działanie pa
 | Ścieżka | Opis |
 |---|---|
 | `GET /health` | `{"ok":true}`, bez logowania (HEALTHCHECK) |
-| `POST /api/login` | treść = token panelu; zakłada sesję i ustawia ciasteczko `vizrs_live` z jej losowym identyfikatorem (HttpOnly, SameSite=Strict, 30 dni) |
+| `GET /api/auth` | bez logowania: `{"required","accounts","setup","token","broken","user"}` – czy panel wymaga logowania, czy ma konta (katalog danych), czy czeka na pierwsze konto, czy jest token awaryjny, powód wyłączenia kont, zalogowany `{"name","role"}` (`name` pusty = token awaryjny); kodu pierwszej konfiguracji tu nie ma |
+| `POST /api/login` | JSON `{"user","password"}` – konto (login bez względu na wielkość liter; zły login i złe hasło = ta sama odpowiedź 401 „zły login albo hasło”); `{"token"}` albo sam tekst tokenu w treści – token awaryjny (`--token`). Zakłada sesję i ustawia ciasteczko `vizrs_live` z jej losowym identyfikatorem (HttpOnly, SameSite=Strict, 30 dni). Konta wyłączone, a podano login = 409 |
+| `POST /api/setup` | pierwsze konto administratora, tylko dopóki nie ma żadnego konta: `{"code","user","password"}`, `code` = kod pierwszej konfiguracji z logu panelu albo token awaryjny; wynik jak przy logowaniu (sesja + ciasteczko); konto już jest = 409, zły kod = 401 (liczy się do limitu logowań) |
 | `POST /api/logout` | usuwa sesję z magazynu panelu i ciasteczko |
+| `POST /api/password` | własne hasło: `{"old","new"}`; złe obecne = 403; inne sesje konta są wylogowane; sesja tokenu = 400 |
+| `GET /api/users` | (administrator) `[{"name","role","created","sessions","lastSeen"}]` – czasy w sekundach od 1970, bez skrótów haseł; operator = 403, konta wyłączone = 409 |
+| `POST /api/users` | (administrator) nowe konto `{"user","password","role"}` (`role`: `admin` albo `operator`, domyślnie `operator`); login: litery, cyfry, `.`, `-`, `_`, 1–32 znaki (zapisywany małymi literami); hasło 8–256 znaków |
+| `PUT /api/users/{login}` | (administrator) `{"role"?, "password"?}`; nowe hasło wylogowuje sesje konta; odebranie roli jedynemu administratorowi = 409 |
+| `DELETE /api/users/{login}` | (administrator) usuwa konto i jego sesje; jedynego administratora nie można usunąć (409) |
+| `POST /api/users/{login}/logout` | (administrator) wylogowuje wszystkie sesje konta |
+| `GET /api/sso` | bez logowania: `{"available","enabled"}` – czy panel ma konta i czy włączono **logowanie w pakiecie** (konta panelu logują do VizRS CG System – Trio, Artist; domyślnie wyłączone) |
+| `PUT /api/sso` | (administrator) `{"enabled":bool}`; zapis w `settings.json` katalogu danych |
+| `POST /api/sso/verify` | dla serwera VizRS CG System (`--panel-login`): `{"user","password"}` → `{"user":{"name","role"},"session"}` – sprawdza konto jak logowanie (ten sam limit prób i odpowiedź 401 „zły login albo hasło”) i zakłada sesję konta w panelu; `session` (64 znaki szesnastkowe) służy potem do `GET /api/sso/session`. Przełącznik wyłączony = 403 |
+| `GET /api/sso/session` | z ciasteczkiem `vizrs_live=<sesja>`: `{"user":{"name","role"}}` dla sesji konta (sesja tokenu awaryjnego = 401); nieważna sesja = 401, przełącznik wyłączony = 403. VizRS CG System pyta tak co minutę – usunięcie konta, wylogowanie albo wyłączenie przełącznika kończy jego sesję w Trio |
 | `GET /api/status` | wersje, adresy, stan mostu (`bridge`, `bridgeError`) |
 | `GET /api/exposure` | (R10) kody HTTP ścieżek `/`, `/channels`, `/vizrs-bridge/health`, `/iptv/channels.m3u` pod adresem dla widzów (`--stream-url`), sprawdzane z serwera panelu: `{"url","error","probes":[{"path","status"}]}` |
 | `GET /api/commands` | lista z mostu |

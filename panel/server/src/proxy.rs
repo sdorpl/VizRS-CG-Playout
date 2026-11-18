@@ -263,11 +263,9 @@ pub fn cg_path(method: &str, rest: &str) -> Option<String> {
     Some(p)
 }
 
-/// Nazwa stanowiska do dziennika CG Playout: nagłówek `X-Operator` przeglądarki
-/// (zakodowany `encodeURIComponent`, bo fetch nie wysyła polskich liter w nagłówku),
-/// bez znaków sterujących, do 40 znaków; zawsze z przedrostkiem „VizRS Live”.
-pub fn operator_name(raw: Option<&str>) -> String {
-    let bytes = raw.unwrap_or("").as_bytes();
+/// Dekodowanie `%XX` (jak `decodeURIComponent`; zły ciąg zostaje dosłownie, złe UTF-8 → U+FFFD).
+pub fn url_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
@@ -286,11 +284,25 @@ pub fn operator_name(raw: Option<&str>) -> String {
             }
         }
     }
-    let name: String = String::from_utf8_lossy(&out)
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(40)
-        .collect();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Podpis w dzienniku CG Playout: konto (gdy zalogowano kontem) i stanowisko z nagłówka `X-Operator`
+/// przeglądarki (zakodowane `encodeURIComponent`, bo fetch nie wysyła polskich liter w nagłówku),
+/// np. „VizRS Live · jan (Studio 1)”; bez znaków sterujących, do 40 znaków.
+pub fn operator_for(user: &str, station: Option<&str>) -> String {
+    let st = url_decode(station.unwrap_or(""));
+    let st = st.trim();
+    match (user.is_empty(), st.is_empty()) {
+        (true, _) => operator_label(st),
+        (false, true) => operator_label(user),
+        (false, false) if st.eq_ignore_ascii_case(user) => operator_label(user),
+        (false, false) => operator_label(&format!("{user} ({st})")),
+    }
+}
+
+fn operator_label(raw: &str) -> String {
+    let name: String = raw.chars().filter(|c| !c.is_control()).take(40).collect();
     match name.trim() {
         "" => "VizRS Live".into(),
         n => format!("VizRS Live · {n}"),

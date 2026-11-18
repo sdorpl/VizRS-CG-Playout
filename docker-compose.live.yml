@@ -19,6 +19,11 @@
 # Caddyfile proxy to kopia panel/docker/proxy.Caddyfile (wpisana tu, bo Portainer nie montuje plików repo);
 # zgodność sprawdza panel/scripts/check-caddy.sh (bramka i CI panelu).
 services:
+  # VizRS (profil grafika): logowanie do Trio i Artist kontami panelu, gdy panel ma włączone
+  # „logowanie w pakiecie” (Użytkownicy); bez przełącznika albo bez panelu – jak dotąd, tokenem
+  vizrs:
+    environment:
+      VIZRS_PANEL_LOGIN: http://live:8090
   ersatztv:
     image: ${LIVE_LEGACY_IMAGE:-ghcr.io/sdorpl/vizrs-live-legacy:latest}
     environment:
@@ -53,7 +58,8 @@ services:
       TZ: Europe/Warsaw
       VIZRS_LIVE_BRIDGE: http://ersatztv:8409
       VIZRS_LIVE_BRIDGE_TOKEN: ${VIZRS_BRIDGE_TOKEN}
-      VIZRS_LIVE_TOKEN: ${VIZRS_LIVE_TOKEN:?ustaw VIZRS_LIVE_TOKEN}
+      # konta operatorów zakłada się w panelu (pierwsze konto: kod z logu kontenera); token – awaryjny, opcjonalny
+      VIZRS_LIVE_TOKEN: ${VIZRS_LIVE_TOKEN:-}
       VIZRS_LIVE_STREAM_URL: ${VIZRS_LIVE_STREAM_URL:-}
       # VizRS widziany z przeglądarki: sam port = host, pod którym otwarto panel
       VIZRS_LIVE_VIZRS_URL: ${VIZRS_LIVE_VIZRS_URL:-:${VIZRS_PORT:-8788}}
@@ -66,8 +72,13 @@ services:
     # media tak jak w legacy (ścieżki pozycji 1:1), tylko odczyt – odtwarzanie plików lokalnych w Przeglądarce bez legacy
     volumes:
       - ${MEDIA_DIR:-seed-media}:${MEDIA_MOUNT:-/media}:ro
+      - live-data:/data
     ports:
       - "${VIZRS_LIVE_PORT:-8090}:8090"
+
+volumes:
+  live-data:
+    name: ${STACK_PREFIX:-${COMPOSE_PROJECT_NAME}}_live-data
 
 configs:
   live-proxy:

@@ -137,7 +137,7 @@ cd server && cargo build --release                        # sam panel
 
 | Adres | Co |
 |---|---|
-| `http://<serwer>:8090/` | panel (logowanie tokenem `VIZRS_LIVE_TOKEN`) |
+| `http://<serwer>:8090/` | panel (konta operatorów: login i hasło, pierwsze konto kodem z logu kontenera; token awaryjny `VIZRS_LIVE_TOKEN`) |
 | `http://<serwer>:8409/iptv/channels.m3u`, `/iptv/xmltv.xml` | widzowie – przez proxy Caddy (web GUI legacy i most z zewnątrz = 403) |
 
 Stos testowy (`tests/stack.sh up|seed|test|down|reset|mem`, dane w `$VIZRS_LIVE_TEST_DIR`, domyślnie `~/.cache/vizrs-live-test` – nie w `/tmp`, bo to często tmpfs, czyli RAM; limity pamięci: DOKUMENTACJA §7 „Testy panelu”):
@@ -222,7 +222,8 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `bridge/Bridge.cs` | VizRS Bridge (C#, .NET 10): hak startowy, `/vizrs-bridge/{health,commands,command/…,upload/…}`, refleksja po `ErsatzTV.Application`, serializacja wyników |
 | `bridge/commands.txt` | biała lista komend legacy (jedna w wierszu, `#` – komentarz) |
 | `server/src/main.rs` | serwer panelu: start, połączenia, healthcheck, stan aplikacji |
-| `server/src/config.rs`, `session.rs` | opcje i `VIZRS_LIVE_*`; sesje, ciasteczko, logowanie i limit prób, autoryzacja |
+| `server/src/config.rs`, `session.rs` | opcje i `VIZRS_LIVE_*`; ciasteczko, logowanie (konto, token, pierwsze konto), limit prób, autoryzacja, API kont `/api/users` |
+| `server/src/accounts.rs`, `crypto.rs` | konta i sesje w katalogu danych (`users.json`, `sessions.json`, role); SHA-256, HMAC, PBKDF2 bez crate'ów |
 | `server/src/routes.rs` | routing `/api/*`, komendy ErsatzTV, stan, `STATIC` (CSRF/CSP – `http.rs`) |
 | `server/src/proxy.rs`, `upload.rs`, `secrets.rs` | pośrednik ErsatzTV i CG (`/api/cg/…`, strumienie, podgląd, miniatury); przesyłanie obrazów; `mask_secrets` |
 | `server/src/bridge.rs` | klient HTTP mostu i CG Playout (sieć wewnętrzna) |

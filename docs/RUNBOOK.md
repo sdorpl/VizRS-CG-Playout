@@ -26,7 +26,7 @@ Dane: wolumen `ersatztv-config` (albo katalog z `ERSATZTV_CONFIG`; cała baza i 
 ## 2. Wdrożenie
 
 1. Docker z Compose v2 i repozytorium (`docker-compose.yml`, `docker-compose.live.yml` w korzeniu).
-2. Plik `.env` w korzeniu repozytorium (wzór zmiennych panelu: `panel/.env.example`); wygeneruj dwa **różne** tokeny: `head -c 24 /dev/urandom | base64 | tr -d '/+='` → `VIZRS_BRIDGE_TOKEN`, `VIZRS_LIVE_TOKEN`. Ustaw `MEDIA_DIR` (i `MEDIA_MOUNT`), `TZ`, `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409` (adres dla widzów). Jeśli stos ma nadawać z grafiką VizRS, ustaw `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest`). `chmod 600 .env`.
+2. Plik `.env` w korzeniu repozytorium (wzór zmiennych panelu: `panel/.env.example`); wygeneruj token mostu `head -c 24 /dev/urandom | base64 | tr -d '/+='` → `VIZRS_BRIDGE_TOKEN`; `VIZRS_LIVE_TOKEN` (token awaryjny panelu, inny niż mostu) – opcjonalny, potrzebny dla okna AppImage i skryptów. Konta operatorów zakłada się w panelu: po pierwszym starcie otwórz panel i wpisz kod z `docker compose logs live` („kod pierwszej konfiguracji”) – [DOKUMENTACJA §11](DOKUMENTACJA.md#11-panel-vizrs-live). Ustaw `MEDIA_DIR` (i `MEDIA_MOUNT`), `TZ`, `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409` (adres dla widzów). Jeśli stos ma nadawać z grafiką VizRS, ustaw `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest`). `chmod 600 .env`.
 3. Uruchomienie stosu:
    ```bash
    # Z grafiką VizRS (emisja):
@@ -50,7 +50,7 @@ Dane: wolumen `ersatztv-config` (albo katalog z `ERSATZTV_CONFIG`; cała baza i 
 > [!WARNING]
 > **Ważne ostrzeżenie dla Portainera (stosy z grafiką):** Stosy w Portainerze, które mają grafikę VizRS, **MUSZĄ** mieć ustawioną zmienną środowiskową stosu `COMPOSE_PROFILES=grafika` (lub `COMPOSE_PROFILES=grafika,ingest` dla live ingest) **PRZED** pierwszym wdrożeniem wersji z profilami compose. Z dawną wartością `COMPOSE_PROFILES=ingest` compose odrzuca nowy plik (`ingest` zależy od wyłączonego `cg`) i stos przestaje się aktualizować; z pustą wartością compose pomija `vizrs` i `cg`, co zdejmuje grafikę z anteny. Wartość `grafika,ingest` działa też ze starszą wersją compose (nieznany profil jest ignorowany), więc można ją ustawić wcześniej.
 
-**Aplikacja okienna i dostęp ze stacji operatora.** Aplikacja okienna (`VizRS-CG-Playout-<wersja>-x86_64.AppImage`) to wyłącznie natywny klient panelu działającego na serwerze produkcyjnym (nie zawiera panelu lokalnego). Port 8090 nie powinien być wystawiony bezpośrednio na zewnątrz. Dostęp ze stacji operatora realizowany jest przez proxy nginx z własną domeną i certyfikatem TLS na serwerze produkcyjnym. Operator w oknie „VizRS CG Playout – połącz z panelem” wpisuje `https://<domena serwera>` i token panelu (`VIZRS_LIVE_TOKEN`).
+**Aplikacja okienna i dostęp ze stacji operatora.** Aplikacja okienna (`VizRS-CG-Playout-<wersja>-x86_64.AppImage`) to wyłącznie natywny klient panelu działającego na serwerze produkcyjnym (nie zawiera panelu lokalnego). Port 8090 nie powinien być wystawiony bezpośrednio na zewnątrz. Dostęp ze stacji operatora realizowany jest przez proxy nginx z własną domeną i certyfikatem TLS na serwerze produkcyjnym. Operator w oknie „VizRS CG Playout – połącz z panelem” wpisuje `https://<domena serwera>` i token panelu (`VIZRS_LIVE_TOKEN` – okno łączy się dalej tokenem awaryjnym, nie kontem).
 
 **Przykład konfiguracji nginx reverse proxy przed panelem:**
 ```nginx
@@ -95,7 +95,7 @@ W Portainerze (stos z GitHuba, np. s1):
 3. **Environment variables**:
    - `COMPOSE_PROFILES=grafika` (lub `grafika,ingest` dla live ingest – **pamiętaj o ustawieniu przed wdrożeniem!**),
    - `VIZRS_BRIDGE_TOKEN` (token mostu),
-   - `VIZRS_LIVE_TOKEN` (logowanie do panelu i okna AppImage),
+   - `VIZRS_LIVE_TOKEN` (opcjonalny token awaryjny: okno AppImage, skrypty, pierwsze konto zamiast kodu z logu; operatorzy logują się kontami z panelu),
    - `VIZRS_PANEL_TOKEN` (token live API sidecara),
    - `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`.
 4. **Deploy the stack** / **Pull and redeploy**. Przed pierwszym razem zrób kopię `etv-config` (§3) i porównaj wersję legacy w obrazie z mostem z działającą.
@@ -182,6 +182,7 @@ docker compose start ersatztv
 - Zawsze **przed** aktualizacją legacy (nowsze legacy migruje bazę, starsze już jej nie otworzy).
 - W kopii są sekrety (`*-secrets.json`: klucze Jellyfin/Emby/Plex, `api-secrets.json`) – szyfruj kopię poza serwerem.
 - `.env` (tokeny) kopiuj osobno.
+- Konta panelu: wolumen `live-data` (`users.json`, `sessions.json` – skróty haseł, nie hasła); kopia np. `docker run --rm -v <prefiks>_live-data:/d -v "$PWD":/b alpine cp /d/users.json /b/` (prawa 0600 zachowaj).
 - W `etv-config` jest też katalog mostu `vizrs-bridge/` (klatkaż profili kodowania, `framerates.json`) – kopia całego wolumenu go obejmuje.
 
 ## 4. Aktualizacja
@@ -218,15 +219,19 @@ Potem: Diagnostyka (most zielony), **Playouty → Resetuj wszystkie** (ramówka 
 |---|---|
 | most czerwony | `docker compose ps`, `docker compose logs --tail 200 ersatztv`; `VIZRS_BRIDGE_TOKEN` w `.env` ten sam dla obu usług; po restarcie legacy startuje do minuty |
 | `commandsMissing` niepuste (Diagnostyka) | najnowsze legacy zmieniło komendy – wersja w Diagnostyce; tymczasowo `LEGACY_IMAGE=ghcr.io/ersatztv/legacy:v<poprzednia>` w `.env`, zgłoś do poprawki mostu |
-| panel nie startuje | `docker compose logs live` – brak/za krótki token (min. 16 znaków, litery, cyfry, `-._~`) |
+| panel nie startuje | `docker compose logs live` – za krótki token (min. 16 znaków, litery, cyfry, `-._~`) albo poza 127.0.0.1 ani tokenu, ani `VIZRS_LIVE_DATA` |
+| pierwsze uruchomienie – jaki kod? | `docker compose logs live` (Portainer: kontener `live` → Logs): „kod pierwszej konfiguracji: …”; po restarcie panelu kod jest nowy; zamiast kodu – `VIZRS_LIVE_TOKEN` |
+| w logu „KONTA WYŁĄCZONE” | plik `users.json` na wolumenie `live-data` uszkodzony albo wolumen tylko do odczytu – panel loguje tylko tokenem awaryjnym; przywróć plik z kopii (§3) i `docker compose restart live` |
+| Trio nie pokazuje loginu i hasła | w panelu (Użytkownicy) włączone „logowanie w pakiecie”? VizRS z obsługą kont panelu i `VIZRS_PANEL_LOGIN` (nakładka `docker-compose.live.yml`, profil `grafika`); stan przełącznika VizRS pamięta 10 s |
+| nikt nie pamięta hasła administratora | zaloguj się tokenem awaryjnym (przycisk „Token awaryjny”) i w Użytkownicy ustaw nowe hasło; stos bez tokenu: dopisz `VIZRS_LIVE_TOKEN` w zmiennych stosu i zaktualizuj stos |
 | widzowie bez strumieni | `curl -I http://<serwer>:8409/iptv/channels.m3u`; `docker compose logs proxy` |
 | dysk pełny | `etv-config/ffmpeg-reports`, `logs`; Diagnostyka → konserwacja (segmenty HLS są w tmpfs `/transcode`, czyli w RAM – nie na dysku) |
 | pamięć RAM | segmenty HLS kanałów w tmpfs `/transcode` (`docker compose exec ersatztv df -h /transcode`); legacy bez limitu sterty .NET – limit tylko na Ampere (nakładka CG Playout) |
-| po aktualizacji / restarcie panelu okno logowania | zamierzone – sesje są w pamięci panelu (K1); zaloguj się ponownie |
-| 429 przy logowaniu | odczekaj minutę; w dzienniku panelu »login: zły token (adres)« |
+| po aktualizacji / restarcie panelu okno logowania | panel bez wolumenu `live-data` (stara nakładka compose) trzyma sesje w pamięci – zaktualizuj stos; z wolumenem sesje przeżywają restart |
+| 429 przy logowaniu | odczekaj minutę; w dzienniku panelu »login: zły token (adres)« albo »login: złe hasło albo login … (adres)« |
 | potrzebne web GUI legacy (wyjątkowo) | tunel SSH albo tymczasowo `ports: ["127.0.0.1:8410:8409"]` przy `ersatztv` ([DOKUMENTACJA.md §15](DOKUMENTACJA.md#15-zamknięcie-web-gui-legacy-r10)); cofnij po pracy |
 
-**Wymiana tokenu panelu** (np. odejście operatora): nowy `VIZRS_LIVE_TOKEN` w `.env`, `docker compose up -d live` – restart panelu unieważnia wszystkie sesje (magazyn sesji jest w pamięci, [DOKUMENTACJA.md §11](DOKUMENTACJA.md#11-panel-vizrs-live)); skrypty z `Authorization: Bearer` muszą dostać nowy token. Token mostu: nowy `VIZRS_BRIDGE_TOKEN`, `docker compose up -d` (obie usługi).
+**Odejście operatora:** System → Użytkownicy → „Usuń” (konto i jego sesje znikają od razu) – bez zmian w `.env`. **Wymiana tokenu awaryjnego:** nowy `VIZRS_LIVE_TOKEN` w `.env`, `docker compose up -d live`; sesje założone tokenem trwają do wylogowania albo 30 dni (z wolumenem `live-data` przeżywają restart – ich koniec: usuń `sessions.json` z wolumenu przed restartem); skrypty z `Authorization: Bearer` muszą dostać nowy token. Token mostu: nowy `VIZRS_BRIDGE_TOKEN`, `docker compose up -d` (obie usługi).
 
 ## 7. Wydanie nowej wersji (opiekun repozytorium)
 
@@ -281,7 +286,7 @@ W Portainerze obowiązują wartości domyślne `docker-compose.live.yml`: panel 
 
 | Obszar | Stan | Zmiana w 1.0 |
 |---|---|---|
-| tokeny | panel i most: min. 16 znaków, porównanie w stałym czasie (`eq_ct`); most bez tokenu = 503; panel poza 127.0.0.1 nie startuje bez tokenu; token CG zostaje w serwerze | **limit logowań na IP**: 10 błędów w oknie 60 s → 429 dla adresu (bezpiecznik łączny 100/60 s, pamięć do 4096 IP, bez zaufania do `X-Forwarded-For`), wpis w dzienniku: `login: zły token (<IP>)` |
+| tokeny | panel i most: min. 16 znaków, porównanie w stałym czasie (`eq_ct`); most bez tokenu = 503; panel poza 127.0.0.1 nie startuje bez tokenu albo kont; konta: hasła PBKDF2-HMAC-SHA256 (310 000 iteracji, sól), sesje w pliku jako skrót SHA-256, pliki 0600, pierwsze konto tylko z kodem z logu albo tokenem; token CG zostaje w serwerze | **limit logowań na IP**: 10 błędów w oknie 60 s → 429 dla adresu (bezpiecznik łączny 100/60 s, pamięć do 4096 IP, bez zaufania do `X-Forwarded-For`), wpis w dzienniku: `login: zły token (<IP>)` |
 | sesja | ciasteczko `HttpOnly`, `SameSite=Strict`, 30 dni bezczynności; wartość = losowy identyfikator sesji z magazynu w pamięci (K1), „Wyloguj” unieważnia sesję, restart panelu – wszystkie | `Secure` za proxy TLS |
 | CSRF | `X-VizRS-Live: 1` na każde żądanie zmieniające (też logowanie, `PUT`, `DELETE`), `SameSite=Strict` | e2e na osobnym panelu z tokenem |
 | CSP / XSS | tekst do DOM tylko `textContent`, brak `innerHTML`/`eval` w `server/web/` (sprawdzone `grep`), bez inline | CSP na **wszystkich** odpowiedziach (wcześniej tylko wbudowane UI), dodane `object-src`, `base-uri`, `form-action`, `frame-ancestors` |

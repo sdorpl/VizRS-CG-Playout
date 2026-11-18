@@ -1921,6 +1921,60 @@ function check(cond, msg) {
     check(tries.filter((x) => x === 401).length >= 9 && after === 429, `logowanie: po 10 nieudanych próbach 429 nawet dla dobrego tokenu (${after})`);
   } finally { secProc.kill(); }
 
+  // ---------- konta operatorów (logowanie loginem i hasłem, konfiguracja z panelu) – osobny panel z --data na 18093 ----------
+  const ACC = 'http://127.0.0.1:18093';
+  const accDir = require('fs').mkdtempSync(path.join(require('os').tmpdir(), 'vizrs-live-e2e-konta-'));
+  let accLog = '';
+  const accProc = require('child_process').spawn(path.join(__dirname, '..', 'server', 'target', 'release', 'vizrs-live'),
+    ['--port', '18093', '--bridge', 'http://127.0.0.1:18409', '--bridge-token', 'test-token-0123456789', '--token', PTOK, '--data', accDir], { stdio: ['ignore', 'ignore', 'pipe'] });
+  accProc.stderr.on('data', (d) => { accLog += d; });
+  try {
+    for (let i = 0; i < 50; i++) { try { if ((await fetch(`${ACC}/health`)).ok) break; } catch {} await new Promise((r) => setTimeout(r, 100)); }
+    const code = /kod pierwszej konfiguracji: ([A-Z0-9-]{14})/.exec(accLog)?.[1];
+    check(!!code, 'konta: kod pierwszej konfiguracji w logu panelu');
+    const au = (await (await fetch(`${ACC}/api/auth`)).json()).result;
+    check(au.setup && au.accounts && !JSON.stringify(au).includes(code), 'konta: /api/auth – pierwsze uruchomienie, bez kodu w odpowiedzi');
+    const ap = await browser.newPage();
+    await ap.goto(`${ACC}/#antena`);
+    await ap.waitForSelector('#setup-code');
+    await shot('konta-pierwsze', ap);
+    await ap.fill('#setup-code', code.toLowerCase());
+    await ap.fill('#setup-user', 'Szef');
+    await ap.fill('#setup-pass', 'haslo-szefa-1'); await ap.fill('#setup-pass2', 'haslo-szefa-1');
+    await ap.click('#dlg-buttons button.acc');
+    await ap.waitForSelector('main[data-view="antena"] .head h1');
+    check(/konto: szef/.test(await ap.textContent('#st-operator')), 'konta: pierwsze konto administratora i zalogowanie');
+    check(await ap.isVisible('#nav-users'), 'konta: administrator widzi „Użytkownicy”');
+    await ap.goto(`${ACC}/#uzytkownicy`);
+    await ap.waitForSelector('main[data-view="uzytkownicy"] #nu-user');
+    await ap.fill('#nu-user', 'ola'); await ap.fill('#nu-pass', 'haslo-oli-1');
+    await ap.click('button:has-text("Dodaj konto")');
+    await ap.waitForSelector('main[data-view="uzytkownicy"] td b:text-is("ola")');
+    await shot('konta-uzytkownicy', ap);
+    await ap.click('#logout');
+    await ap.waitForSelector('#login-user');
+    await ap.fill('#login-user', 'ola'); await ap.fill('#login-pass', 'zle-haslo-1'); await ap.press('#login-pass', 'Enter');
+    await ap.waitForSelector('#toast.bad');
+    check(/zły login albo hasło/.test(await ap.textContent('#toast')), 'konta: złe hasło – komunikat');
+    await ap.waitForSelector('#login-user');
+    await ap.fill('#login-user', 'Ola'); await ap.fill('#login-pass', 'haslo-oli-1'); await ap.press('#login-pass', 'Enter');
+    await ap.waitForSelector('main[data-view] .head h1');
+    check(await ap.isHidden('#nav-users'), 'konta: operator nie widzi „Użytkownicy”');
+    const sid = (await ap.context().cookies(ACC)).find((c) => c.name === 'vizrs_live');
+    check((await fetch(`${ACC}/api/users`, { headers: { Cookie: `vizrs_live=${sid.value}` } })).status === 403, 'konta: operator nie zarządza kontami (403)');
+    check((await fetch(`${ACC}/api/status`, { headers: { Authorization: `Bearer ${PTOK}` } })).status === 200, 'konta: token awaryjny dalej działa (skrypty)');
+    await ap.close();
+    // sesja przetrwa restart panelu
+    accProc.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    const again = require('child_process').spawn(path.join(__dirname, '..', 'server', 'target', 'release', 'vizrs-live'),
+      ['--port', '18093', '--bridge', 'http://127.0.0.1:18409', '--bridge-token', 'test-token-0123456789', '--data', accDir], { stdio: 'ignore' });
+    try {
+      for (let i = 0; i < 50; i++) { try { if ((await fetch(`${ACC}/health`)).ok) break; } catch {} await new Promise((r) => setTimeout(r, 100)); }
+      check((await fetch(`${ACC}/api/status`, { headers: { Cookie: `vizrs_live=${sid.value}` } })).status === 200, 'konta: sesja przetrwała restart panelu');
+    } finally { again.kill(); }
+  } finally { accProc.kill(); require('fs').rmSync(accDir, { recursive: true, force: true }); }
+
   cgServer.close(); // dopiero na końcu: pasek górny co 5 s pyta CG Playout o studio na antenie
   check(errors.length === 0, 'brak błędów JS' + (errors.length ? ': ' + errors.join(' | ') : ''));
   await browser.close();
