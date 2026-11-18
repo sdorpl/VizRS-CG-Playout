@@ -231,7 +231,15 @@ z EXTINF – ta sama playlista HLS, ciągłe znaczniki czasu). Nowy przebieg
 dostaje nowy strumień klatek tej samej sesji
 (`/ffmpeg/frames?session=N&rev=R&zones=…&at=S&area=1`: klatki w podanych
 strefach, klatka 0 w sekundzie S kawałka), a poprzedni strumień znika – sesja
-elementu kończy się dopiero z ostatnim.
+elementu kończy się dopiero z ostatnim. Dotyczy to także przebiegu live
+(przejęcie, §1 Live ingest): po poszerzeniu stref kończy się i rusza od nowa
+z nowymi strefami, a sidecar dokłada sygnał od miejsca, w którym przebieg
+stanął (`take`). Do 2026-11-18 restartował się tylko przebieg ramówki: live
+jechał na starym strumieniu klatek, który sidecar wstrzymywał (niżej) – w
+miejscu belek wychodziły poszarpane, kolorowe pasy, a zatrzymanie takiego
+przebiegu trwało ok. 3 s. Typowo na starcie kawałka po ręcznym TAKE z panelu:
+strona bez śladu poszerzała strefy w ciągu 0,1 s. W logu nakładki: `live run
+restarted for new graphics zones`.
 
 **Grafika nie jest ucinana na wejściu.** Strumień klatek nakładki sprawdza
 każdy nowy obraz, zanim zamieni go na klatkę: gdy którakolwiek narysowana
@@ -2306,11 +2314,29 @@ nigdy tego nie odrobił: playlista widzów była pusta przez 3,5 h, aż do resta
 ErsatzTV. Nakładka przed kawałkiem czyta z playlisty (ErsatzTV nadpisuje ją
 własną osią czasu przed każdym kawałkiem), o ile kanał jest za zegarem, a w
 trakcie przebiegu live co sekundę dolicza czas zegara minus wyprodukowany
-materiał. Powyżej 10 s (`LIVE_BEHIND_MAX`) przebieg live jest kończony, a
-kawałek leci z harmonogramu (ErsatzTV robi go wtedy szybciej niż w czasie
-rzeczywistym), aż oś czasu dogoni zegar; potem live wraca. W logu ErsatzTV:
-`live leaves the channel's timeline … s behind the clock; the schedule makes it
-up`, `the channel's timeline caught up with the clock`, a na starcie kawałka
+materiał. Dwa progi (`src/takeover.rs`):
+- **przebieg wolniejszy od zegara** – gdy przebieg live od swojego startu
+  stracił do zegara ponad 10 s (`LIVE_LAG_MAX`), źródło jest za wolne:
+  przebieg jest kończony, a live wraca najwcześniej po 30 s (w logu `the live
+  run lost … s against the clock (the source is slower than the clock)`);
+- **oś czasu daleko za zegarem** – powyżej 60 s (`LIVE_BEHIND_MAX`, połowa
+  z 2 min, po których ErsatzTV kasuje segmenty) przebieg live jest kończony
+  i leci harmonogram; nowy przebieg live nie rusza, dopóki oś czasu jest dalej
+  niż 45 s za zegarem (`LIVE_BEHIND_START`) – na starcie kawałka i po
+  nadgonieniu. Harmonogram nadgania tylko wtedy, gdy ErsatzTV robi kawałki
+  szybciej niż w czasie rzeczywistym; z `VIZRS_FFMPEG_SYNC_RAM` idzie w tempie
+  zegara i oś czasu zostaje tam, gdzie była.
+
+Do 2026-11-18 był jeden próg 10 s, w trakcie przebiegu i na starcie, a live
+wracał dopiero przy osi czasu równej zegarowi. Jeden wolny kawałek ramówki
+(np. restart przebiegu dla stref grafiki) zostawiał kanał 10–14 s za zegarem;
+sam start przebiegu live (ok. 1 s bez materiału) przekraczał wtedy próg, więc
+każdy kawałek dawał ok. 1 s live, a potem harmonogram – na antenie klatkowanie
+i skoki obrazu, a grafika przejęcia wchodziła i schodziła co 44 s (lokalny
+stos, wejście YouTube; także LUKI z 2026-11-14 po restarcie ErsatzTV). W logu
+ErsatzTV: `live leaves the channel's timeline … s behind the clock; the
+schedule takes over`, `the channel's timeline is … s behind the clock: live
+may come back`, a na starcie kawałka
 `the channel's timeline is … s behind the clock`. Playlista samych skasowanych
 segmentów (sekwencja powyżej 0, nic na liście) liczy się jako 2 min za zegarem.
 
