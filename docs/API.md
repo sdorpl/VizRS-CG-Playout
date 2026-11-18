@@ -100,7 +100,7 @@ Przeniesione z dokumentacji panelu (dawniej §3 „API panelu”); działanie pa
 | `GET /api/sso` | bez logowania: `{"available","enabled"}` – czy panel ma konta i czy włączono **logowanie w pakiecie** (konta panelu logują do VizRS CG System – Trio, Artist; domyślnie wyłączone) |
 | `PUT /api/sso` | (administrator) `{"enabled":bool}`; zapis w `settings.json` katalogu danych |
 | `POST /api/sso/verify` | dla serwera VizRS CG System (`--panel-login`): `{"user","password"}` → `{"user":{"name","role"},"session"}` – sprawdza konto jak logowanie (ten sam limit prób i odpowiedź 401 „zły login albo hasło”) i zakłada sesję konta w panelu; `session` (64 znaki szesnastkowe) służy potem do `GET /api/sso/session`. Przełącznik wyłączony = 403 |
-| `GET /api/sso/session` | z ciasteczkiem `vizrs_live=<sesja>`: `{"user":{"name","role"}}` dla sesji konta (sesja tokenu awaryjnego = 401); nieważna sesja = 401, przełącznik wyłączony = 403. VizRS CG System pyta tak co minutę – usunięcie konta, wylogowanie albo wyłączenie przełącznika kończy jego sesję w Trio |
+| `GET /api/sso/session` | z ciasteczkiem `vizrs_live=<sesja>`: `{"user":{"name","role"}}` dla sesji konta (sesja tokenu awaryjnego = 401); nieważna sesja = 401, przełącznik wyłączony = 403. VizRS CG System pyta tak co 15 s – usunięcie konta, wylogowanie albo wyłączenie przełącznika kończy jego sesję w Trio |
 | `GET /api/status` | wersje, adresy, stan mostu (`bridge`, `bridgeError`) |
 | `GET /api/exposure` | (R10) kody HTTP ścieżek `/`, `/channels`, `/vizrs-bridge/health`, `/iptv/channels.m3u` pod adresem dla widzów (`--stream-url`), sprawdzane z serwera panelu: `{"url","error","probes":[{"path","status"}]}` |
 | `GET /api/commands` | lista z mostu |
