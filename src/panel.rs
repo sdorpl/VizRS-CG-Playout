@@ -482,6 +482,37 @@ impl Panel {
         http::respond(&mut stream, 200, Some("text/plain; charset=utf-8"), text.as_bytes())
     }
 
+    /// `POST /ingest/listeners/done?channel=N&url=…` (the listener service, ingest
+    /// token): a YouTube input that was one video is over – off the list (and
+    /// `inputs.json`), so that it is not played again.
+    pub fn listener_done(&self, request: &Request, mut stream: TcpStream, ingest: &Ingest) -> io::Result<()> {
+        if !ingest.authorized(request) {
+            return http::respond(&mut stream, 401, None, b"");
+        }
+        let (channel, url) = (request.param("channel").unwrap_or(""), request.param("url").unwrap_or(""));
+        let wanted = crate::listener::Listener { channel: channel.to_owned(), url: url.to_owned() };
+        if crate::listener::kind_of(url) != Some(crate::listener::Kind::YouTube) || crate::listener::youtube_channel_live(url) {
+            return http::respond(&mut stream, 400, Some("text/plain"), b"only a YouTube video input ends");
+        }
+        let (list, from_file) = {
+            let mut listeners = lock(&self.listeners);
+            if !listeners.0.contains(&wanted) {
+                return http::respond(&mut stream, 200, Some("text/plain"), b"not on the list");
+            }
+            listeners.0.retain(|l| *l != wanted);
+            listeners.clone()
+        };
+        if from_file {
+            if let Some(path) = self.inputs_path() {
+                if let Err(e) = crate::sync::write_atomic(&path, &inputs_to_json(&list)) {
+                    crate::warn!("{}: {e}", path.display());
+                }
+            }
+        }
+        self.record(ingest, "odbiornik", channel, &format!("wejście YouTube zakończone i usunięte z listy: {url}"));
+        http::respond(&mut stream, 200, Some("text/plain"), b"done")
+    }
+
     fn inputs_json(&self, ingest: &Ingest) -> Value {
         use crate::listener::{RTMP_PORTS, SRT_PORTS};
         let (listeners, from_file) = lock(&self.listeners).clone();
@@ -507,7 +538,7 @@ impl Panel {
             let url = item.get("url").and_then(Value::as_str);
             match (channel, url) {
                 (Some(c), Some(u)) if Self::valid_channel(c.trim()) => entries.push(format!("{}={}", c.trim(), u.trim())),
-                _ => return fail(stream, 400, "wejście: kanał (np. 2) i adres rtmp:// albo srt://"),
+                _ => return fail(stream, 400, "wejście: kanał (np. 2) i adres rtmp://, srt:// albo YouTube"),
             }
         }
         let (list, errors) = crate::listener::parse_listeners(&entries.join("; "));

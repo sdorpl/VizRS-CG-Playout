@@ -26,6 +26,7 @@
 //                         zones (empty = the whole channel), its frame 0 at
 //                         S seconds into the piece; it replaces the one before
 //   GET /ingest/listeners  the listeners in force (VIZRS_INGEST or VizRS Live), for vizrs-ingest
+//   POST /ingest/listeners/done?channel=&url=  a YouTube video input is over: off the list
 //   POST /ingest?channel=1, GET /ingest?channel=1, GET /ingest/state?channel=1
 //                         live ingest: a live source of the channel in, out
 //                         to the overlay, its state (src/ingest.rs)
@@ -847,6 +848,7 @@ impl Server {
                 Ok(())
             }
             ("GET", "/ingest/listeners") => self.panel.listeners_request(&request, stream, &self.ingest),
+            ("POST", "/ingest/listeners/done") => self.panel.listener_done(&request, stream, &self.ingest),
             ("GET", "/ingest/state") => self.ingest.state_request(&request, stream),
             ("GET", "/ingest") => self.ingest.read_request(&request, stream),
             ("POST", "/ingest") => self.ingest.source_request(&request, stream),

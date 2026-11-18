@@ -285,7 +285,14 @@ if (process.env.MOCK_CG === '1') {
   const CGT = 'test-cg-token-0123456789';
   const layers = { 24: [{ layer: 10, page: '101', name: 'belka 101', scene: 'belka', since: now - 300e3 }, { layer: 20, page: '4001', name: 'zegar', scene: 'zegar', since: now - 3600e3 }], 25: [{ layer: 10, page: '201', name: 'teraz gramy', since: now - 120e3 }], 26: [] };
   const asrun = [];
-  let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: '', qsv_preset: '', bframes: '0' }; // koder nakładki (GET/PUT /api/live/encoder)
+  // wejścia studia (zapis w pamięci): RTMP i YouTube; `inputs` kanału jak w CG Playout (listener::publisher)
+let inputs = [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/x' }, { channel: '24', url: 'https://www.youtube.com/@kanal/live' }];
+const inputsOf = (n) => inputs.filter((l) => l.channel === n).map((l) => (/^https?:/.test(l.url)
+  ? { kind: 'youtube', url: l.url, youtube: /\/[^/]+\/live\/?$/.test(l.url.replace(/^https?:\/\/[^/]+/, '')) ? 'channel' : 'video' }
+  : { kind: 'rtmp', host: '', port: 1936, app: '/live', key: l.url.split('/').pop(), passphrase: '', streamid: '' }));
+let cgShows = [{ id: '24-wieczor', channel: '24', title: 'Wieczór na żywo', duration: '01:00:00', plot: '', content_rating: '', collection: true, collection_id: 3, collection_name: 'LIVE · Wieczór na żywo', next: null, file_ok: true, airings: 0 },
+        { id: '25-koncert', channel: '25', title: 'Koncert w studiu', duration: '01:00:00', plot: '', content_rating: '', collection: true, collection_id: 1, collection_name: 'LIVE · Koncert w studiu', next: null, file_ok: true, airings: 2 }];
+let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: '', qsv_preset: '', bframes: '0' }; // koder nakładki (GET/PUT /api/live/encoder)
   const log = (e) => asrun.push({ t: Date.now(), operator: 'VizRS Live · atrapa', ...e });
   for (let i = 0; i < 8; i++) { const it = items(1, 8)[i]; asrun.push({ t: +new Date(it.Start), kind: 'item_start', title: it.Title }); if (i % 3 === 0) asrun.push({ t: +new Date(it.Start) + 10e3, kind: 'take', page: '101', layer: 10, title: it.Title, operator: 'reguła: on_clip' }); }
   asrun.push({ t: now - 1800e3, kind: 'hold', operator: 'VizRS Live · MCR 1' }, { t: now - 1700e3, kind: 'release', operator: 'VizRS Live · MCR 1' });
@@ -298,7 +305,7 @@ if (process.env.MOCK_CG === '1') {
       if (u.pathname === '/health') return reply(r, 200, { sessions: 3, overlay: ['24'], ingest: { channels: ['24'] }, captures: [] });
       if (u.pathname === '/api/live/state') return reply(r, 200, {
         ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live'], settings: { graphics_off: false },
-        channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name, source: { live: c.Number === '24' }, on_air: c.Number === '24', hold: false, takeover: c.Number === '24', anytime: c.Number === '24', layers: layers[c.Number] || [],
+        channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name, source: { live: c.Number === '24' }, inputs: inputsOf(c.Number), on_air: c.Number === '24', hold: false, takeover: c.Number === '24', anytime: c.Number === '24', layers: layers[c.Number] || [],
           next_live: c.Number === '25' ? { start: Date.now() + 3 * 60e3, title: 'Koncert w studiu' } : null })),
         events: [], guide: {},
       });
@@ -307,7 +314,10 @@ if (process.env.MOCK_CG === '1') {
         return reply(r, 200, { used: encoder, from: 'panel', store: true, presets: ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow', 'placebo'],
           profiles: ['baseline', 'main', 'high'], x264_keys: ['bframes', 'subme', 'ref', 'me', 'trellis'], nvenc_presets: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'], qsv_presets: ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'], max_bframes: 4 });
       }
-      if (u.pathname === '/api/live/inputs') return reply(r, 200, { listeners: [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/x' }] });
+      if (u.pathname === '/api/live/inputs') {
+        if (q.method === 'PUT') inputs = JSON.parse(b || '{}').listeners || [];
+        return reply(r, 200, { listeners: inputs, from: 'panel', store: true, ingest: true, ports: { rtmp: [1936, 1943], srt: [9000, 9007] } });
+      }
       if (u.pathname === '/etv/pages') return reply(r, 200, { pages: [{ number: '101', name: 'belka tytułowa' }, { number: '102', name: 'za chwilę' }, { number: '4001', name: 'zegar' }] });
       if (u.pathname === '/api/live/asrun') return reply(r, 200, { entries: asrun });
       if (u.pathname === '/api/live/logs') {

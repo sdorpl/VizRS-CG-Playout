@@ -78,6 +78,11 @@ function inputsBox(c) {
   return h('div', { class: 'inputs', 'data-inputs': c.number }, list.map((i, n) => {
     const host = i.host || location.hostname;
     const id = `${c.number}-${n + 1}`;
+    if (i.kind === 'youtube') {
+      return h('div', { class: 'input' }, h('h4', null, 'YouTube (CG Playout pobiera sam)'),
+        h('dl', { class: 'kv' }, ...plainField('Adres', i.url || '', `Adres YouTube ${id}`)),
+        h('p', { class: 'dim' }, youtubeNote(i.youtube)));
+    }
     if (i.kind === 'rtmp') {
       const server = `rtmp://${host}:${i.port}${i.app || ''}`;
       return h('div', { class: 'input' }, h('h4', null, 'RTMP (OBS, vMix, koder sprzętowy)'),
@@ -96,9 +101,17 @@ function inputsBox(c) {
 // ---------- Sloty na żywo: ustawianie wejść ----------
 // Lista wejść CG Playout (/api/live/inputs, plik inputs.json); odbiorniki CG przejmują ją w ciągu kilku sekund, bez restartu.
 // Adres odbiornika: rtmp://0.0.0.0:<port>/live/<klucz> albo srt://0.0.0.0:<port>?passphrase=<hasło>; porty tylko z zakresu wystawionego przez compose CG.
+// YouTube: adres https://www.youtube.com/… albo https://youtu.be/…; strona live kanału (…/@nazwa/live) czeka na każdą transmisję,
+// inny adres to jeden film – transmisja do końca albo nagranie raz, potem CG Playout sam usuwa wejście z listy.
+const YOUTUBE = /^https?:\/\/((www|m|music)\.)?(youtube\.com|youtu\.be)\/\S+$/i;
+const youtubeChannel = (url) => /\/[^/?#]+\/live\/?(\?|#|$)/i.test(url.replace(/^https?:\/\/[^/]+/i, ''));
+const youtubeNote = (what) => (what === 'channel'
+  ? 'Strona live kanału: każda jego transmisja przejmuje antenę, wejście zostaje na liście.'
+  : 'Jeden film: transmisja do jej końca albo nagranie raz, w czasie rzeczywistym – potem wejście znika z listy.');
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 function parseInput(l) {
+  if (/^https?:/i.test(l.url)) return { channel: l.channel, kind: 'youtube', url: l.url, port: 0, app: '', secret: '', rest: '' };
   const m = /^(rtmp|srt):\/\/[^/:?]*:(\d+)([^?]*)\??(.*)$/i.exec(l.url) || [];
   const kind = (m[1] || 'rtmp').toLowerCase();
   const path = m[3] || '';
@@ -109,6 +122,7 @@ function parseInput(l) {
 }
 
 function inputUrl(r) {
+  if (r.kind === 'youtube') return r.url;
   if (r.kind === 'rtmp') return `rtmp://0.0.0.0:${r.port}${r.app || '/live'}/${r.secret}`;
   const q = [r.secret ? `passphrase=${r.secret}` : '', r.rest].filter(Boolean).join('&');
   return `srt://0.0.0.0:${r.port}` + (q ? `?${q}` : '');
@@ -133,8 +147,19 @@ async function editInputs(forChannel) {
     list.replaceChildren(...(rows.length ? rows.map((r, n) => {
       const ch = h('select', { 'aria-label': `Kanał wejścia ${n + 1}` }, channels.map((c) => opt(c, `${c} ${nameOf(c)}`.trim(), c === r.channel)));
       ch.addEventListener('change', () => { r.channel = ch.value; });
-      const kind = h('select', { 'aria-label': `Rodzaj wejścia ${n + 1}` }, opt('rtmp', 'RTMP', r.kind === 'rtmp'), opt('srt', 'SRT', r.kind === 'srt'));
-      kind.addEventListener('change', () => { r.kind = kind.value; r.port = freePort(r.kind); r.app = '/live'; draw(); });
+      const kind = h('select', { 'aria-label': `Rodzaj wejścia ${n + 1}` }, opt('rtmp', 'RTMP', r.kind === 'rtmp'), opt('srt', 'SRT', r.kind === 'srt'), opt('youtube', 'YouTube', r.kind === 'youtube'));
+      kind.addEventListener('change', () => {
+        r.kind = kind.value;
+        if (r.kind === 'youtube') r.url = r.url || ''; else { r.port = freePort(r.kind); r.app = '/live'; if (!r.secret) r.secret = randomKey(); }
+        draw();
+      });
+      const del = btn('×', () => { rows.splice(n, 1); draw(); }, 'danger');
+      if (r.kind === 'youtube') {
+        const url = h('input', { value: r.url || '', class: 'mono grow', placeholder: 'https://www.youtube.com/watch?v=… albo https://www.youtube.com/@kanał/live', 'aria-label': `Adres YouTube wejścia ${n + 1}` });
+        const note = h('span', { class: 'dim' }, r.url ? youtubeNote(youtubeChannel(r.url) ? 'channel' : 'video') : '');
+        url.addEventListener('input', () => { r.url = url.value.trim(); note.textContent = YOUTUBE.test(r.url) ? youtubeNote(youtubeChannel(r.url) ? 'channel' : 'video') : 'adres YouTube: https://www.youtube.com/… albo https://youtu.be/…'; });
+        return h('div', { class: 'bar' }, ch, kind, url, del, note);
+      }
       const port = h('select', { 'aria-label': `Port wejścia ${n + 1}` }, range(r.kind).map((p) => opt(p, String(p), p === r.port)));
       if (!range(r.kind).includes(r.port)) port.prepend(opt(r.port, `${r.port} (spoza zakresu)`, true));
       port.addEventListener('change', () => { r.port = +port.value; });
@@ -142,18 +167,21 @@ async function editInputs(forChannel) {
       secret.addEventListener('input', () => { r.secret = secret.value.trim(); });
       return h('div', { class: 'bar' }, ch, kind, port, secret,
         btn('Losuj', () => { r.secret = randomKey(); draw(); }),
-        btn('×', () => { rows.splice(n, 1); draw(); }, 'danger'));
+        del);
     }) : [h('div', { class: 'empty' }, 'Brak wejść – żaden kanał nie przyjmie sygnału ze studia.')]),
     btn('+ Wejście', () => { rows.push({ channel: channels[0] || '1', kind: 'rtmp', port: freePort('rtmp'), app: '/live', secret: randomKey(), rest: '' }); draw(); }));
   }
   draw();
   const body = h('div', null,
     h('p', { class: 'dim' }, `Każde wejście to osobny port: RTMP ${ports.rtmp[0]}–${ports.rtmp[1]}, SRT ${ports.srt[0]}–${ports.srt[1]} (UDP). ` +
-      'Klucz RTMP i hasło SRT to hasła nadawcy – po zmianie podaj je nadawcy na nowo. Zapis działa w ciągu kilku sekund, bez restartu; trwający sygnał na zmienionym wejściu zostanie przerwany.'),
+      'Klucz RTMP i hasło SRT to hasła nadawcy – po zmianie podaj je nadawcy na nowo. Zapis działa w ciągu kilku sekund, bez restartu; trwający sygnał na zmienionym wejściu zostanie przerwany. ' +
+      'Wejście YouTube nie zajmuje portu: CG Playout sam pobiera transmisję albo nagranie (H.264 do 1080p) i przejmuje kanał jak sygnał ze studia – poza audycjami LIVE tylko przy „studio także poza audycjami”.'),
     data.from === 'env' ? h('p', { class: 'dim' }, 'Teraz obowiązuje VIZRS_INGEST z konfiguracji CG Playout; po zapisie – lista z panelu.') : null,
     data.ingest ? null : h('div', { class: 'note warn' }, 'Odbiór sygnałów w CG Playout jest wyłączony (brak VIZRS_INGEST_TOKEN) – wejścia zapiszą się, ale nie zadziałają.'),
     list);
   if (!await dialog('Wejścia studia', body, [['Anuluj', false], ['Zapisz', true, 'acc']])) return;
+  const bad = rows.find((r) => r.kind === 'youtube' && !YOUTUBE.test(r.url || ''));
+  if (bad) { toast(`Kanał ${bad.channel}: to nie jest adres YouTube (https://www.youtube.com/… albo https://youtu.be/…)`, 'bad'); return; }
   try {
     await cg('live/inputs', 'PUT', { listeners: rows.map((r) => ({ channel: r.channel, url: inputUrl(r) })) });
     toast('Wejścia zapisane w CG Playout – odbiorniki przejmą je w ciągu kilku sekund');
@@ -240,6 +268,7 @@ function channelCard(c, receivedAt) {
 // ---------- Sloty na żywo: tabela wejść (jak w makiecie) ----------
 /** Adres wejścia bez sekretów (klucz RTMP i hasło SRT są tylko w „Jak nadawać na ten kanał”). */
 function inputAddr(i) {
+  if (i.kind === 'youtube') return [i.url || '', i.youtube === 'channel' ? ' (strona live kanału)' : ' (jeden film)'];
   const host = i.host || location.hostname;
   if (i.kind === 'rtmp') return [`rtmp://${host}:${i.port}${i.app || ''}`, i.key ? ' + klucz' : ''];
   return [`srt://${host}:${i.port}` + (i.streamid ? `?streamid=${encodeURIComponent(i.streamid)}` : ''), i.passphrase ? ' + hasło' : ''];
@@ -248,7 +277,7 @@ function inputsTable(list) {
   const rows = list.flatMap((c) => (c.inputs || []).map((i, n) => ({ c, i, n })));
   return table(rows, [
     [({ c }) => h('span', null, h('span', { class: 'num' }, c.number), ' ', c.name || ''), 'Kanał'],
-    [({ i }) => (i.kind === 'rtmp' ? 'RTMP' : 'SRT'), 'Wejście'],
+    [({ i }) => ({ rtmp: 'RTMP', srt: 'SRT', youtube: 'YouTube' })[i.kind] || i.kind, 'Wejście'],
     [({ i }) => { const [a, extra] = inputAddr(i); return h('span', null, h('span', { class: 'mono' }, a), h('span', { class: 'dim' }, extra)); }, 'Adres'],
     [({ c }) => (c.hold ? pill('wstrzymany', 'warn') : c.source?.live ? pill(c.on_air ? 'nadaje · na antenie' : 'nadaje', c.on_air ? 'on' : 'ok') : pill('czeka')), 'Stan'],
     [({ c }) => (c.source?.live ? `${c.source.video || '?'} · ${c.source.audio ? 'z dźwiękiem' : 'bez dźwięku'}` : h('span', { class: 'dim' }, 'brak sygnału')), 'Obraz'],

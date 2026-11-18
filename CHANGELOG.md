@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Wejście YouTube w live ingest:** obok RTMP i SRT wejście kanału może być adresem YouTube – usługa `ingest` sama pobiera strumień (yt-dlp znajduje H.264 do 1080p i AAC, ffmpeg przepakowuje bez transkodowania) i przejmuje kanał jak sygnał ze studia. Strona live kanału (`…/@nazwa/live`) czeka na każdą transmisję; pojedynczy film gra raz (transmisja do końca, nagranie w czasie rzeczywistym), potem sidecar usuwa go z listy (`POST /ingest/listeners/done`). Panel: rodzaj „YouTube” w **Ustaw wejścia…**, w „Jak nadawać” i w tabeli wejść. Obraz `vizrs-cg` zawiera yt-dlp 2026.10.26 (przypięty sumami SHA-256), instalowany na wolumen `vizrs-client`; opcjonalnie `VIZRS_YTDLP_COOKIES`. DOKUMENTACJA §1, Live ingest.
+
 ## 26.11.13 (2026-11-17)
 
 - **Renderer natywny z VizRS CG System 26.11.10** (`VIZRS_REF`): reguła krawędzi powiązań przelicza obrys celu po wczytaniu jego fontu z zasobów – kafel programu odsuwa się od dwuwierszowej belki o jej pełną wysokość (dotąd o wysokość zmierzoną bez tekstu, S2 kanał 4).
