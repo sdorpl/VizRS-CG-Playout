@@ -44,7 +44,7 @@ const canFillWithGroups = (v) => ['Multiple', 'Duration'].includes(v.PlayoutMode
 const CONTENT_KEYS = Object.keys(emptyContent());
 
 /** Pozycja z GetProgramScheduleItems (model widoku, podtypy One/Multiple/Duration/Flood) w kształcie ReplaceProgramScheduleItem. */
-function fromLegacy(vm) {
+export function fromLegacy(vm) {
   return {
     StartType: vm.StartType, StartTime: vm.StartTime ?? null, FixedStartTimeBehavior: vm.FixedStartTimeBehavior ?? null,
     PlayoutMode: vm.PlayoutMode, CollectionType: vm.CollectionType,
@@ -71,7 +71,7 @@ const newItem = () => ({
 });
 
 /** Pozycja do ReplaceProgramScheduleItems: wszystkie pola (most nie uzupełnia pól typów zagnieżdżonych), pola ukryte wyczyszczone. */
-function toReplace(it, index) {
+export function toReplace(it, index) {
   const out = { Index: index };
   for (const [k, v] of Object.entries(it)) if (!k.startsWith('_')) out[k] = v;
   if (out.StartType !== 'Fixed') { out.StartTime = null; out.FixedStartTimeBehavior = null; }

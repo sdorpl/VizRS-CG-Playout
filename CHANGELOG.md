@@ -4,6 +4,7 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Audycje LIVE: jedno okno na EPG i emisje.** „+ Nowa audycja LIVE” i „Edytuj…” pokazują dane w EPG (tytuł, długość, nowa **kategoria wiekowa** – `content_rating` w pliku audycji, Live API `content_rating`) i **emisje w ramówce**: godzina, dni (harmonogram główny / alternatywny kanału), start ściśle albo elastycznie, własny tytuł emisji w EPG i znak wodny. Panel sam zapisuje pozycje w harmonogramie kanału (z powrotem treści „wypełnij” po audycji) i przebudowuje ramówkę; lista audycji pokazuje godziny emisji. Dotąd godzinę emisji trzeba było ułożyć ręcznie w Harmonogramach według pięciu kroków z kreatora.
 - **Wejście YouTube w live ingest:** obok RTMP i SRT wejście kanału może być adresem YouTube – usługa `ingest` sama pobiera strumień (yt-dlp znajduje H.264 do 1080p i AAC, ffmpeg przepakowuje bez transkodowania) i przejmuje kanał jak sygnał ze studia. Strona live kanału (`…/@nazwa/live`) czeka na każdą transmisję; pojedynczy film gra raz (transmisja do końca, nagranie w czasie rzeczywistym), potem sidecar usuwa go z listy (`POST /ingest/listeners/done`). Panel: rodzaj „YouTube” w **Ustaw wejścia…**, w „Jak nadawać” i w tabeli wejść. Obraz `vizrs-cg` zawiera yt-dlp 2026.10.26 (przypięty sumami SHA-256), instalowany na wolumen `vizrs-client`; opcjonalnie `VIZRS_YTDLP_COOKIES`. DOKUMENTACJA §1, Live ingest.
 
 ## 26.11.13 (2026-11-17)

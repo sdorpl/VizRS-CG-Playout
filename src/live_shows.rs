@@ -91,6 +91,9 @@ pub fn definition(show: &LiveShow, sidecar: &str) -> String {
     if !show.plot.is_empty() {
         text.push_str(&format!("plot: {}\n", quoted(&show.plot)));
     }
+    if !show.rating.is_empty() {
+        text.push_str(&format!("content_rating: {}\n", quoted(&show.rating)));
+    }
     text.push_str(&format!("url: {}\nis_live: true\nduration: \"{}\"\n", quoted(&url), clock(show.seconds)));
     text
 }
@@ -127,6 +130,7 @@ pub const MAX_SHOWS: usize = 200;
 const MAX_TITLE: usize = 200;
 const MAX_PLOT: usize = 2000;
 const MAX_CHANNEL: usize = 20;
+const MAX_RATING: usize = 20;
 
 /// `shows.json` in the folder of the definitions.
 pub fn store_path(etv_config: &str) -> PathBuf {
@@ -152,6 +156,9 @@ pub fn validate(show: &LiveShow) -> Result<(), String> {
     if show.plot.chars().count() > MAX_PLOT || show.plot.chars().any(|c| c.is_control() && c != '\n') {
         return Err(format!("opis: najwyżej {MAX_PLOT} znaków"));
     }
+    if show.rating.chars().count() > MAX_RATING || show.rating.chars().any(char::is_control) {
+        return Err(format!("kategoria wiekowa: najwyżej {MAX_RATING} znaków"));
+    }
     if !(1.0..86_400.0).contains(&show.seconds) {
         return Err("długość: od 00:00:01 do 23:59:59".into());
     }
@@ -169,6 +176,7 @@ pub fn to_json(shows: &[LiveShow]) -> String {
             ("title", show.title.as_str().into()),
             ("duration", clock(show.seconds).into()),
             ("plot", show.plot.as_str().into()),
+            ("content_rating", show.rating.as_str().into()),
             ("file", id(show).into()),
             ("collection", show.collection.map_or(Value::Null, Value::from)),
         ])
@@ -233,6 +241,10 @@ mod tests {
         assert_eq!(file_name(&show("Rozmowa dnia")), "1-rozmowa-dnia.yml");
         assert_eq!(file_name(&LiveShow { file: "studio".into(), ..show("X") }), "studio.yml");
         assert_eq!(clock(5400.0), "01:30:00");
+        let rated = definition(&LiveShow { rating: "12".into(), ..show("A") }, "http://cg:7700");
+        assert!(rated.contains("content_rating: \"12\"\n"), "{rated}");
+        assert!(!definition(&show("A"), "http://cg:7700").contains("content_rating"));
+        assert!(validate(&LiveShow { rating: "x".repeat(21), ..show("A") }).is_err());
         let text = definition(&LiveShow { plot: "Prosto ze \"studia\"".into(), ..show("Wiadomości") }, "http://cg:7700");
         assert_eq!(
             text,
@@ -268,7 +280,7 @@ mod tests {
         assert_eq!(shows[0].file, "1-wiadomosci");
         // The file now wins over the configuration.
         assert_eq!(load(config, &[show("Inna")]).unwrap(), shows);
-        let edited = [LiveShow { collection: Some(12), plot: "a\nb".into(), ..shows[0].clone() }];
+        let edited = [LiveShow { collection: Some(12), plot: "a\nb".into(), rating: "16".into(), ..shows[0].clone() }];
         save(config, &edited).unwrap();
         assert_eq!(load(config, &[]).unwrap(), edited);
         fs::write(store_path(config), "{").unwrap();

@@ -2,8 +2,10 @@
 // przeniesione do VizRS Live. Logika (odbiór sygnału, przejęcie kanału, pliki audycji) zostaje w CG Playout;
 // panel rozmawia z nim przez pośrednika serwera /api/cg/live/… (token CG zostaje w serwerze).
 
-import { VIEWS, S, h, head, panel, pill, btn, table, toast, cmd, cmdNote, confirmDlg, dialog, has, route, pad2, hm, operatorName, onChannel } from '../core.js';
+import { VIEWS, S, h, head, panel, pill, btn, table, toast, cmd, cmdNote, confirmDlg, dialog, has, route, pad2, hm, pl, operatorName, onChannel } from '../core.js';
 import { cg } from './grafika.js';
+import { fromLegacy, toReplace } from './harmonogramy.js';
+import { minutesOf, hhmm, span } from '../parts.js';
 
 const cgMissing = () => h('div', { class: 'note' },
   'VizRS CG Playout nie jest podłączony. Uruchom panel z --cg-url http://<cg>:7700 i --cg-token <panel_token CG Playout> ' +
@@ -391,57 +393,290 @@ VIEWS.live = async () => {
 };
 
 // ---------- Audycje LIVE ----------
-const STEP = { file: 'Audycja zapisana (plik Remote Stream)', scan: 'Biblioteka „Na żywo” – skan', collection: 'Kolekcja w ErsatzTV', delete: 'Usunięcie' };
+const STEP = {
+  file: 'Audycja zapisana (plik Remote Stream)', scan: 'Biblioteka „Na żywo” – skan', collection: 'Kolekcja w ErsatzTV', delete: 'Usunięcie',
+  schedule: 'Godzina emisji w harmonogramie', rebuild: 'Ramówka kanału przebudowana',
+};
 
 async function rebuild(channel) {
   try { await cg(`live/channels/${encodeURIComponent(channel)}/rebuild`, 'POST'); toast(`Kanał ${channel}: ramówka przebudowana – EPG odświeży się za chwilę`); } catch (e) { toast(e.message, 'bad'); }
 }
 
-/** Kreator po zapisie (i „jak dodać?”): kroki CG Playout, potem pozycja w Harmonogramach VizRS Live i przebudowa. */
-async function doneDialog(title, data) {
-  const steps = (data?.steps || []).map((s) => h('li', { class: s.ok ? 'ok' : 'bad' }, h('span', { class: 'ic' }, s.ok ? '✓' : '!'), STEP[s.step] || s.step, s.detail ? h('small', { class: 'dim' }, ' ' + s.detail) : null));
-  const show = data?.show;
-  const body = h('div', { class: 'wizard', 'data-wizard': '' },
-    steps.length ? h('ol', { class: 'steps' }, steps) : null,
-    show ? h('div', { class: 'note' },
-      h('b', null, `Ostatni krok – wstaw audycję do ramówki kanału ${show.channel}:`),
-      h('ol', null,
-        h('li', null, 'Harmonogramy → harmonogram kanału → + Pozycja.'),
-        h('li', null, 'Start: stała godzina (godzina emisji), zachowanie: ściśle.'),
-        h('li', null, 'Treść: kolekcja inteligentna → ', h('b', { class: 'mono' }, show.collection_name || `LIVE · ${show.title}`), '.'),
-        h('li', null, 'Tryb: jedna pozycja (One); opcjonalnie element graficzny VizRS.'),
-        h('li', null, 'Zapisz pozycje, potem „Przebuduj ramówkę” – audycja pojawi się w EPG i tutaj w „Najbliższa emisja”.'))) : null);
-  const r = await dialog(title, body, show
-    ? [['Gotowe', null], [`⟲ Przebuduj ramówkę kanału ${show.channel}`, 'rebuild'], ['Otwórz Harmonogramy', 'open', 'acc']]
-    : [['Gotowe', null, 'acc']]);
-  if (r === 'rebuild') { await rebuild(show.channel); route(true); }
-  if (r === 'open') location.hash = '#harmonogramy';
+// ---------- godziny emisji: pozycje harmonogramu kanału ----------
+// Audycja trafia do ramówki jako pozycja harmonogramu (playout klasyczny kanału): kolekcja „LIVE · tytuł”, stała godzina,
+// ściśle, jedna pozycja. Panel wstawia ją sam (GetProgramScheduleItems → ReplaceProgramScheduleItems, jak ekran Harmonogramy)
+// i przebudowuje ramówkę przez CG Playout – operator nie składa pozycji ręcznie.
+const AIR_CMDS = ['GetPagedPlayouts', 'GetAllProgramSchedules', 'GetPlayoutAlternateSchedules', 'GetProgramScheduleItems', 'ReplaceProgramScheduleItems'];
+const canAir = () => AIR_CMDS.every(has);
+
+/** „20:00” / „7:5” → minuty od północy; null = zły zapis. */
+function parseHm(t) {
+  const m = /^\s*(\d{1,2})[:.](\d{2})\s*$/.exec(t || '');
+  return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : null;
 }
 
+const DAYS = { Monday: 'pn', Tuesday: 'wt', Wednesday: 'śr', Thursday: 'czw', Friday: 'pt', Saturday: 'sob', Sunday: 'nd' };
+/** Kiedy kanał gra harmonogram alternatywny: „sob, nd”, „wybrane dni miesiąca”… (z GetPlayoutAlternateSchedules). */
+function whenText(a) {
+  const d = (a.DaysOfWeek || []).filter((x) => DAYS[x]);
+  const parts = [d.length && d.length < 7 ? d.map((x) => DAYS[x]).join(', ') : null,
+    (a.DaysOfMonth || []).length && a.DaysOfMonth.length < 31 ? 'wybrane dni miesiąca' : null,
+    (a.MonthsOfYear || []).length && a.MonthsOfYear.length < 12 ? 'wybrane miesiące' : null].filter(Boolean);
+  return parts.join(' · ') || 'codziennie';
+}
+
+/**
+ * Harmonogramy playoutu kanału (główny pierwszy, z opisem dni) albo { error } – ramówka nieklasyczna albo brak playoutu.
+ * Harmonogram główny gra w dni, których nie zajmują alternatywne.
+ */
+async function channelSchedules(channel) {
+  const [res, all] = await Promise.all([cmd('GetPagedPlayouts', { Query: '', PageNum: 0, PageSize: 500 }), cmd('GetAllProgramSchedules')]);
+  const p = (res?.Page || []).find((x) => x.ChannelNumber === channel);
+  if (!p) return { error: `Kanał ${channel} nie ma playoutu – załóż go w Playoutach (rodzaj: harmonogram).` };
+  if (p.ScheduleKind !== 'Classic') {
+    return { error: `Kanał ${channel} ma ramówkę „${pl(p.ScheduleKind)}”, nie harmonogram – emisje tej audycji wstawisz tam ręcznie (kolekcja inteligentna „LIVE · …”).` };
+  }
+  const byId = new Map((all || []).map((s) => [s.Id, s]));
+  // najwyższy Index = harmonogram główny (jak w Playoutach), reszta to harmonogramy alternatywne (np. weekend)
+  const alts = [...((await cmd('GetPlayoutAlternateSchedules', { PlayoutId: p.PlayoutId })) || [])].sort((a, b) => b.Index - a.Index);
+  const when = new Map();
+  alts.forEach((a, i) => { if (i > 0) when.set(a.ProgramScheduleId, [...(when.get(a.ProgramScheduleId) || []), whenText(a)]); });
+  let ids = [...new Set(alts.map((a) => a.ProgramScheduleId))];
+  if (!ids.length) ids = (all || []).filter((s) => s.Name === p.ScheduleName).map((s) => s.Id);
+  if (!ids.length) return { error: `Nie znalazłem harmonogramu playoutu kanału ${channel}.` };
+  return {
+    playout: p,
+    schedules: ids.map((id, i) => ({
+      id, name: byId.get(id)?.Name ?? `ID ${id}`, shuffle: !!byId.get(id)?.ShuffleScheduleItems, main: i === 0,
+      when: i === 0 ? (alts.length > 1 ? 'pozostałe dni' : 'codziennie') : (when.get(id) || ['codziennie']).join('; '),
+    })),
+  };
+}
+
+const isLive = (it, coll) => it.CollectionType === 'SmartCollection' && it.SmartCollectionId === coll;
+const CONTENT = ['CollectionType', 'CollectionId', 'MultiCollectionId', 'SmartCollectionId', 'MediaItemId', 'PlaylistId', 'SearchQuery'];
+const sameContent = (a, b) => CONTENT.every((k) => (a[k] ?? null) === (b[k] ?? null));
+const isFixed = (it) => it.StartType === 'Fixed' && it.StartTime;
+
+/**
+ * Wstawia pozycję audycji o `min` do pozycji harmonogramu (tablica z fromLegacy) – w bloku stałej godziny, w który wpada
+ * (za jego pozycjami „po poprzedniej”, przed następną stałą godziną). Gdy po audycji byłaby od razu następna stała godzina,
+ * a przed nią treść „wypełnij”, za audycją wraca ta sama treść (kopia „po poprzedniej”) – inaczej do tej godziny byłaby dziura.
+ * Zwraca { items, note } albo rzuca Error.
+ */
+function insertAiring(items, coll, min, name, extra = {}) {
+  const fixed = items.map((it, i) => ({ it, i })).filter(({ it }) => isFixed(it));
+  if (fixed.some(({ it }) => minutesOf(it.StartTime) === min)) throw new Error(`o ${hhmm(min)} harmonogram ma już pozycję o stałej godzinie`);
+  let at = items.length;
+  if (fixed.length) {
+    // blok, w który wpada godzina: ostatnia stała godzina ≤ min (z zawinięciem doby); wstawiamy przed następną stałą pozycją z listy
+    const before = fixed.filter(({ it }) => minutesOf(it.StartTime) < min);
+    const anchor = (before.length ? before : fixed).reduce((a, b) => (minutesOf(b.it.StartTime) > minutesOf(a.it.StartTime) ? b : a));
+    const nextFixed = fixed.find(({ i }) => i > anchor.i) || fixed[0];
+    at = nextFixed.i > anchor.i ? nextFixed.i : nextFixed.i === 0 ? items.length : nextFixed.i;
+  }
+  // `extra`: pola tej emisji (zachowanie godziny, tytuł w EPG, znaki wodne) i reszta dawnej pozycji przy zmianie godziny
+  const live = {
+    ...fromLegacy({ StartType: 'Fixed', FixedStartTimeBehavior: 'Strict', PlayoutMode: 'One', PlaybackOrder: 'Chronological', CollectionType: 'SmartCollection' }),
+    ...extra, StartType: 'Fixed', StartTime: span(min), CollectionType: 'SmartCollection', SmartCollectionId: coll, _name: name,
+  };
+  const out = [...items.slice(0, at), live, ...items.slice(at)];
+  const prev = items.length ? items[(at - 1 + items.length) % items.length] : null;
+  const next = items.length ? items[at % items.length] : null;
+  let note = null;
+  if (next && isFixed(next) && prev && !isLive(prev, coll)) {
+    if (prev.PlayoutMode === 'Flood') out.splice(at + 1, 0, { ...prev, StartType: 'Dynamic', StartTime: null, FixedStartTimeBehavior: null });
+    else note = `po audycji do ${(next.StartTime || '').slice(0, 5)} legacy pokaże wypełniacz zapasowy albo planszę offline`;
+  }
+  return { items: out, note };
+}
+
+/** Usuwa pozycję audycji (indeks) razem z kopią treści, którą wstawił insertAiring. */
+function removeAiring(items, i) {
+  const out = [...items];
+  out.splice(i, 1);
+  const prev = out[i - 1], cont = out[i];
+  if (prev && cont && cont.StartType === 'Dynamic' && cont.PlayoutMode === 'Flood' && sameContent(prev, cont)) out.splice(i, 1);
+  return out;
+}
+
+/** Zapis pozycji harmonogramu – jak ekran Harmonogramy (`warning` mostu = zapisane, DOKUMENTACJA §13). */
+const saveItems = (id, items) => cmd('ReplaceProgramScheduleItems', { ProgramScheduleId: id, Items: items.map((it, i) => toReplace(it, i + 1)) });
+const loadItems = async (id) => ((await cmd('GetProgramScheduleItems', { Id: id })) || []).sort((a, b) => a.Index - b.Index).map(fromLegacy);
+const airingsOf = (items, coll) => items.map((it, i) => ({ it, i })).filter(({ it }) => isLive(it, coll) && isFixed(it));
+
+async function rebuildStep(channel) {
+  try { await cg(`live/channels/${encodeURIComponent(channel)}/rebuild`, 'POST'); return { step: 'rebuild', ok: true, detail: 'EPG odświeży się za chwilę' }; } catch (e) { return { step: 'rebuild', ok: false, detail: e.message }; }
+}
+
+// ---------- okno audycji: EPG + emisje ----------
+const BEHAVIOR_OPTS = [['Strict', 'ściśle'], ['Flexible', 'elastycznie']];
+const RATINGS = ['bez ograniczeń', '7', '12', '16', '18'];
+
+/** Emisje audycji z harmonogramów kanału: wiersze edytora (godzina, harmonogram, pola pozycji). */
+function airingRows(ch, loaded, coll) {
+  if (coll == null) return [];
+  return ch.schedules.flatMap((sc) => airingsOf(loaded.get(sc.id) || [], coll).map(({ it }) => ({
+    schedule: sc.id, time: it.StartTime.slice(0, 5), behavior: it.FixedStartTimeBehavior || 'Strict', title: it.CustomTitle || '',
+    watermark: (it.WatermarkIds || [])[0] ?? '', orig: it,
+  }))).sort((a, b) => a.time.localeCompare(b.time));
+}
+
+/**
+ * Zapis emisji: w każdym harmonogramie kanału zdejmuje dotychczasowe pozycje audycji i wstawia te z edytora (z polami
+ * dawnej pozycji, np. wypełniaczami i elementami graficznymi z Harmonogramów); harmonogram bez zmian nie jest zapisywany.
+ * Zwraca kroki dla kreatora; rzuca Error przed pierwszym zapisem, gdy emisja jest błędna.
+ */
+async function saveAirings(show, ch, loaded, rows) {
+  const plan = [];
+  for (const sc of ch.schedules) {
+    const want = rows.filter((r) => r.schedule === sc.id).map((r) => ({ ...r, min: parseHm(r.time) }));
+    const bad = want.find((r) => r.min == null);
+    if (bad) throw new Error(`emisja „${bad.time || '(pusta)'}”: godzina w zapisie gg:mm, np. 20:00`);
+    if (want.length && sc.shuffle) throw new Error(`harmonogram „${sc.name}” tasuje pozycje – nie może mieć stałej godziny`);
+    const before = loaded.get(sc.id) || [];
+    let items = before;
+    for (const { i } of airingsOf(items, show.collection_id).reverse()) items = removeAiring(items, i);
+    const notes = [];
+    for (const r of want.sort((x, y) => x.min - y.min)) {
+      const wm = r.watermark === '' ? [] : r.orig && String((r.orig.WatermarkIds || [])[0] ?? '') === String(r.watermark) ? r.orig.WatermarkIds : [Number(r.watermark)];
+      try {
+        const out = insertAiring(items, show.collection_id, r.min, show.collection_name,
+          { ...(r.orig || {}), FixedStartTimeBehavior: r.behavior, CustomTitle: r.title.trim(), WatermarkIds: wm });
+        items = out.items;
+        if (out.note) notes.push(`${hhmm(r.min)}: ${out.note}`);
+      } catch (e) { throw new Error(`„${sc.name}”: ${e.message}`); }
+    }
+    const key = (list) => JSON.stringify(list.map((it, i) => toReplace(it, i + 1)));
+    if (key(items) === key(before)) continue;
+    plan.push({ sc, items, detail: `„${sc.name}” (${sc.when}): ${want.length ? want.map((r) => hhmm(r.min)).join(', ') : 'bez emisji'}${notes.length ? ' – ' + notes.join('; ') : ''}` });
+  }
+  const steps = [];
+  for (const p of plan) {
+    try { await saveItems(p.sc.id, p.items); steps.push({ step: 'schedule', ok: true, detail: p.detail }); } catch (e) { steps.push({ step: 'schedule', ok: false, detail: `„${p.sc.name}”: ${e.message}` }); }
+  }
+  return steps;
+}
+
+/** Wynik zapisu: kroki CG Playout i panelu (✓/!); bez komend harmonogramu w moście – instrukcja ręczna. */
+async function doneDialog(title, data, show) {
+  const steps = (data?.steps || []).map((s) => h('li', { class: s.ok ? 'ok' : 'bad' }, h('span', { class: 'ic' }, s.ok ? '✓' : '!'), STEP[s.step] || s.step, s.detail ? h('small', { class: 'dim' }, ' ' + s.detail) : null));
+  const manual = show && !canAir();
+  const body = h('div', { class: 'wizard', 'data-wizard': '' },
+    steps.length ? h('ol', { class: 'steps' }, steps) : null,
+    manual ? h('div', { class: 'note' }, h('b', null, 'Godzina emisji: '),
+      `most legacy nie ma komend harmonogramu – w Harmonogramach dodaj pozycję: stała godzina, ściśle, kolekcja inteligentna „${show.collection_name || 'LIVE · ' + show.title}”, jedna pozycja; potem przebuduj ramówkę.`) : null);
+  if ((await dialog(title, body, manual ? [['Gotowe', null], ['Otwórz Harmonogramy', 'open', 'acc']] : [['Gotowe', null, 'acc']])) === 'open') location.hash = '#harmonogramy';
+}
+
+const findShow = async (id) => ((await cg('live/shows').catch(() => null))?.shows || []).find((x) => x.id === id) || null;
+
+/**
+ * Okno audycji: dane w EPG (tytuł, długość, kategoria wiekowa, opis – plik audycji w CG Playout) i emisje w ramówce kanału
+ * (godzina, harmonogram = dni, ściśle / elastycznie, własny tytuł emisji w EPG, znak wodny – pozycje harmonogramu w legacy).
+ * Jeden zapis: audycja w CG Playout, emisje w harmonogramach, przebudowa ramówki.
+ */
 async function showDialog(channels, show) {
   const f = {
     channel: h('select', { id: 'ls-channel' }, channels.map((c) => h('option', { value: c.number, selected: show?.channel === c.number }, `${c.number} · ${c.name || ''}`))),
     title: h('input', { id: 'ls-title', value: show?.title || '', maxlength: 200 }),
     duration: h('input', { id: 'ls-duration', value: show?.duration || '01:00:00', placeholder: 'gg:mm:ss', class: 'mono' }),
+    rating: h('input', { id: 'ls-rating', value: show?.content_rating || '', maxlength: 20, list: 'ls-ratings', placeholder: 'brak' }),
     plot: h('textarea', { id: 'ls-plot', rows: 3, maxlength: 2000 }),
   };
   f.plot.value = show?.plot || '';
   if (show) f.channel.disabled = true;
-  const body = h('div', { class: 'form' },
+  const ratingOk = !show || 'content_rating' in show;  // starszy CG Playout nie zna pola – wtedy go nie pokazujemy
+
+  // emisje: harmonogramy kanału i ich pozycje (ładowane przy otwarciu i zmianie kanału)
+  const air = canAir();
+  let ch = null, loaded = new Map(), rows = [], watermarks = [];
+  const airBox = h('div', { class: 'ls-airings', 'data-airings': '' });
+  const endOf = (t) => { const m = parseHm(t), d = /^(\d+):(\d{2}):(\d{2})$/.exec(f.duration.value.trim()); return m == null || !d ? '' : '→ ' + hhmm(m + +d[1] * 60 + +d[2] + Math.round(+d[3] / 60)); };
+  const drawAirings = () => {
+    if (!air) { airBox.replaceChildren(h('p', { class: 'dim' }, 'Most legacy nie ma komend harmonogramu – emisje ustawisz w Harmonogramach.')); return; }
+    if (!ch) { airBox.replaceChildren(h('p', { class: 'dim' }, 'Wczytuję harmonogramy kanału…')); return; }
+    if (ch.error) { airBox.replaceChildren(h('p', { class: 'note' }, ch.error)); return; }
+    const sel = (opts, value, label, on) => {
+      const el = h('select', { 'aria-label': label }, opts.map(([v, t]) => h('option', { value: v, selected: String(v) === String(value) }, t)));
+      el.onchange = () => on(el.value);
+      return el;
+    };
+    const table_ = rows.length ? h('table', { class: 'ls-air-table' },
+      h('thead', null, h('tr', null, ['Godzina', '', 'Dni · harmonogram', 'Start', 'Tytuł tej emisji w EPG', 'Znak wodny', ''].map((t) => h('th', null, t)))),
+      h('tbody', null, rows.map((r, n) => {
+        const time = h('input', { value: r.time, placeholder: 'gg:mm', class: 'mono', maxlength: 5, 'aria-label': `Godzina emisji ${n + 1}` });
+        const end = h('span', { class: 'dim mono' }, endOf(r.time));
+        time.oninput = () => { r.time = time.value; end.textContent = endOf(r.time); };
+        const title = h('input', { value: r.title, maxlength: 200, placeholder: f.title.value.trim() || 'jak audycja', 'aria-label': `Tytuł emisji ${n + 1}` });
+        title.oninput = () => { r.title = title.value; };
+        return h('tr', null,
+          h('td', null, time), h('td', null, end),
+          h('td', null, sel(ch.schedules.map((sc) => [sc.id, `${sc.when} · ${sc.name}`]), r.schedule, `Harmonogram emisji ${n + 1}`, (v) => { r.schedule = Number(v); })),
+          h('td', null, sel(BEHAVIOR_OPTS, r.behavior, `Start emisji ${n + 1}`, (v) => { r.behavior = v; })),
+          h('td', null, title),
+          h('td', null, sel([['', '— brak —'], ...watermarks.map((w) => [w.Id, w.Name])], r.watermark, `Znak wodny emisji ${n + 1}`, (v) => { r.watermark = v; })),
+          h('td', null, btn('✕', () => { rows.splice(n, 1); drawAirings(); }, 'danger')));
+      })))
+      : h('p', { class: 'dim' }, 'Brak emisji – audycja nie jest w ramówce.');
+    airBox.replaceChildren(table_,
+      h('div', { class: 'bar' }, btn('+ Emisja', () => { rows.push({ schedule: ch.schedules[0].id, time: '', behavior: 'Strict', title: '', watermark: '', orig: null }); drawAirings(); airBox.querySelector('tbody tr:last-child input')?.focus(); }),
+        h('span', { class: 'dim' }, (ch.schedules.length > 1 ? 'Dni wybiera harmonogram (alternatywne i ich dni ustawiasz w Playoutach). ' : 'Emisja codziennie – inne dni: harmonogram alternatywny w Playoutach. ') + 'Start ściśle czeka na godzinę, elastycznie wchodzi zaraz po poprzedniej pozycji.')));
+  };
+  const loadChannel = async (channel) => {
+    ch = null; loaded = new Map(); rows = []; drawAirings();
+    try {
+      const c = await channelSchedules(channel);
+      if (!c.error) {
+        await Promise.all(c.schedules.map(async (sc) => loaded.set(sc.id, await loadItems(sc.id))));
+        if (!watermarks.length && has('GetAllWatermarks')) watermarks = (await cmd('GetAllWatermarks').catch(() => [])) || [];
+      }
+      if (channel !== f.channel.value) return;  // operator zmienił kanał w trakcie
+      ch = c;
+      rows = airingRows(ch, loaded, show?.collection_id);
+    } catch (e) { ch = { error: e.message }; }
+    drawAirings();
+  };
+  if (air) { f.channel.onchange = () => loadChannel(f.channel.value); loadChannel(f.channel.value); } else drawAirings();
+  f.duration.oninput = () => airBox.querySelectorAll('tbody tr').forEach((tr, n) => { tr.children[1].firstChild.textContent = endOf(rows[n]?.time); });
+
+  const body = h('div', { class: 'form live-show-ed' },
+    h('div', { class: 'sec' }, 'W EPG'),
     h('label', { for: 'ls-channel' }, 'Kanał'), f.channel,
     h('label', { for: 'ls-title' }, 'Tytuł'), f.title,
-    h('span'), h('span', { class: 'dim' }, 'widoczny w EPG i jako {title} w grafice VizRS'),
+    h('span'), h('span', { class: 'dim' }, 'widoczny w EPG i jako {title} w grafice VizRS; emisja może mieć własny tytuł'),
     h('label', { for: 'ls-duration' }, 'Długość'), f.duration,
+    h('span'), h('span', { class: 'dim' }, 'ile trwa każda emisja – po niej ramówka wraca do swojej treści'),
+    ratingOk ? [h('label', { for: 'ls-rating' }, 'Kategoria wiekowa'), f.rating, h('datalist', { id: 'ls-ratings' }, RATINGS.map((r) => h('option', { value: r })))] : null,
     h('label', { for: 'ls-plot' }, 'Opis'), f.plot,
-    h('span'), h('span', { class: 'dim' }, 'w czasie audycji bez sygnału studia kanał pokazuje czerń z ciszą'));
-  if (!(await dialog(show ? 'Audycja LIVE' : 'Nowa audycja LIVE', body, [['Anuluj', false], [show ? 'Zapisz w ErsatzTV' : 'Utwórz w ErsatzTV', true, 'acc']]))) return;
+    h('span'), h('span', { class: 'dim' }, 'w czasie audycji bez sygnału studia kanał pokazuje czerń z ciszą'),
+    h('div', { class: 'sec' }, 'Emisje w ramówce'), airBox);
+  if (!(await dialog(show ? `Audycja LIVE: „${show.title}”` : 'Nowa audycja LIVE', body, [['Anuluj', false], [show ? 'Zapisz' : 'Utwórz', true, 'acc']]))) return;
+
   const data = { channel: f.channel.value, title: f.title.value.trim(), duration: f.duration.value.trim(), plot: f.plot.value };
-  let r;
+  if (ratingOk) data.content_rating = f.rating.value.trim();
+  const editAir = air && ch && !ch.error;
+  if (editAir) {
+    const bad = rows.find((r) => parseHm(r.time) == null);
+    if (bad) { toast(`Emisja „${bad.time || '(pusta)'}”: godzina w zapisie gg:mm, np. 20:00`, 'bad'); return; }
+  }
+  const changed = !show || ['title', 'duration', 'plot', 'content_rating'].some((k) => k in data && String(data[k]) !== String(show[k] ?? ''));
+  let r = { steps: [] };
   try {
-    r = show ? await cg('live/shows/' + encodeURIComponent(show.id), 'PUT', data) : await cg('live/shows', 'POST', data);
+    if (changed) r = show ? await cg('live/shows/' + encodeURIComponent(show.id), 'PUT', data) : await cg('live/shows', 'POST', data);
   } catch (e) { toast(e.message, 'bad'); route(true); return; }
+  const saved = show && !changed ? show : (await findShow(r?.show?.id || show?.id)) || { ...(show || {}), ...(r?.show || {}) };
+  const steps = [...(r?.steps || [])];
+  if (editAir && (rows.length || airingRows(ch, loaded, saved.collection_id).length)) {
+    if (saved.collection_id == null) steps.push({ step: 'schedule', ok: false, detail: 'kolekcja audycji jeszcze nie istnieje w ErsatzTV – emisje zapiszesz po „⟳ Odśwież z ErsatzTV”' });
+    else {
+      try { steps.push(...(await saveAirings(saved, ch, loaded, rows))); } catch (e) { steps.push({ step: 'schedule', ok: false, detail: e.message }); }
+    }
+  }
+  if ((changed && show) || steps.some((x) => x.step === 'schedule' && x.ok)) steps.push(await rebuildStep(saved.channel || data.channel));
   await route(true);
-  await doneDialog(`„${r?.show?.title || data.title}” ${show ? 'zmieniona' : 'jest'} w ErsatzTV`, r);
+  if (!steps.length) { toast('Bez zmian'); return; }
+  await doneDialog(`„${saved.title || data.title}” ${show ? 'zapisana' : 'jest'} w ErsatzTV`, { steps }, show ? null : saved);
 }
 
 /** Biblioteka „Na żywo”: Remote Streams z folderem /config/vizrs-live – wybór z bibliotek legacy zamiast wpisywania ID. */
@@ -473,14 +708,35 @@ async function libraryPanel(shows) {
     cmdNote('GetAllLocalLibraries', 'GetLocalLibraryPaths', 'CG Playout PUT /api/live/settings'));
 }
 
-function airCell(s, shows) {
+/** Godziny emisji audycji z harmonogramów kanałów: Map(collection_id → „20:00 · sob, nd 18:00”); null = nie da się odczytać. */
+async function airTimes(list) {
+  if (!canAir()) return null;
+  const out = new Map();
+  try {
+    for (const channel of new Set(list.filter((s) => s.collection_id != null).map((s) => s.channel))) {
+      const ch = await channelSchedules(channel);
+      if (ch.error) continue;
+      for (const sc of ch.schedules) {
+        for (const { it } of (await loadItems(sc.id)).map((it2, i) => ({ it: it2, i })).filter(({ it: x }) => x.CollectionType === 'SmartCollection' && isFixed(x))) {
+          const t = `${it.StartTime.slice(0, 5)}${sc.when === 'codziennie' ? '' : ' (' + sc.when + ')'}`;
+          out.set(it.SmartCollectionId, [...(out.get(it.SmartCollectionId) || []), t]);
+        }
+      }
+    }
+  } catch { return null; }
+  return out;
+}
+
+function airCell(s, shows, times) {
   const now = cgNow();
+  let when;
   if (s.next) {
     const more = s.airings > 1 ? ` · +${s.airings - 1}` : '';
-    return s.next.start <= now ? pill(`● teraz · do ${at(s.next.stop)}${more}`, 'on') : `${day(s.next.start)} ${at(s.next.start)}${more}`;
+    when = s.next.start <= now ? pill(`● teraz · do ${at(s.next.stop)}${more}`, 'on') : `${day(s.next.start)} ${at(s.next.start)}${more}`;
   }
-  if (shows.guide_known === false) return h('span', { class: 'dim' }, '–');
-  return h('span', { class: 'bar' }, pill('nie ma w ramówce', 'warn'), btn('jak dodać?', () => doneDialog(`Jak dodać „${s.title}” do ramówki`, { steps: [], show: s })));
+  const t = times?.get(s.collection_id);
+  if (!s.next) when = shows.guide_known === false ? h('span', { class: 'dim' }, '–') : t ? pill('brak w EPG – przebuduj ramówkę', 'warn') : pill('nie ma w ramówce', 'warn');
+  return h('span', { class: 'air-cell' }, when, t ? h('small', { class: 'dim', 'data-air-times': '' }, 'emisje: ' + t.join(', ')) : null);
 }
 
 function statusCell(s, shows) {
@@ -491,7 +747,7 @@ function statusCell(s, shows) {
 
 VIEWS.audycje = async () => {
   const title = 'Audycje LIVE';
-  const desc = 'Audycje na żywo kanałów: CG Playout zakłada w legacy plik Remote Stream i kolekcję inteligentną „LIVE · tytuł”; godzinę emisji daje pozycja w Harmonogramach.';
+  const desc = 'Audycje na żywo kanałów: CG Playout zakłada w legacy plik Remote Stream i kolekcję inteligentną „LIVE · tytuł”; godziny emisji panel wstawia do harmonogramu kanału.';
   if (!S.status.cg) return [head(title, desc), cgMissing()];
   let state, shows;
   const t0 = Date.now();
@@ -505,6 +761,7 @@ VIEWS.audycje = async () => {
     await route(true);
     if (r?.steps?.length) await doneDialog(`„${s.title}” usunięta`, r); else toast('Audycja usunięta');
   };
+  const times = await airTimes(shows.shows || []);
   const numbers = [...new Set([...channels.map((c) => c.number), ...(shows.shows || []).map((s) => s.channel)])];
   const full = shows.max != null && (shows.shows || []).length >= shows.max;
   return [
@@ -523,15 +780,15 @@ VIEWS.audycje = async () => {
         shows.error ? h('div', { class: 'note err' }, 'shows.json: ' + shows.error) : null,
         table(shows.shows || [], [
           ['channel', 'Kanał', { class: 'num' }],
-          [(s) => h('span', { title: s.plot || '' }, s.title), 'Tytuł (EPG)'],
+          [(s) => h('span', { class: 'air-cell', title: s.plot || '' }, s.title, h('small', { class: 'dim mono' }, s.collection === true ? s.collection_name : 'kolekcja: ⟳ Odśwież'),
+            s.content_rating ? h('small', { class: 'dim' }, 'kategoria ' + s.content_rating) : null), 'Tytuł (EPG)'],
           ['duration', 'Długość', { class: 'num' }],
           [(s) => statusCell(s, shows), 'W ErsatzTV'],
-          [(s) => (s.collection === true ? h('span', { class: 'mono' }, s.collection_name) : h('span', { class: 'dim' }, '– (⟳ Odśwież)')), 'Kolekcja do harmonogramu'],
-          [(s) => airCell(s, shows), 'Najbliższa emisja'],
-          [(s) => h('span', { class: 'bar' }, btn('✎', () => showDialog(channels, s)), btn('🗑', () => del(s), 'danger')), ''],
+          [(s) => airCell(s, shows, times), 'Emisja w ramówce'],
+          [(s) => h('span', { class: 'bar' }, btn('Edytuj…', () => showDialog(channels, s), s.next || times?.has(s.collection_id) ? null : 'acc'), btn('🗑', () => del(s), 'danger')), ''],
         ], { empty: 'Brak audycji LIVE. Dodaj pierwszą przyciskiem „+ Nowa audycja LIVE”.' }),
-        h('p', { class: 'dim live-side' }, 'Godzinę emisji ustawiasz w Harmonogramach: pozycja z kolekcją „LIVE · …”, start stały, tryb One. Resztę robi CG Playout.'),
-        cmdNote('CG Playout /api/live/shows')),
+        h('p', { class: 'dim live-side' }, 'Wszystko o audycji w jednym oknie („Edytuj…”): tytuł, długość, kategoria wiekowa i opis w EPG oraz emisje – godzina, dni (harmonogram), start ściśle / elastycznie, własny tytuł emisji i znak wodny. Panel zapisuje emisje w harmonogramie kanału i przebudowuje ramówkę.'),
+        cmdNote('CG Playout /api/live/shows', ...AIR_CMDS)),
       h('div', { class: 'cols' },
         await libraryPanel(shows),
         panel('Przebuduj ramówkę', null, h('div', { class: 'live-side' },

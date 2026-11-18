@@ -85,12 +85,19 @@ function check(cond, msg) {
       if (u === '/api/live/settings' && q.method === 'PUT') { CG.library = body.library; return send(200, { library: CG.library, store: true }); }
       if (u === '/api/live/shows' && q.method === 'POST') {
         if (!/[\p{L}\d]/u.test(body.title || '')) return send(400, { error: 'tytuł: 1–200 znaków, choć jedna litera albo cyfra' });
-        const show = { id: `${body.channel}-${body.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, channel: body.channel, title: body.title, duration: body.duration, plot: body.plot, collection: true, collection_name: 'LIVE · ' + body.title, next: null, file_ok: true, airings: 0 };
+        const show = { id: `${body.channel}-${body.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, channel: body.channel, title: body.title, duration: body.duration, plot: body.plot, content_rating: body.content_rating ?? '', collection: true, collection_id: CG.collectionId ?? null, collection_name: 'LIVE · ' + body.title, next: null, file_ok: true, airings: 0 };
         CG.shows.push(show);
         return send(200, { show, steps: [{ step: 'file', ok: true, detail: 'vizrs-live/x.yml' }, { step: 'collection', ok: true, detail: '' }] });
       }
       let m;
+      if ((m = u.match(/^\/api\/live\/shows\/([\w.-]+)$/)) && q.method === 'PUT') {
+        const show = CG.shows.find((x) => x.id === m[1]);
+        if (!show) return send(404, { error: 'nie ma takiej audycji' });
+        Object.assign(show, { title: body.title, duration: body.duration, plot: body.plot, content_rating: body.content_rating ?? '', collection_name: 'LIVE · ' + body.title });
+        return send(200, { show, steps: [{ step: 'file', ok: true, detail: `vizrs-live/${show.id}.yml` }, { step: 'collection', ok: true, detail: '' }] });
+      }
       if ((m = u.match(/^\/api\/live\/shows\/([\w.-]+)$/)) && q.method === 'DELETE') { CG.shows = CG.shows.filter((x) => x.id !== m[1]); return send(200, { ok: true }); }
+      if (u === '/api/live/channels/24/rebuild' && q.method === 'POST') { CG.rebuilt = (CG.rebuilt || 0) + 1; return send(200, { ok: true }); }
       if ((m = u.match(/^\/api\/live\/channels\/24\/(hold|release)$/))) { CG.hold = m[1] === 'hold'; return send(200, { ok: true }); }
       // K13: TAKE / CONTINUE / OUT; K14: dziennik emisji (kontrakt DOKUMENTACJA §11)
       if ((m = u.match(/^\/api\/live\/channels\/24\/(take|continue|out)$/)) && q.method === 'POST') {
@@ -1672,16 +1679,72 @@ function check(cond, msg) {
   check(CG.library === 7, 'audycje: biblioteka Remote Streams z legacy zapisana w CG Playout');
   await page.click('button:has-text("+ Nowa audycja LIVE")');
   await page.fill('#ls-title', '***');
-  await rerender(() => page.click('#dlg-buttons button:has-text("Utwórz w ErsatzTV")'));
+  await rerender(() => page.click('#dlg-buttons button:has-text("Utwórz")'));
   check(/tytuł/.test(await page.textContent('#toast')) && (await page.getAttribute('#toast', 'class')).includes('bad'), 'sloty: błąd walidacji CG Playout pokazany operatorowi');
+  // okno audycji: EPG + emisje. Kolekcję audycji zakłada w legacy CG Playout – tu przez API; harmonogram kanału 24
+  // („INFO24 dzień” z seed, jedyny harmonogram playoutu) wraca do stanu sprzed testu
+  const liveColl = (await api('CreateSmartCollection', { Name: 'LIVE · Debata E2E', Query: 'type:remote_stream AND title:"Debata E2E"' })).result?.Id;
+  CG.collectionId = liveColl;
+  const ps24 = (await api('GetAllProgramSchedules')).result.find((x) => x.Name === 'INFO24 dzień')?.Id;
+  const items24 = async () => (await api('GetProgramScheduleItems', { Id: ps24 })).result.sort((a, b) => a.Index - b.Index);
+  const liveItems = async () => (await items24()).filter((it) => it.SmartCollection?.Id === liveColl).sort((a, b) => a.StartTime.localeCompare(b.StartTime));
+  const before24 = (await items24()).length;
   await page.click('button:has-text("+ Nowa audycja LIVE")');
+  await page.waitForSelector('[data-airings] button:has-text("+ Emisja")');
   await page.fill('#ls-title', 'Debata E2E');
   await page.fill('#ls-duration', '00:30:00');
-  await page.click('#dlg-buttons button:has-text("Utwórz w ErsatzTV")');
+  await page.fill('#ls-rating', '12');
+  await page.click('[data-airings] button:has-text("+ Emisja")');
+  await page.fill('input[aria-label="Godzina emisji 1"]', '20:00');
+  check(/→ 20:30/.test(await page.textContent('[data-airings]')), 'audycje: koniec emisji z długości (20:00 → 20:30)');
+  await page.click('[data-airings] button:has-text("+ Emisja")');
+  await page.fill('input[aria-label="Godzina emisji 2"]', '7:15');
+  await page.selectOption('select[aria-label="Start emisji 2"]', 'Flexible');
+  await page.fill('input[aria-label="Tytuł emisji 2"]', 'Debata E2E – powtórka');
+  await shot('audycje-okno');
+  await page.click('#dlg-buttons button:has-text("Utwórz")');
   await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
-  check(/Audycja zapisana/.test(await page.textContent('[data-wizard]')) && /LIVE · Debata E2E/.test(await page.textContent('[data-wizard]')), 'audycje: kreator – kroki CG i pozycja w Harmonogramach');
+  const wiz = await page.textContent('[data-wizard]');
+  check(/Audycja zapisana/.test(wiz) && /Godzina emisji w harmonogramie.*INFO24 dzień.*07:15, 20:00/.test(wiz) && /Ramówka kanału przebudowana/.test(wiz) && CG.rebuilt === 1,
+    `audycje: dwie emisje zapisane przy zakładaniu, ramówka przebudowana (${wiz})`);
+  check(CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '12'), 'audycje: kategoria wiekowa zapisana w CG Playout');
+  let li = await liveItems();
+  check(li.length === 2 && li.every((it) => it.StartType === 'Fixed' && it.PlayoutMode === 'One') && /^07:15/.test(li[0].StartTime) && li[0].FixedStartTimeBehavior === 'Flexible'
+    && li[0].CustomTitle === 'Debata E2E – powtórka' && /^20:00/.test(li[1].StartTime) && li[1].FixedStartTimeBehavior === 'Strict' && !li[1].CustomTitle
+    && (await items24()).length === before24 + 2, 'audycje: pozycje w legacy – kolekcja LIVE, godziny, ściśle / elastycznie, tytuł emisji');
   await shot('r12-kreator');
   await page.click('#dlg-buttons button:has-text("Gotowe")');
+  await page.waitForSelector('tr:has(td:has-text("Debata E2E")) [data-air-times]');
+  check(/07:15, 20:00/.test(await page.textContent('tr:has(td:has-text("Debata E2E")) [data-air-times]')), 'audycje: godziny emisji z harmonogramu na liście');
+  // edycja: wczytane emisje, przeniesienie 20:00 → 21:15, usunięcie powtórki, zmiana kategorii (PUT do CG Playout)
+  await page.click('tr:has(td:has-text("Debata E2E")) button:has-text("Edytuj…")');
+  await page.waitForSelector('input[aria-label="Godzina emisji 2"]');
+  check((await page.inputValue('input[aria-label="Godzina emisji 1"]')) === '07:15' && (await page.inputValue('input[aria-label="Tytuł emisji 1"]')) === 'Debata E2E – powtórka'
+    && (await page.inputValue('#ls-rating')) === '12', 'audycje: okno wczytuje emisje z harmonogramu i kategorię');
+  await page.fill('input[aria-label="Godzina emisji 2"]', '21:15');
+  await page.click('[data-airings] tbody tr:first-child button:has-text("✕")');
+  await page.fill('#ls-rating', '16');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
+  li = await liveItems();
+  check(li.length === 1 && /^21:15/.test(li[0].StartTime) && (await items24()).length === before24 + 1 && CG.rebuilt === 2
+    && CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '16'), 'audycje: emisja przeniesiona, powtórka usunięta, kategoria zmieniona');
+  await page.click('#dlg-buttons button:has-text("Gotowe")');
+  // bez zmian = bez zapisu i bez przebudowy; potem usunięcie ostatniej emisji
+  await page.click('tr:has(td:has-text("Debata E2E")) button:has-text("Edytuj…")');
+  await page.waitForSelector('input[aria-label="Godzina emisji 1"]');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForFunction(() => /Bez zmian/.test(document.getElementById('toast').textContent));
+  check(CG.rebuilt === 2, 'audycje: zapis bez zmian nie przebudowuje ramówki');
+  await page.click('tr:has(td:has-text("Debata E2E")) button:has-text("Edytuj…")');
+  await page.waitForSelector('input[aria-label="Godzina emisji 1"]');
+  await page.click('[data-airings] tbody tr:first-child button:has-text("✕")');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
+  await page.click('#dlg-buttons button:has-text("Gotowe")');
+  check((await liveItems()).length === 0 && (await items24()).length === before24, 'audycje: emisje usunięte – harmonogram jak przed testem');
+  await api('DeleteSmartCollection', { SmartCollectionId: liveColl });
+  CG.collectionId = null;
   await page.waitForSelector('td:has-text("Debata E2E")');
   check(CG.shows.some((x) => x.title === 'Debata E2E' && x.duration === '00:30:00' && x.channel === '24'), 'sloty: audycja LIVE założona w CG Playout');
   await shot('r12-audycje');

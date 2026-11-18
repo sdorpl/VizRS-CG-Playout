@@ -263,6 +263,7 @@ fn show_of(body: &Value, file: &str) -> Result<LiveShow, String> {
         title: text_of(body, "title")?.trim().to_owned(),
         seconds: duration_of(body.get("duration"))?,
         plot: text_of(body, "plot")?.trim().to_owned(),
+        rating: text_of(body, "content_rating")?.trim().to_owned(),
         file: file.to_owned(),
         collection: None,
     };
@@ -1087,6 +1088,7 @@ impl Panel {
                 ("title", show.title.as_str().into()),
                 ("duration", live_shows::clock(show.seconds).into()),
                 ("plot", show.plot.as_str().into()),
+                ("content_rating", show.rating.as_str().into()),
                 ("file", format!("vizrs-live/{}", live_shows::file_name(show)).into()),
                 ("file_ok", (self.etv_config.is_empty() || folder.join(live_shows::file_name(show)).exists()).into()),
                 ("collection", collection),
@@ -1430,12 +1432,16 @@ mod tests {
 
     #[test]
     fn shows_from_the_panel() {
-        let body = json::parse(r#"{"channel":4,"title":" Rozmowa dnia ","duration":"00:45:00","plot":"Gość\r\nw studiu"}"#).unwrap();
+        let body = json::parse(
+            r#"{"channel":4,"title":" Rozmowa dnia ","duration":"00:45:00","plot":"Gość\r\nw studiu","content_rating":" 12 "}"#,
+        )
+        .unwrap();
         let show = show_of(&body, "").unwrap();
         assert_eq!(
             (show.channel.as_str(), show.title.as_str(), show.seconds, show.plot.as_str()),
             ("4", "Rozmowa dnia", 2700.0, "Gość\nw studiu")
         );
+        assert_eq!(show.rating, "12");
         assert!(show_of(&json::parse(r#"{"channel":"4","title":"X","duration":"25:00:00"}"#).unwrap(), "").is_err());
         assert!(show_of(&json::parse(r#"{"channel":"4","title":["X"],"duration":60}"#).unwrap(), "").is_err());
         let mut channels = vec!["10".to_owned(), "2".into(), "1.5".into(), "a".into()];

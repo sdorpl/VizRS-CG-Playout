@@ -146,6 +146,14 @@ const probe = {
 };
 if (process.env.MOCK_NO_HW) for (const a of probe.Capability.accels) Object.assign(a, { status: a.configured ? 'ProbeFailed' : 'Skipped', error: a.configured ? 'no device' : null, decode: [], encode: [] });
 const VIDEOS = ['Serwis 06:00', 'Serwis 12:00', 'Pogoda', 'Pogoda', 'Rozmowa dnia', 'Magazyn regionalny', 'Gość VizRS'].map((Title, i) => ({ MediaItemId: 200 + i, Title, Subtitle: `/media/info24/${Title.toLowerCase().replace(/\W+/g, '-')}${i === 3 ? '-weekend' : ''}.mp4`, SortTitle: Title, Poster: '', State: 'Normal' }));
+const SCHEDULES = [
+  { Id: 1, Name: 'INFO24 – dzień', items: [
+    { Index: 1, StartType: 'Fixed', StartTime: '06:00:00', FixedStartTimeBehavior: null, PlayoutMode: 'Flood', CollectionType: 'SmartCollection', SmartCollectionId: 2, PlaybackOrder: 'Chronological', MultipleCount: '1' },
+    { Index: 2, StartType: 'Fixed', StartTime: '18:00:00', FixedStartTimeBehavior: null, PlayoutMode: 'Flood', CollectionType: 'SmartCollection', SmartCollectionId: 2, PlaybackOrder: 'Shuffle', MultipleCount: '1' }] },
+  { Id: 2, Name: 'Kino – wieczór', items: [] },
+  { Id: 3, Name: 'INFO24 – weekend', items: [
+    { Index: 1, StartType: 'Fixed', StartTime: '08:00:00', FixedStartTimeBehavior: null, PlayoutMode: 'Flood', CollectionType: 'SmartCollection', SmartCollectionId: 2, PlaybackOrder: 'Shuffle', MultipleCount: '1' }] },
+];
 const PLAYLISTS = [{ Id: 1, PlaylistGroupId: 1, Name: 'Poranek INFO24', IsSystem: false }];
 const PL_ITEMS = {};
 const LOGS = []; // wpisy dopisywane przez zadania w tle atrapy (K6)
@@ -173,7 +181,17 @@ const H = {
   RefreshNextProbe: () => probe,
   GetAllWatermarks: () => DB.watermarks,
   // kolekcje inteligentne: jedna audycji LIVE (prowadzi ją CG Playout – w panelu tylko do odczytu) i jedna zwykła
-  GetAllSmartCollections: () => [{ Id: 1, Name: 'LIVE · Koncert w studiu', Query: 'type:remote_stream AND sort_title:"koncert w studiu"' }, { Id: 2, Name: 'Archiwum INFO24', Query: 'type:other_video AND tag:info' }],
+  GetAllSmartCollections: () => [{ Id: 1, Name: 'LIVE · Koncert w studiu', Query: 'type:remote_stream AND sort_title:"koncert w studiu"' }, { Id: 2, Name: 'Archiwum INFO24', Query: 'type:other_video AND tag:info' },
+    { Id: 3, Name: 'LIVE · Wieczór na żywo', Query: 'type:remote_stream AND sort_title:"wieczór na żywo"' }],
+  // harmonogramy (w pamięci): „INFO24 – dzień” kanału 24 – godziny emisji audycji LIVE (Audycje LIVE → Ramówka…)
+  GetAllProgramSchedules: () => SCHEDULES.map(({ Id, Name }) => ({ Id, Name, FixedStartTimeBehavior: 'Strict', ShuffleScheduleItems: false })),
+  GetPlayoutAlternateSchedules: (a) => (a.PlayoutId === 1 ? [{ Id: 3, Index: 1, ProgramScheduleId: 3, DaysOfWeek: ['Saturday', 'Sunday'], DaysOfMonth: [], MonthsOfYear: [] }, { Id: 1, Index: 2, ProgramScheduleId: 1, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : a.PlayoutId === 3 ? [{ Id: 2, Index: 1, ProgramScheduleId: 2, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : []),
+  GetProgramScheduleItems: (a) => (SCHEDULES.find((x) => x.Id === a.Id)?.items || []).map((it) => {
+    const smart = it.SmartCollectionId && H.GetAllSmartCollections().find((c) => c.Id === it.SmartCollectionId);
+    return { ...it, Count: it.MultipleCount, Name: smart?.Name ?? 'Archiwum INFO24', SmartCollection: it.SmartCollectionId ? { Id: it.SmartCollectionId, Name: smart?.Name } : null,
+      Watermarks: (it.WatermarkIds || []).map((Id) => ({ Id })), GraphicsElements: (it.GraphicsElementIds || []).map((Id) => ({ Id })) };
+  }),
+  ReplaceProgramScheduleItems: (a) => { const sc = SCHEDULES.find((x) => x.Id === a.ProgramScheduleId); if (sc) sc.items = a.Items; return null; },
   GetAllFillerPresets: () => DB.fillers,
   GetPagedPlayouts: () => ({ TotalCount: DB.playouts.length, Page: DB.playouts }),
   GetAllBlockPlayouts: () => DB.playouts.filter((p) => p.ScheduleKind === 'Block'),
@@ -328,8 +346,22 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
         return reply(r, 200, { tz: 'UTC', truncated: false, entries: lines.map(([t, level, text]) => ({ t, level, text })) });
       }
       if (u.pathname === '/api/live/graphics') return reply(r, 200, { rules: { on_clip: 'TAKE 101 headline={title}', on_ad: '', ad_match: { path: '/reklamy/', title: '' }, on_end: 'TAKE 102 next={next_title}', end_seconds: 30, shows: [], channels: { 24: { on_live: 'TAKE 4001' } } }, source: 'config', store: true });
-      if (u.pathname === '/api/live/shows') return reply(r, 200, { shows: [{ id: '25-koncert', channel: '25', title: 'Koncert w studiu', duration: '01:00:00', plot: '', collection: true, collection_name: 'LIVE · Koncert w studiu', next: null, file_ok: true, airings: 2 }], error: null,
+      if (u.pathname === '/api/live/shows' && q.method === 'GET') return reply(r, 200, { shows: cgShows, error: null,
         channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name })), guide_known: true, max: 50, etv: { configured: true, ok: true, error: null }, settings: { library: null, store: true } });
+      {
+        // zapis audycji w pamięci (jak CG Playout: kroki w odpowiedzi); nowa audycja dostaje kolejną kolekcję
+        const sm = u.pathname.match(/^\/api\/live\/shows(?:\/([\w.-]+))?$/);
+        if (sm && (q.method === 'POST' || q.method === 'PUT')) {
+          const v = JSON.parse(b || '{}');
+          const old = sm[1] && cgShows.find((x) => x.id === sm[1]);
+          if (sm[1] && !old) return reply(r, 404, { error: 'nie ma takiej audycji' });
+          const show = Object.assign(old || { id: `${v.channel}-${String(v.title).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, channel: v.channel, collection: true, collection_id: 10 + cgShows.length, next: null, file_ok: true, airings: 0 },
+            { title: v.title, duration: v.duration, plot: v.plot || '', content_rating: v.content_rating || '', collection_name: 'LIVE · ' + v.title });
+          if (!old) cgShows.push(show);
+          return reply(r, 200, { show, steps: [{ step: 'file', ok: true, detail: `vizrs-live/${show.id}.yml` }, { step: 'collection', ok: true, detail: `${show.collection_name} (ID ${show.collection_id})` }] });
+        }
+      }
+      if (/^\/api\/live\/channels\/\w+\/rebuild$/.test(u.pathname) && q.method === 'POST') return reply(r, 200, { ok: true });
       const m = u.pathname.match(/^\/api\/live\/channels\/(\w+)\/(take|continue|out)$/);
       if (m && q.method === 'POST') {
         const a = b ? JSON.parse(b) : {};

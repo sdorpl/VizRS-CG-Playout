@@ -52,6 +52,8 @@ pub struct LiveShow {
     pub seconds: f64,
     /// Description in the guide.
     pub plot: String,
+    /// Age rating in the guide (`content_rating` of the definition, e.g. "12"); "" = none.
+    pub rating: String,
     /// File name without `.yml`; "" = channel and title.
     pub file: String,
     /// Its smart collection in ErsatzTV (`LIVE · <title>`), made through the live API.
@@ -359,6 +361,7 @@ pub(crate) fn live_shows(value: &Value) -> Result<Vec<LiveShow>, String> {
             title: text("title")?,
             seconds: duration(item.get("duration").ok_or(format!("{prefix}.duration: missing"))?, &format!("{prefix}.duration"))?,
             plot: text("plot")?,
+            rating: text("content_rating")?,
             file: text("file")?,
             collection: item.get("collection").and_then(Value::as_f64).filter(|n| *n >= 1.0 && n.fract() == 0.0).map(|n| n as u64),
         };
