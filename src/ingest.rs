@@ -323,11 +323,20 @@ type Batch = (Vec<Arc<Vec<u8>>>, Option<u64>);
 pub struct Feed {
     buffer: Mutex<Buffer>,
     changed: Condvar,
+    /// The listener's input the source comes from (`input=` of `POST /ingest`,
+    /// `listener::input_id`); empty from an older listener.
+    input: String,
 }
 
 impl Feed {
+    #[cfg(test)]
     fn new() -> Feed {
+        Feed::of_input(String::new())
+    }
+
+    fn of_input(input: String) -> Feed {
         Feed {
+            input,
             buffer: Mutex::new(Buffer {
                 runs: VecDeque::new(),
                 bytes: 0,
@@ -636,12 +645,12 @@ impl Ingest {
     }
 
     /// A new source of `channel`; None while another one is on it.
-    fn start(&self, channel: &str) -> Option<Arc<Feed>> {
+    fn start(&self, channel: &str, input: &str) -> Option<Arc<Feed>> {
         let mut feeds = self.feeds();
         if feeds.get(channel).is_some_and(|feed| !feed.lock().ended) {
             return None;
         }
-        let feed = Arc::new(Feed::new());
+        let feed = Arc::new(Feed::of_input(input.to_owned()));
         feeds.insert(channel.to_owned(), Arc::clone(&feed));
         Some(feed)
     }
@@ -652,6 +661,12 @@ impl Ingest {
         if feeds.get(channel).is_some_and(|f| Arc::ptr_eq(f, feed)) {
             feeds.remove(channel);
         }
+    }
+
+    /// The input (`listener::input_id`) of the channel's source; `None` without
+    /// one, or from an older listener.
+    pub fn input_of(&self, channel: &str) -> Option<String> {
+        self.feed(channel).map(|feed| feed.input.clone()).filter(|input| !input.is_empty())
     }
 
     /// The channel's source is live and not held: the studio is on the channel.
@@ -736,7 +751,8 @@ impl Ingest {
         if channel.is_empty() {
             return http::respond(&mut stream, 400, Some("text/plain"), b"channel?");
         }
-        let Some(feed) = self.start(&channel) else {
+        let input: String = request.param("input").unwrap_or("").chars().filter(char::is_ascii_hexdigit).take(16).collect();
+        let Some(feed) = self.start(&channel, &input) else {
             crate::warn!("ingest: channel {channel} already has a live source; the new one is refused");
             self.event(&channel, "drugi sygnał odrzucony (kanał ma już źródło)");
             return http::respond(&mut stream, 409, None, b"");
@@ -1065,11 +1081,13 @@ mod tests {
     #[test]
     fn one_source_per_channel() {
         let ingest = Ingest::new("t", true);
-        let first = ingest.start("1").unwrap();
-        assert!(ingest.start("1").is_none(), "an active source is not pre-empted");
-        assert!(ingest.start("2").is_some());
+        let first = ingest.start("1", "00ab").unwrap();
+        assert!(ingest.start("1", "").is_none(), "an active source is not pre-empted");
+        assert_eq!(ingest.input_of("1").as_deref(), Some("00ab"), "the input the source comes from");
+        assert!(ingest.start("2", "").is_some());
+        assert_eq!(ingest.input_of("2"), None, "an older listener names no input");
         ingest.finish("1", &first);
-        assert!(ingest.start("1").is_some());
+        assert!(ingest.start("1", "").is_some());
         assert!(!Ingest::new("", true).enabled());
         // The standby second is MPEG-TS with H.264 and audio.
         let mut scanner = Scanner::default();

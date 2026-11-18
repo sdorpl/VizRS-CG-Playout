@@ -406,3 +406,11 @@ img.mini { cursor: zoom-in; }
 .ls-air-table td:nth-child(3) select { min-width: 16em; }
 .air-cell { display: grid; gap: 3px; justify-items: start; }
 .air-cell small { white-space: normal; }
+/* Wejścia studia: wiersz wejścia z grafiką na czas przejęcia z tego wejścia */
+.dialog:has(.inputs-edit) { width: min(860px, 94vw); }
+.inputs-edit .in-row { display: grid; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.inputs-edit .in-graphics { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding-left: 4px; }
+.inputs-edit .in-graphics > .dim { padding-top: 6px; }
+.inputs-edit .bar > select { width: auto; }
+.inputs-edit .bar > input.grow { flex: 1 1 260px; min-width: 0; width: auto; }
+.inputs-edit .bar > .dim { flex-basis: 100%; }

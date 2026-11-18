@@ -1035,7 +1035,7 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    dla każdego wpisu `kanał=URL` z `VIZRS_INGEST` ffmpeg czeka na nadawcę
    (RTMP `-listen 1`, SRT `mode=listener`), przepakowuje strumień do MPEG-TS
    bez transkodowania (`-c copy`; pierwszy obraz i pierwszy dźwięk) i wysyła
-   go do sidecara (`POST /ingest?channel=N`, `Authorization: Bearer
+   go do sidecara (`POST /ingest?channel=N&input=<id wejścia>`, `Authorization: Bearer
    <VIZRS_INGEST_TOKEN>`). Nadawca, który przez `VIZRS_INGEST_IDLE_MS`
    (domyślnie 15000 ms) nic nie wyśle, jest rozłączany, a ffmpeg czeka na
    następnego. Próg jest celowo dłuższy niż cisza, po której sidecar
@@ -1222,6 +1222,16 @@ wprowadza dedykowaną grafikę kanału zdefiniowaną w polu `on_live`
   `PUT /api/live/graphics`). Nie ma globalnego `on_live`. Składnia komend jest
   taka sama jak w `on_clip` (wiersze, `#` jako komentarz), natomiast symbole
   ramówki `{…}` są puste, ponieważ przejęcie nie ma pozycji harmonogramu.
+- **Grafika wejścia**: wejście z panelu może mieć własne `on_live`
+  (`PUT /api/live/inputs`, pole `on_live` wejścia; w `inputs.json` obiekt
+  `"on_live": {"<kanał>=<adres>": "TAKE 7510"}` obok `listeners`). Gdy kanał
+  przejmuje sygnał z tego wejścia, zamiast `on_live` kanału wchodzi grafika
+  wejścia – np. inne logo NA ŻYWO dla transmisji z YouTube niż dla studia.
+  Wejście bez własnej grafiki = `on_live` kanału. Sidecar wie, z którego wejścia
+  jest sygnał, bo odbiornik podaje je w `POST /ingest?channel=N&input=<id>`
+  (`id` – skrót 64-bitowy wpisu `kanał=adres`, bez klucza i hasła w adresie
+  żądania); starszy odbiornik bez `input` = `on_live` kanału. Zmiana grafiki
+  wejścia działa od następnego przejęcia.
 - **Kiedy zachodzi przejęcie**: kanał ma sygnał live (dostępny, niewstrzymany
   przez `hold`/ZDEJMIJ), a nakładka czyta go w przebiegu live
   (`GET /ingest?channel=N&take=…`), bądź taki przebieg zakończył się nie dawniej

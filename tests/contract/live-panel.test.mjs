@@ -220,6 +220,23 @@ test("the panel tells publishers where to send: RTMP server and key, SRT address
   assert.ok(body.channels.filter((c) => !["4", "7"].includes(c.number)).every((c) => c.inputs.length === 0), "other channels: no inputs");
 });
 
+test("an input may have its own graphics for a takeover from it, kept in inputs.json", async (t) => {
+  const { folder, api } = await setup(t);
+  const listeners = [
+    { channel: "1", url: "https://www.youtube.com/@kanal/live", on_live: "TAKE 7510" },
+    { channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", on_live: null },
+  ];
+  const put = await api("PUT", "inputs", { listeners });
+  assert.equal(put.status, 200);
+  assert.deepEqual(put.body.listeners, listeners);
+  const file = JSON.parse(readFileSync(path.join(folder, "vizrs-live", "inputs.json"), "utf8"));
+  assert.deepEqual(file.on_live, { "1=https://www.youtube.com/@kanal/live": "TAKE 7510" });
+  assert.equal(file.listeners, "1=https://www.youtube.com/@kanal/live; 1=rtmp://0.0.0.0:1936/live/studio", "an older reader sees the same list");
+  assert.deepEqual((await api("GET", "inputs")).body.listeners, listeners);
+  const bad = await api("PUT", "inputs", { listeners: [{ channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", on_live: 7510 }] });
+  assert.equal(bad.status, 400, "graphics of an input are text");
+});
+
 // K12–K17 of VizRS Live's PLAN-mcr: the layers on air, TAKE / CONTINUE / OUT by
 // hand, the as-run log and the alarm webhook. `features` of the state says which
 // of them this build has, so an older sidecar never breaks a newer panel.
@@ -229,7 +246,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -328,7 +345,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

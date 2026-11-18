@@ -3,7 +3,8 @@
 // panel rozmawia z nim przez pośrednika serwera /api/cg/live/… (token CG zostaje w serwerze).
 
 import { VIEWS, S, h, head, panel, pill, btn, table, toast, cmd, cmdNote, confirmDlg, dialog, has, route, pad2, hm, pl, operatorName, onChannel } from '../core.js';
-import { cg } from './grafika.js';
+import { cg, allPages } from './grafika.js';
+import { cmdEditor } from '../cmdedit.js';
 import { fromLegacy, toReplace } from './harmonogramy.js';
 import { minutesOf, hhmm, span } from '../parts.js';
 
@@ -113,6 +114,12 @@ const youtubeNote = (what) => (what === 'channel'
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 function parseInput(l) {
+  const r = parseAddress(l);
+  r.on_live = l.on_live || '';
+  return r;
+}
+
+function parseAddress(l) {
   if (/^https?:/i.test(l.url)) return { channel: l.channel, kind: 'youtube', url: l.url, port: 0, app: '', secret: '', rest: '' };
   const m = /^(rtmp|srt):\/\/[^/:?]*:(\d+)([^?]*)\??(.*)$/i.exec(l.url) || [];
   const kind = (m[1] || 'rtmp').toLowerCase();
@@ -136,6 +143,9 @@ async function editInputs(forChannel) {
     toast(/nie ma takiego adresu|brak tej funkcji/.test(e.message) ? 'Ten VizRS CG Playout nie pozwala ustawiać wejść z panelu – zaktualizuj go (VIZRS_INGEST w jego .env działa nadal).' : e.message, 'bad');
     return;
   }
+  // Grafika wejścia (CG Playout z `input_on_live` w features): na czas przejęcia z tego wejścia zamiast grafiki live kanału.
+  const ownGraphics = (view?.state.features || []).includes('input_on_live');
+  const pages = ownGraphics ? await allPages(view?.state.channels || []) : new Map();
   const ports = data.ports || { rtmp: [1936, 1943], srt: [9000, 9007] };
   const range = (k) => { const [a, b] = ports[k]; return Array.from({ length: b - a + 1 }, (_, i) => a + i); };
   const rows = (data.listeners || []).map(parseInput);
@@ -145,6 +155,15 @@ async function editInputs(forChannel) {
   if (forChannel != null) rows.push({ channel: forChannel, kind: 'rtmp', port: freePort('rtmp'), app: '/live', secret: randomKey(), rest: '' });
   const list = h('div', { class: 'inputs-edit', 'data-inputs-edit': '' });
   const opt = (v, t, sel) => h('option', { value: String(v), selected: sel }, t);
+  // edytor grafiki wejścia – jeden na wiersz, zachowany przy przerysowaniu
+  const graphicsOf = (r, n) => {
+    if (!ownGraphics) return null;
+    if (!r.ed) {
+      r.ed = cmdEditor({ id: `in-gr-${n}`, label: `Grafika wejścia ${n + 1}`, value: r.on_live || null, pages, scoped: true, noOff: true, inheritText: 'grafika live kanału' });
+    }
+    return h('div', { class: 'in-graphics' }, h('span', { class: 'dim' }, 'Na antenie z tego wejścia:'), r.ed.el);
+  };
+  const row = (r, n, ...parts) => h('div', { class: 'in-row' }, h('div', { class: 'bar' }, ...parts), graphicsOf(r, n));
   function draw() {
     list.replaceChildren(...(rows.length ? rows.map((r, n) => {
       const ch = h('select', { 'aria-label': `Kanał wejścia ${n + 1}` }, channels.map((c) => opt(c, `${c} ${nameOf(c)}`.trim(), c === r.channel)));
@@ -160,14 +179,14 @@ async function editInputs(forChannel) {
         const url = h('input', { value: r.url || '', class: 'mono grow', placeholder: 'https://www.youtube.com/watch?v=… albo https://www.youtube.com/@kanał/live', 'aria-label': `Adres YouTube wejścia ${n + 1}` });
         const note = h('span', { class: 'dim' }, r.url ? youtubeNote(youtubeChannel(r.url) ? 'channel' : 'video') : '');
         url.addEventListener('input', () => { r.url = url.value.trim(); note.textContent = YOUTUBE.test(r.url) ? youtubeNote(youtubeChannel(r.url) ? 'channel' : 'video') : 'adres YouTube: https://www.youtube.com/… albo https://youtu.be/…'; });
-        return h('div', { class: 'bar' }, ch, kind, url, del, note);
+        return row(r, n, ch, kind, url, del, note);
       }
       const port = h('select', { 'aria-label': `Port wejścia ${n + 1}` }, range(r.kind).map((p) => opt(p, String(p), p === r.port)));
       if (!range(r.kind).includes(r.port)) port.prepend(opt(r.port, `${r.port} (spoza zakresu)`, true));
       port.addEventListener('change', () => { r.port = +port.value; });
       const secret = h('input', { value: r.secret, class: 'mono grow', placeholder: r.kind === 'rtmp' ? 'klucz strumienia' : 'hasło 10–79 znaków (puste = bez hasła)', 'aria-label': `${r.kind === 'rtmp' ? 'Klucz' : 'Hasło'} wejścia ${n + 1}` });
       secret.addEventListener('input', () => { r.secret = secret.value.trim(); });
-      return h('div', { class: 'bar' }, ch, kind, port, secret,
+      return row(r, n, ch, kind, port, secret,
         btn('Losuj', () => { r.secret = randomKey(); draw(); }),
         del);
     }) : [h('div', { class: 'empty' }, 'Brak wejść – żaden kanał nie przyjmie sygnału ze studia.')]),
@@ -180,12 +199,21 @@ async function editInputs(forChannel) {
       'Wejście YouTube nie zajmuje portu: CG Playout sam pobiera transmisję albo nagranie (H.264 do 1080p) i przejmuje kanał jak sygnał ze studia – poza audycjami LIVE tylko przy „studio także poza audycjami”.'),
     data.from === 'env' ? h('p', { class: 'dim' }, 'Teraz obowiązuje VIZRS_INGEST z konfiguracji CG Playout; po zapisie – lista z panelu.') : null,
     data.ingest ? null : h('div', { class: 'note warn' }, 'Odbiór sygnałów w CG Playout jest wyłączony (brak VIZRS_INGEST_TOKEN) – wejścia zapiszą się, ale nie zadziałają.'),
+    ownGraphics ? h('p', { class: 'dim' }, 'Grafika wejścia (np. logo z dopiskiem NA ŻYWO) wchodzi, gdy kanał przejmuje sygnał z tego wejścia – zamiast grafiki live kanału z ekranu Grafika kanału; po zejściu sygnału wraca grafika ramówki.') : null,
     list);
   if (!await dialog('Wejścia studia', body, [['Anuluj', false], ['Zapisz', true, 'acc']])) return;
   const bad = rows.find((r) => r.kind === 'youtube' && !YOUTUBE.test(r.url || ''));
   if (bad) { toast(`Kanał ${bad.channel}: to nie jest adres YouTube (https://www.youtube.com/… albo https://youtu.be/…)`, 'bad'); return; }
+  let listeners;
   try {
-    await cg('live/inputs', 'PUT', { listeners: rows.map((r) => ({ channel: r.channel, url: inputUrl(r) })) });
+    listeners = rows.map((r) => {
+      const item = { channel: r.channel, url: inputUrl(r) };
+      if (ownGraphics) item.on_live = r.ed ? r.ed.read() : r.on_live || null;
+      return item;
+    });
+  } catch (e) { toast(e.message, 'bad'); return; }
+  try {
+    await cg('live/inputs', 'PUT', { listeners });
     toast('Wejścia zapisane w CG Playout – odbiorniki przejmą je w ciągu kilku sekund');
   } catch (e) { toast(e.message, 'bad'); }
   route(true);

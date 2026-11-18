@@ -113,17 +113,48 @@ impl Settings {
     }
 }
 
-/// `inputs.json`: `{"listeners": "1=rtmp://…; 2=srt://…"}` (`VIZRS_INGEST`'s format).
-fn inputs_to_json(list: &[crate::listener::Listener]) -> String {
-    let text = list.iter().map(|l| format!("{}={}", l.channel, l.url)).collect::<Vec<_>>().join("; ");
-    format!("{}\n", json::object([("listeners", text.into())]))
+/// Graphics of the inputs on air in a takeover (in place of the channel's
+/// `on_live`), by their entry `channel=url`.
+type InputGraphics = BTreeMap<String, String>;
+
+/// Longest `on_live` of an input (characters).
+const INPUT_GRAPHICS_MAX: usize = 4000;
+
+fn entry_of(l: &crate::listener::Listener) -> String {
+    format!("{}={}", l.channel, l.url)
 }
 
-fn inputs_from_json(text: &str) -> Result<Vec<crate::listener::Listener>, String> {
+/// `inputs.json`: `{"listeners": "1=rtmp://…; 2=srt://…", "on_live": {"1=rtmp://…": "TAKE 7510"}}`
+/// (`listeners` in `VIZRS_INGEST`'s format; `on_live` only for the inputs that have it).
+fn inputs_to_json(list: &[crate::listener::Listener], graphics: &InputGraphics) -> String {
+    let text = list.iter().map(entry_of).collect::<Vec<_>>().join("; ");
+    let own: Vec<(String, Value)> =
+        list.iter().filter_map(|l| graphics.get(&entry_of(l)).map(|g| (entry_of(l), Value::from(g.as_str())))).collect();
+    let mut members = vec![("listeners".to_owned(), Value::from(text))];
+    if !own.is_empty() {
+        members.push(("on_live".to_owned(), Value::Object(own)));
+    }
+    format!("{}\n", Value::Object(members))
+}
+
+fn inputs_from_json(text: &str) -> Result<(Vec<crate::listener::Listener>, InputGraphics), String> {
     let value = json::parse(text).map_err(|e| e.to_string())?;
     let listeners = value.get("listeners").and_then(Value::as_str).ok_or("listeners?")?;
     let (list, errors) = crate::listener::parse_listeners(listeners);
-    errors.first().map_or(Ok(list), |e| Err(e.clone()))
+    if let Some(e) = errors.first() {
+        return Err(e.clone());
+    }
+    let mut graphics = InputGraphics::new();
+    if let Some(Value::Object(own)) = value.get("on_live") {
+        for (entry, commands) in own {
+            if let Some(commands) = commands.as_str().map(str::trim).filter(|c| !c.is_empty()) {
+                if list.iter().any(|l| entry_of(l) == *entry) {
+                    graphics.insert(entry.clone(), commands.chars().take(INPUT_GRAPHICS_MAX).collect());
+                }
+            }
+        }
+    }
+    Ok((list, graphics))
 }
 
 /// What the panel last got from ErsatzTV.
@@ -167,6 +198,8 @@ pub struct Panel {
     config: Config,
     /// Live ingest listeners in force: `inputs.json` (VizRS Live) or `VIZRS_INGEST`, and whether from the file.
     listeners: Mutex<(Vec<crate::listener::Listener>, bool)>,
+    /// Graphics of the inputs (`on_live` of an input in `inputs.json`).
+    input_graphics: Mutex<InputGraphics>,
     /// How publishers reach the listeners: host, host ports of the first port of each range.
     public: (String, Option<u16>, Option<u16>),
     graphics: Arc<crate::graphics::Store>,
@@ -296,6 +329,7 @@ impl Panel {
         let panel = Arc::new(Panel {
             token: config.panel_token.clone(),
             listeners: Mutex::new((listeners, false)),
+            input_graphics: Mutex::new(InputGraphics::new()),
             public: (config.ingest_public.clone(), config.ingest_rtmp_port, config.ingest_srt_port),
             graphics,
             etv_config: config.etv_config.clone(),
@@ -326,7 +360,10 @@ impl Panel {
         panel.fill_encoder();
         if let Some(path) = panel.inputs_path() {
             match fs::read_to_string(&path).map(|text| inputs_from_json(&text)) {
-                Ok(Ok(list)) => *lock(&panel.listeners) = (list, true),
+                Ok(Ok((list, graphics))) => {
+                    *lock(&panel.listeners) = (list, true);
+                    *lock(&panel.input_graphics) = graphics;
+                }
                 Ok(Err(e)) => crate::warn!("{}: {e}; inputs from VIZRS_INGEST", path.display()),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => crate::warn!("{}: {e}", path.display()),
@@ -467,6 +504,14 @@ impl Panel {
         (!self.etv_config.is_empty()).then(|| live_shows::folder(&self.etv_config).join("inputs.json"))
     }
 
+    /// The own graphics (`on_live`) of the channel's input `input`
+    /// (`listener::input_id`) – in a takeover in place of the channel's.
+    pub fn input_on_live(&self, channel: &str, input: &str) -> Option<String> {
+        let listeners = lock(&self.listeners);
+        let listener = listeners.0.iter().find(|l| l.channel == channel && crate::listener::input_id(l) == input)?;
+        lock(&self.input_graphics).get(&entry_of(listener)).cloned()
+    }
+
     /// Inputs of a channel as publishers see them.
     fn inputs_of(&self, number: &str) -> Vec<Value> {
         let (host, rtmp, srt) = &self.public;
@@ -503,9 +548,14 @@ impl Panel {
             listeners.0.retain(|l| *l != wanted);
             listeners.clone()
         };
+        let graphics = {
+            let mut graphics = lock(&self.input_graphics);
+            graphics.remove(&entry_of(&wanted));
+            graphics.clone()
+        };
         if from_file {
             if let Some(path) = self.inputs_path() {
-                if let Err(e) = crate::sync::write_atomic(&path, &inputs_to_json(&list)) {
+                if let Err(e) = crate::sync::write_atomic(&path, &inputs_to_json(&list, &graphics)) {
                     crate::warn!("{}: {e}", path.display());
                 }
             }
@@ -517,8 +567,15 @@ impl Panel {
     fn inputs_json(&self, ingest: &Ingest) -> Value {
         use crate::listener::{RTMP_PORTS, SRT_PORTS};
         let (listeners, from_file) = lock(&self.listeners).clone();
+        let graphics = lock(&self.input_graphics).clone();
         let range = |r: std::ops::RangeInclusive<u16>| Value::Array(vec![f64::from(*r.start()).into(), f64::from(*r.end()).into()]);
-        let items = listeners.iter().map(|l| json::object([("channel", l.channel.as_str().into()), ("url", l.url.as_str().into())]));
+        let items = listeners.iter().map(|l| {
+            json::object([
+                ("channel", l.channel.as_str().into()),
+                ("url", l.url.as_str().into()),
+                ("on_live", graphics.get(&entry_of(l)).map_or(Value::Null, |g| g.as_str().into())),
+            ])
+        });
         json::object([
             ("listeners", Value::Array(items.collect())),
             ("from", if from_file { "panel" } else { "env" }.into()),
@@ -534,13 +591,24 @@ impl Panel {
             return fail(stream, 400, "listeners: lista {channel, url}");
         };
         let mut entries = Vec::new();
+        let mut graphics = InputGraphics::new();
         for item in items {
             let channel = item.get("channel").and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_f64().map(|n| n.to_string())));
             let url = item.get("url").and_then(Value::as_str);
-            match (channel, url) {
-                (Some(c), Some(u)) if Self::valid_channel(c.trim()) => entries.push(format!("{}={}", c.trim(), u.trim())),
+            let entry = match (channel, url) {
+                (Some(c), Some(u)) if Self::valid_channel(c.trim()) => format!("{}={}", c.trim(), u.trim()),
                 _ => return fail(stream, 400, "wejście: kanał (np. 2) i adres rtmp://, srt:// albo YouTube"),
+            };
+            match item.get("on_live") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(commands)) if commands.chars().count() <= INPUT_GRAPHICS_MAX => {
+                    if !commands.trim().is_empty() {
+                        graphics.insert(entry.clone(), commands.trim().to_owned());
+                    }
+                }
+                Some(_) => return fail(stream, 400, &format!("grafika wejścia: tekst komend, do {INPUT_GRAPHICS_MAX} znaków")),
             }
+            entries.push(entry);
         }
         let (list, errors) = crate::listener::parse_listeners(&entries.join("; "));
         if let Some(e) = errors.first() {
@@ -553,7 +621,7 @@ impl Panel {
             return fail(stream, 409, "brak etv_config – wejść nie ma gdzie zapisać");
         };
         let written = fs::create_dir_all(live_shows::folder(&self.etv_config))
-            .and_then(|()| crate::sync::write_atomic(&path, &inputs_to_json(&list)));
+            .and_then(|()| crate::sync::write_atomic(&path, &inputs_to_json(&list, &graphics)));
         if let Err(e) = written {
             return fail(stream, 500, &format!("zapis inputs.json: {e}"));
         }
@@ -565,6 +633,7 @@ impl Panel {
             &format!("wejścia studia zmienione: {}", if channels.is_empty() { "brak".into() } else { channels.join(", ") }),
         );
         *lock(&self.listeners) = (list, true);
+        *lock(&self.input_graphics) = graphics;
         reply(stream, 200, &self.inputs_json(ingest))
     }
 
@@ -975,6 +1044,7 @@ impl Panel {
             Value::from("thumbs"),
             Value::from("logs"),
             Value::from("on_live"),
+            Value::from("input_on_live"),
         ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
@@ -1416,8 +1486,20 @@ mod tests {
     #[test]
     fn inputs_round_trip() {
         let (list, _) = crate::listener::parse_listeners("1=rtmp://0.0.0.0:1936/live/a; 2=srt://0.0.0.0:9000?passphrase=0123456789");
-        assert_eq!(inputs_from_json(&inputs_to_json(&list)).unwrap(), list);
-        assert_eq!(inputs_from_json(r#"{"listeners":""}"#).unwrap(), []);
+        let none = InputGraphics::new();
+        assert_eq!(inputs_from_json(&inputs_to_json(&list, &none)).unwrap(), (list.clone(), none.clone()));
+        assert!(!inputs_to_json(&list, &none).contains("on_live"), "an older reader sees the same file");
+        let mut own = InputGraphics::new();
+        own.insert("2=srt://0.0.0.0:9000?passphrase=0123456789".into(), "TAKE 7510".into());
+        own.insert("3=rtmp://0.0.0.0:1937/live/gone".into(), "TAKE 1".into());
+        let (back, graphics) = inputs_from_json(&inputs_to_json(&list, &own)).unwrap();
+        assert_eq!(back, list);
+        // Graphics of an input not on the list are left out.
+        assert_eq!(
+            graphics.into_iter().collect::<Vec<_>>(),
+            [("2=srt://0.0.0.0:9000?passphrase=0123456789".to_owned(), "TAKE 7510".to_owned())]
+        );
+        assert_eq!(inputs_from_json(r#"{"listeners":""}"#).unwrap(), (vec![], none));
         assert!(inputs_from_json(r#"{"listeners":"1=http://x"}"#).is_err());
     }
 

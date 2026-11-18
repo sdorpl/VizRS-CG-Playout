@@ -70,7 +70,7 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live'],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live'],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
           inputs: [{ kind: 'rtmp', host: 'tv.example.pl', port: 1936, app: '/live', key: 'studio-klucz', passphrase: '', streamid: '' },
@@ -1632,11 +1632,21 @@ function check(cond, msg) {
   await page.selectOption('select[aria-label="Rodzaj wejścia 3"]', 'youtube');
   await page.fill('input[aria-label="Adres YouTube wejścia 3"]', 'https://www.youtube.com/@kanal/live');
   check(/każda jego transmisja/.test(await page.textContent('[data-inputs-edit]')), 'wejścia: YouTube – strona live kanału rozpoznana');
+  // grafika wejścia (CG Playout z „input_on_live”): logo NA ŻYWO na czas przejęcia z tego wejścia
+  check(await page.inputValue('#in-gr-0') === 'inherit', 'wejścia: grafika wejścia domyślnie jak grafika live kanału');
+  await page.selectOption('#in-gr-2', 'cmd');
+  await page.selectOption('select[aria-label="Grafika wejścia 3: strona 1"]', '1001');
   await page.click('#dlg-buttons button:has-text("Zapisz")');
   await page.waitForSelector('#overlay', { state: 'hidden' });
   const saved = JSON.stringify(CG.inputs || []);
   check(saved.includes('rtmp://0.0.0.0:1936/live/studio-klucz') && saved.includes('srt://0.0.0.0:9000?passphrase=haslo-studia-2') && saved.includes('"url":"https://www.youtube.com/@kanal/live"'),
     'wejścia: zapis listy do CG Playout (RTMP 1936, SRT 9000 z hasłem, YouTube)');
+  check(CG.inputs[2].on_live === 'TAKE 1001' && CG.inputs[0].on_live === null, `wejścia: grafika tylko przy wejściu YouTube (${saved})`);
+  await page.click('button:has-text("Ustaw wejścia…")');
+  await page.waitForSelector('[data-inputs-edit]');
+  check(await page.inputValue('#in-gr-2') === 'cmd' && /1001/.test(await page.textContent('[data-cmd-editor="in-gr-2"]')), 'wejścia: grafika wejścia wraca z CG Playout');
+  await page.click('#dlg-buttons button:has-text("Anuluj")');
+  await page.waitForSelector('#overlay', { state: 'hidden' });
   // M9: logi ze źródłem – zdarzenia VizRS CG Playout
   await page.goto(`${BASE}/#logi`);
   await page.waitForSelector('main[data-view="logi"] #log-src');

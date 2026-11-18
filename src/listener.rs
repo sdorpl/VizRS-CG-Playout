@@ -293,13 +293,26 @@ impl Settings {
     }
 }
 
+/// The id of an input for the sidecar (`input=` of `POST /ingest`): a hash of
+/// its entry, so that the address (an SRT passphrase, an RTMP key) is not in a
+/// URL. The sidecar finds the input's own graphics by it (`on_live` of the input).
+pub fn input_id(listener: &Listener) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in listener.channel.bytes().chain(*b"=").chain(listener.url.bytes()) {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// `POST /ingest` to the sidecar; the socket for the body once it accepted.
-fn open_source(settings: &Settings, channel: &str) -> io::Result<TcpStream> {
+fn open_source(settings: &Settings, listener: &Listener) -> io::Result<TcpStream> {
+    let channel = &listener.channel;
     let url = Url::split(&settings.sidecar).ok_or_else(|| error(format!("bad sidecar URL {}", settings.sidecar)))?;
     let mut stream = connect(&url)?;
     let request = format!(
-        "POST /ingest?channel={} HTTP/1.0\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: video/mp2t\r\n\r\n",
+        "POST /ingest?channel={}&input={} HTTP/1.0\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: video/mp2t\r\n\r\n",
         quote_plus(channel),
+        input_id(listener),
         url.netloc,
         settings.token
     );
@@ -347,7 +360,7 @@ fn serve(settings: &Settings, listener: &Listener, child: &mut Child) -> bool {
             },
         };
         if sidecar.is_none() && Instant::now() >= retry {
-            match open_source(settings, channel) {
+            match open_source(settings, listener) {
                 Ok(stream) => sidecar = Some(stream),
                 Err(e) => {
                     log(format_args!("channel {channel}: {e}; retrying"));
@@ -806,6 +819,16 @@ mod tests {
             (get(&v, "kind"), get(&v, "port"), get(&v, "passphrase"), get(&v, "key")),
             ("\"srt\"".into(), "9100".into(), "\"tajne-haslo-1\"".into(), "\"\"".into())
         );
+    }
+
+    #[test]
+    fn input_id_is_stable_and_hides_the_address() {
+        let (list, _) = parse_listeners("1=srt://0.0.0.0:9000?passphrase=0123456789; 2=srt://0.0.0.0:9001?passphrase=0123456789");
+        let (a, b) = (input_id(&list[0]), input_id(&list[1]));
+        assert_eq!(a.len(), 16);
+        assert_ne!(a, b);
+        assert_eq!(a, input_id(&list[0].clone()));
+        assert!(!a.contains("0123456789"));
     }
 
     #[test]
