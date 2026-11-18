@@ -1,6 +1,6 @@
 #!/bin/sh
 # Wspólny rdzeń wyglądu rodziny VizRS (vizrs-ui.css) – kopia ze źródła w VizRS CG System (source/web/vizrs-ui.css) –
-# i moduły okna wspólne dla okien pakietu (desktop/src/gpu.rs, scale.rs, screen.rs ← source/shell/src/).
+# i moduły okna wspólne dla okien pakietu (desktop/src/gpu.rs, scale.rs, screen.rs, conn_url.rs ← source/shell/src/).
 #   scripts/sync-ui.sh [KATALOG-CG-SYSTEM]          – skopiuj vizrs-ui.css do server/web/ i zapisz wersję źródła
 #   scripts/sync-ui.sh --check [KATALOG-CG-SYSTEM]  – sprawdź, że server/web/vizrs-ui.css jest identyczny ze źródłem (CI, deploy.sh)
 # Domyślnie ../../VizRS CG System (repo obok repozytorium VizRS CG Playout). Wersja źródła: server/web/CG_SYSTEM (commit CG System; CI pobiera ten stan do --check).
@@ -13,7 +13,7 @@ CG="${1:-$TOP/../../VizRS CG System}"
 SRC="$CG/source/web/vizrs-ui.css"
 DST="$TOP/server/web/vizrs-ui.css"
 [ -f "$SRC" ] || { echo "sync-ui: brak źródła $SRC" >&2; exit 2; }
-WINDOW="gpu.rs scale.rs screen.rs"
+WINDOW="gpu.rs scale.rs screen.rs conn_url.rs"
 if [ -n "$CHECK" ]; then
   cmp -s "$SRC" "$DST" || { echo "sync-ui: server/web/vizrs-ui.css różni się od CG System – uruchom scripts/sync-ui.sh" >&2; exit 1; }
   for f in $WINDOW; do

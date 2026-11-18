@@ -10,6 +10,8 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
+pub use crate::conn_url::{normalize_url, valid_token};
+
 /// Najwięcej zapisanych serwerów.
 const MAX_SAVED: usize = 20;
 
@@ -138,39 +140,6 @@ impl Saved {
     }
 }
 
-/// Adres serwera: `http(s)://host[:port][/ścieżka]`, bez końcowego `/`. Sam host → `https://`.
-pub fn normalize_url(s: &str) -> Result<String, String> {
-    let s = s.trim().trim_end_matches('/');
-    if s.is_empty() {
-        return Err("podaj adres serwera".into());
-    }
-    let s = if s.contains("://") {
-        s.to_string()
-    } else {
-        format!("https://{s}")
-    };
-    let rest = s
-        .strip_prefix("https://")
-        .or_else(|| s.strip_prefix("http://"))
-        .ok_or(format!(
-            "adres musi zaczynać się od http:// albo https:// („{s}”)"
-        ))?;
-    let host = rest.split('/').next().unwrap_or("");
-    let ok_char = |c: char| c.is_ascii_alphanumeric() || "-._:[]/~%".contains(c);
-    if host.is_empty() || !rest.chars().all(ok_char) || s.len() > 300 {
-        return Err(format!("niepoprawny adres serwera „{s}”"));
-    }
-    Ok(s)
-}
-
-/// Znaki tokenu takie jak w serwerze (`--token`).
-pub fn valid_token(t: &str) -> bool {
-    !t.is_empty()
-        && t.len() <= 256
-        && t.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
-}
-
 /// Żądanie połączenia z serwerem.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
@@ -237,26 +206,6 @@ pub fn page_data(saved: &Saved, current: &str, current_token: Option<&str>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn urls() {
-        assert_eq!(
-            normalize_url(" https://cg.example.pl/ ").unwrap(),
-            "https://cg.example.pl"
-        );
-        assert_eq!(
-            normalize_url("cg.example.pl").unwrap(),
-            "https://cg.example.pl"
-        );
-        assert_eq!(
-            normalize_url("http://10.0.0.5:8088").unwrap(),
-            "http://10.0.0.5:8088"
-        );
-        assert!(normalize_url("").is_err());
-        assert!(normalize_url("ftp://x").is_err());
-        assert!(normalize_url("https://a b").is_err());
-        assert!(normalize_url("https://x/'><script>").is_err());
-    }
 
     #[test]
     fn health() {}
