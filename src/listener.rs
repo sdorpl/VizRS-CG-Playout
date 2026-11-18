@@ -20,6 +20,9 @@
 //
 // A YouTube input (`1=https://www.youtube.com/…`) has no publisher: yt-dlp
 // finds its stream, ffmpeg reads it and the rest goes as from a publisher.
+// A link input (`1=https://host/live.m3u8`, `rtmp://host/app/key`,
+// `srt://host:port`, `rtsp://…` – a host not of this machine) has none either:
+// ffmpeg reads the stream itself, and reads it again whenever it ends.
 //
 // ffmpeg's RTMP server takes any stream name and only warns about one it
 // does not expect: that publisher is cut off here, so the key is the password.
@@ -43,6 +46,13 @@ const DEFAULT_YTDLP: &str = "/vizrs/yt-dlp";
 const RESOLVE_LIMIT: Duration = Duration::from_secs(90);
 /// A YouTube input that is not on (a broadcast not started, a refused lookup) is asked again this often.
 const YOUTUBE_AGAIN: Duration = Duration::from_secs(30);
+/// A link input that gave nothing (the stream not on, a refused address) is read again this often.
+const LINK_AGAIN: Duration = Duration::from_secs(10);
+/// ffmpeg's read and connect limit for a link input (microseconds): a server
+/// that stops sending ends the read instead of hanging it.
+const LINK_TIMEOUT_US: &str = "15000000";
+/// The longest link input address.
+const LINK_MAX: usize = 1000;
 /// What the takeover can take copied into MPEG-TS: H.264 and AAC (not VP9,
 /// AV1 or Opus), at most 1080p; a broadcast's audio has no codec in its list,
 /// so only WebM (Opus) audio is left out.
@@ -62,26 +72,44 @@ const POLL: Duration = Duration::from_secs(5);
 pub const RTMP_PORTS: std::ops::RangeInclusive<u16> = 1936..=1943;
 pub const SRT_PORTS: std::ops::RangeInclusive<u16> = 9000..=9007;
 
-/// What an input is: a listener a publisher comes to, or a YouTube address the
-/// service fetches itself (yt-dlp finds the stream, ffmpeg reads it).
+/// What an input is: a listener a publisher comes to, a YouTube address the
+/// service fetches itself (yt-dlp finds the stream, ffmpeg reads it) or a
+/// link to a stream ffmpeg reads (HLS, RTMP, SRT caller, RTSP).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
     Rtmp,
     Srt,
     YouTube,
+    Link,
 }
 
-/// The kind of an input URL; `None` = not one of them.
+/// The host of a URL's netloc: no userinfo, port or IPv6 brackets, lower case.
+fn host_of(netloc: &str) -> String {
+    let host_port = netloc.rsplit('@').next().unwrap_or("");
+    let host = match host_port.rfind(':').filter(|&i| !host_port[i..].contains(']')) {
+        Some(i) => &host_port[..i],
+        None => host_port,
+    };
+    host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase()
+}
+
+/// The kind of an input URL; `None` = not one of them. `rtmp://` and `srt://`
+/// on 0.0.0.0, `::` or a loopback address listen; on another host they are a link to read.
 pub fn kind_of(url: &str) -> Option<Kind> {
     let parts = Url::split(url)?;
+    let host = host_of(parts.netloc);
+    if host.is_empty() || host.contains(|c: char| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    // This machine's addresses: nothing to read from there in a container, a listener binds them.
+    let listens = matches!(host.as_str(), "0.0.0.0" | "::" | "::1" | "localhost") || host.starts_with("127.");
     match parts.scheme.as_str() {
-        "rtmp" => Some(Kind::Rtmp),
-        "srt" => Some(Kind::Srt),
-        "http" | "https" => {
-            let host = parts.netloc.rsplit('@').next().unwrap_or("").to_ascii_lowercase();
-            let host = host.split(':').next().unwrap_or("");
-            let host = ["www.", "m.", "music."].iter().find_map(|p| host.strip_prefix(p)).unwrap_or(host);
-            (matches!(host, "youtube.com" | "youtu.be") && parts.path.len() > 1).then_some(Kind::YouTube)
+        "rtmp" if listens => Some(Kind::Rtmp),
+        "srt" if listens => Some(Kind::Srt),
+        "rtmp" | "rtmps" | "srt" | "rtsp" | "rtsps" if !listens => Some(Kind::Link),
+        "http" | "https" if !listens => {
+            let short = ["www.", "m.", "music."].iter().find_map(|p| host.strip_prefix(p)).unwrap_or(&host);
+            if matches!(short, "youtube.com" | "youtu.be") { (parts.path.len() > 1).then_some(Kind::YouTube) } else { Some(Kind::Link) }
         }
         _ => None,
     }
@@ -112,7 +140,7 @@ pub fn parse_listeners(text: &str) -> (Vec<Listener>, Vec<String>) {
             continue;
         };
         if kind_of(url).is_none() {
-            errors.push(format!("\"{entry}\": only rtmp:// and srt:// listeners and YouTube addresses"));
+            errors.push(format!("\"{entry}\": only rtmp:// and srt:// listeners on 0.0.0.0, YouTube addresses and links to a stream"));
         } else if channel.trim().is_empty() {
             errors.push(format!("\"{entry}\": no channel"));
         } else if listeners.iter().any(|l| l.url == url) {
@@ -143,6 +171,10 @@ pub fn publisher(listener: &Listener, host: &str, rtmp_port: Option<u16>, srt_po
         let live = if youtube_channel_live(&listener.url) { "channel" } else { "video" };
         return json::object([("kind", "youtube".into()), ("url", listener.url.as_str().into()), ("youtube", live.into())]);
     }
+    if kind_of(&listener.url) == Some(Kind::Link) {
+        let scheme = Url::split(&listener.url).map_or(String::new(), |u| u.scheme);
+        return json::object([("kind", "link".into()), ("url", listener.url.as_str().into()), ("scheme", scheme.as_str().into())]);
+    }
     let url = Url::split(&listener.url);
     let kind = url.as_ref().map_or(String::new(), |u| u.scheme.to_ascii_lowercase());
     let own_port = url.as_ref().and_then(|u| u.netloc.rsplit_once(':')).and_then(|(_, p)| p.parse::<u16>().ok());
@@ -171,6 +203,35 @@ pub fn publisher(listener: &Listener, host: &str, rtmp_port: Option<u16>, srt_po
     ])
 }
 
+/// A short name of an input for the operator, without its secrets: `RTMP 1936`,
+/// `SRT 9000`, `YouTube youtube.com/@name/live`, `Link HLS cdn.example.pl`.
+pub fn label(listener: &Listener) -> String {
+    let url = &listener.url;
+    let Some(parts) = Url::split(url) else { return url.chars().take(60).collect() };
+    let host = host_of(parts.netloc);
+    match kind_of(url) {
+        Some(Kind::Rtmp) => format!("RTMP {}", port_of(url).unwrap_or(1935)),
+        Some(Kind::Srt) => format!("SRT {}", port_of(url).unwrap_or(0)),
+        Some(Kind::YouTube) => {
+            let host = host.strip_prefix("www.").unwrap_or(&host);
+            let tail: String =
+                format!("{}{}", parts.path, if parts.query.is_empty() { String::new() } else { format!("?{}", parts.query) });
+            format!("YouTube {host}{}", tail.chars().take(60).collect::<String>())
+        }
+        Some(Kind::Link) => {
+            let what = match parts.scheme.as_str() {
+                "http" | "https" if parts.path.to_ascii_lowercase().ends_with(".m3u8") => "HLS",
+                "http" | "https" => "HTTP",
+                "rtmp" | "rtmps" => "RTMP",
+                "srt" => "SRT",
+                _ => "RTSP",
+            };
+            format!("Link {what} {host}")
+        }
+        None => url.chars().take(60).collect(),
+    }
+}
+
 /// The port a listener URL binds.
 pub fn port_of(url: &str) -> Option<u16> {
     Url::split(url).and_then(|u| u.netloc.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
@@ -187,6 +248,12 @@ pub fn check_listeners(listeners: &[Listener]) -> Option<String> {
         if kind_of(&l.url) == Some(Kind::YouTube) {
             if l.url.len() > 500 {
                 return Some(format!("kanał {}: adres YouTube dłuższy niż 500 znaków", l.channel));
+            }
+            continue;
+        }
+        if kind_of(&l.url) == Some(Kind::Link) {
+            if l.url.len() > LINK_MAX {
+                return Some(format!("kanał {}: link dłuższy niż {LINK_MAX} znaków", l.channel));
             }
             continue;
         }
@@ -225,6 +292,50 @@ pub fn listen_args(url: &str) -> Vec<OsString> {
     };
     args.extend(["-i".into(), input.into()]);
     // Every packet flushed: a small stream would otherwise wait in the pipe buffer.
+    let out = [
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-c",
+        "copy",
+        "-flush_packets",
+        "1",
+        "-f",
+        "mpegts",
+        "-mpegts_flags",
+        "+resend_headers",
+        "pipe:1",
+    ];
+    args.extend(out.iter().map(OsString::from));
+    args
+}
+
+/// ffmpeg's arguments for a link input: the stream read (an HTTP one – HLS, a
+/// file – in real time, as a recording would otherwise go at once) and
+/// remuxed to MPEG-TS on stdout like a publisher. Only the protocols of its
+/// own scheme: an HLS list cannot point ffmpeg at a local file.
+pub fn link_args(url: &str) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-nostats", "-loglevel", "warning"].iter().map(OsString::from).collect();
+    let scheme = Url::split(url).map_or(String::new(), |u| u.scheme);
+    let (protocols, options): (&str, &[&str]) = match scheme.as_str() {
+        "http" | "https" => (
+            "http,https,tcp,tls,crypto,httpproxy",
+            &["-re", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-rw_timeout", LINK_TIMEOUT_US],
+        ),
+        "rtmp" | "rtmps" => ("rtmp,rtmps,tcp,tls", &["-rw_timeout", LINK_TIMEOUT_US]),
+        "rtsp" | "rtsps" => ("rtsp,rtsps,rtp,srtp,udp,tcp,tls", &["-rtsp_transport", "tcp", "-timeout", LINK_TIMEOUT_US]),
+        // MPEG-TS: ffmpeg would analyse 5 s of it before the first packet goes out.
+        _ => ("srt", &["-analyzeduration", "2000000", "-timeout", LINK_TIMEOUT_US]),
+    };
+    args.extend(["-protocol_whitelist".into(), protocols.into()]);
+    args.extend(options.iter().map(OsString::from));
+    let input = if scheme == "srt" && !url.contains("mode=") {
+        format!("{url}{}mode=caller", if url.contains('?') { '&' } else { '?' })
+    } else {
+        url.to_owned()
+    };
+    args.extend(["-i".into(), input.into()]);
     let out = [
         "-map",
         "0:v:0",
@@ -443,8 +554,10 @@ fn spawn_ffmpeg(
 
 /// One listener until stopped: ffmpeg listens, a publisher comes, goes, ffmpeg listens again.
 fn listen(settings: &Settings, listener: &Listener, running: &Running) {
-    if kind_of(&listener.url) == Some(Kind::YouTube) {
-        return pull(settings, listener, running);
+    match kind_of(&listener.url) {
+        Some(Kind::YouTube) => return pull(settings, listener, running),
+        Some(Kind::Link) => return fetch(settings, listener, running),
+        _ => {}
     }
     let key = listener.url.to_ascii_lowercase().starts_with("rtmp") && rtmp_key(&listener.url).is_some();
     while !running.stop.load(Ordering::Relaxed) {
@@ -696,6 +809,39 @@ fn pull(settings: &Settings, listener: &Listener, running: &Running) {
     log(format_args!("channel {channel}: stopped reading YouTube {url}"));
 }
 
+/// A link input until stopped: ffmpeg reads the stream and it goes to the
+/// sidecar like a publisher; when it ends (a broadcast over, a server gone)
+/// it is read again, so the input stays on the list like a listener.
+fn fetch(settings: &Settings, listener: &Listener, running: &Running) {
+    let (channel, url) = (&listener.channel, &listener.url);
+    let mut failing = false;
+    while !running.stop.load(Ordering::Relaxed) {
+        let Some((mut child, _)) = spawn_ffmpeg(settings, link_args(url), listener, running, false) else {
+            if wait(running, LINK_AGAIN) {
+                break;
+            }
+            continue;
+        };
+        let served = serve(settings, listener, &mut child);
+        let _ = child.kill();
+        let _ = child.wait();
+        running.pid.store(0, Ordering::Relaxed);
+        if running.stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if served {
+            log(format_args!("channel {channel}: stream {url} ended; reading it again"));
+        } else if !failing {
+            log(format_args!("channel {channel}: no stream from {url}; trying again every {} s", LINK_AGAIN.as_secs()));
+        }
+        failing = !served;
+        if wait(running, if served { AGAIN } else { LINK_AGAIN }) {
+            break;
+        }
+    }
+    log(format_args!("channel {channel}: stopped reading {url}"));
+}
+
 /// The sidecar's list (`GET /ingest/listeners`); `None` = an older sidecar without it.
 fn sidecar_listeners(settings: &Settings) -> io::Result<Option<Vec<Listener>>> {
     let headers = format!("Authorization: Bearer {}\r\n", settings.token);
@@ -743,7 +889,8 @@ pub fn run(settings: Settings) -> i32 {
                 if running.iter().any(|(l, _)| *l == listener) {
                     continue;
                 }
-                log(format_args!("channel {}: listening on {}", listener.channel, listener.url));
+                let doing = if matches!(kind_of(&listener.url), Some(Kind::Rtmp | Kind::Srt)) { "listening on" } else { "reading" };
+                log(format_args!("channel {}: {doing} {}", listener.channel, listener.url));
                 let handle = Arc::new(Running::default());
                 running.push((listener.clone(), Arc::clone(&handle)));
                 let settings = Arc::clone(&settings);
@@ -761,7 +908,7 @@ mod tests {
     #[test]
     fn listeners() {
         let (list, errors) =
-            parse_listeners("1=rtmp://0.0.0.0:1936/live/abc; 2=srt://0.0.0.0:9000?passphrase=x,y\n3=http://a 4 =rtmp://x/a/b");
+            parse_listeners("1=rtmp://0.0.0.0:1936/live/abc; 2=srt://0.0.0.0:9000?passphrase=x,y\n3=ftp://a 4 =rtmp://x/a/b");
         assert_eq!(
             list,
             [
@@ -837,14 +984,14 @@ mod tests {
         assert_eq!(kind_of("https://youtu.be/abc"), Some(Kind::YouTube));
         assert_eq!(kind_of("https://m.youtube.com/@kanal/live"), Some(Kind::YouTube));
         assert_eq!(kind_of("https://youtube.com/"), None);
-        assert_eq!(kind_of("https://example.com/watch?v=abc"), None);
-        assert_eq!(kind_of("https://notyoutube.com/watch?v=abc"), None);
+        assert_eq!(kind_of("https://example.com/watch?v=abc"), Some(Kind::Link));
+        assert_eq!(kind_of("https://notyoutube.com/watch?v=abc"), Some(Kind::Link));
         assert_eq!(kind_of("srt://0.0.0.0:9000"), Some(Kind::Srt));
         assert!(youtube_channel_live("https://www.youtube.com/@kanal/live"));
         assert!(youtube_channel_live("https://www.youtube.com/channel/UC123/live/"));
         assert!(!youtube_channel_live("https://www.youtube.com/live/abc123"));
         assert!(!youtube_channel_live("https://www.youtube.com/watch?v=abc"));
-        let (list, errors) = parse_listeners("1=https://www.youtube.com/watch?v=abc&t=5 2=https://example.com/live");
+        let (list, errors) = parse_listeners("1=https://www.youtube.com/watch?v=abc&t=5 2=https://youtube.com/");
         assert_eq!(list, [Listener { channel: "1".into(), url: "https://www.youtube.com/watch?v=abc&t=5".into() }]);
         assert_eq!(errors.len(), 1);
         // No port: any number of YouTube inputs next to the listeners.
@@ -876,5 +1023,48 @@ mod tests {
             ytdlp_error("WARNING: x\nERROR: [youtube] abc: This live event will begin in 3 hours.\n"),
             "This live event will begin in 3 hours."
         );
+    }
+
+    #[test]
+    fn link_inputs() {
+        assert_eq!(kind_of("https://cdn.example.pl/live/index.m3u8?token=x"), Some(Kind::Link));
+        assert_eq!(kind_of("http://10.0.0.5:8080/stream.ts"), Some(Kind::Link));
+        assert_eq!(kind_of("rtmp://studio.example.pl/live/abc"), Some(Kind::Link));
+        assert_eq!(kind_of("rtmps://a.example.pl:443/app/k"), Some(Kind::Link));
+        assert_eq!(kind_of("srt://relay.example.pl:9000?streamid=x"), Some(Kind::Link));
+        assert_eq!(kind_of("rtsp://admin:p@192.168.1.9:554/h264"), Some(Kind::Link));
+        assert_eq!(kind_of("rtmp://0.0.0.0:1936/live/k"), Some(Kind::Rtmp));
+        assert_eq!(kind_of("srt://[::]:9000"), Some(Kind::Srt));
+        assert_eq!(kind_of("rtmp://127.0.0.1:1936/live/k"), Some(Kind::Rtmp));
+        assert_eq!(kind_of("srt://localhost:9000"), Some(Kind::Srt));
+        assert_eq!(kind_of("http://127.0.0.1/x.m3u8"), None);
+        assert_eq!(kind_of("rtmps://0.0.0.0:1936/live/k"), None);
+        assert_eq!(kind_of("https://0.0.0.0/x.m3u8"), None);
+        assert_eq!(kind_of("file:///etc/passwd"), None);
+        assert_eq!(kind_of("https:///x.m3u8"), None);
+        let check = |text: &str| check_listeners(&parse_listeners(text).0);
+        assert_eq!(check("1=https://a.pl/x.m3u8 2=rtmp://b.pl/live/k 1=rtmp://0.0.0.0:1936/live/k"), None);
+        assert!(check(&format!("1=https://a.pl/{}", "x".repeat(LINK_MAX))).unwrap().contains("dłuższy"));
+        let v = publisher(&Listener { channel: "1".into(), url: "srt://relay.pl:9000".into() }, "", None, None);
+        assert_eq!(v.get("kind").and_then(crate::json::Value::as_str), Some("link"));
+        assert_eq!(v.get("scheme").and_then(crate::json::Value::as_str), Some("srt"));
+        let text = |url: &str| link_args(url).iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+        let hls = text("https://a.pl/x.m3u8");
+        assert!(hls.contains("-protocol_whitelist http,https,tcp,tls,crypto,httpproxy -re -reconnect 1"), "{hls}");
+        assert!(hls.contains("-i https://a.pl/x.m3u8 -map 0:v:0 -map 0:a:0? -c copy"), "{hls}");
+        let rtmp = text("rtmp://b.pl/live/k");
+        assert!(
+            rtmp.contains("-protocol_whitelist rtmp,rtmps,tcp,tls -rw_timeout") && !rtmp.contains(" -re ") && !rtmp.contains("-listen"),
+            "{rtmp}"
+        );
+        assert!(text("srt://r.pl:9000").contains("-i srt://r.pl:9000?mode=caller -map"));
+        assert!(text("srt://r.pl:9000?latency=1").contains("-i srt://r.pl:9000?latency=1&mode=caller -map"));
+        assert!(text("rtsp://c/h264").contains("-rtsp_transport tcp"));
+        let name = |url: &str| label(&Listener { channel: "1".into(), url: url.into() });
+        assert_eq!(name("rtmp://0.0.0.0:1937/live/tajny"), "RTMP 1937");
+        assert_eq!(name("srt://0.0.0.0:9001?passphrase=tajne-haslo"), "SRT 9001");
+        assert_eq!(name("https://www.youtube.com/@sejm/live"), "YouTube youtube.com/@sejm/live");
+        assert_eq!(name("https://u:p@cdn.pl/a/index.m3u8?token=x"), "Link HLS cdn.pl");
+        assert_eq!(name("rtmp://studio.pl/live/klucz"), "Link RTMP studio.pl");
     }
 }

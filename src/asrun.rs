@@ -81,6 +81,8 @@ pub const GRAPHICS_ON: &str = "graphics_on";
 /// A live takeover holds the schedule's graphics (and puts `on_live` on air) · gives them back.
 pub const LIVE_GRAPHICS_ON: &str = "live_graphics_on";
 pub const LIVE_GRAPHICS_OFF: &str = "live_graphics_off";
+/// The operator chose the input a channel takes (or automatic); `detail` names it.
+pub const INPUT: &str = "input";
 
 /// One line of the log; empty fields are left out.
 #[derive(Clone, Debug, Default, PartialEq)]

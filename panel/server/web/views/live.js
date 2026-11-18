@@ -86,6 +86,11 @@ function inputsBox(c) {
         h('dl', { class: 'kv' }, ...plainField('Adres', i.url || '', `Adres YouTube ${id}`)),
         h('p', { class: 'dim' }, youtubeNote(i.youtube)));
     }
+    if (i.kind === 'link') {
+      return h('div', { class: 'input' }, h('h4', null, 'Link do strumienia (CG Playout pobiera sam)'),
+        h('dl', { class: 'kv' }, ...secretField('Adres', i.url || '', `Link wejścia ${id}`)),
+        h('p', { class: 'dim' }, LINK_NOTE));
+    }
     if (i.kind === 'rtmp') {
       const server = `rtmp://${host}:${i.port}${i.app || ''}`;
       return h('div', { class: 'input' }, h('h4', null, 'RTMP (OBS, vMix, koder sprzętowy)'),
@@ -111,6 +116,19 @@ const youtubeChannel = (url) => /\/[^/?#]+\/live\/?(\?|#|$)/i.test(url.replace(/
 const youtubeNote = (what) => (what === 'channel'
   ? 'Strona live kanału: każda jego transmisja przejmuje antenę, wejście zostaje na liście.'
   : 'Jeden film: transmisja do jej końca albo nagranie raz, w czasie rzeczywistym – potem wejście znika z listy.');
+// Link: strumień, który CG Playout sam pobiera – HLS (.m3u8) i inny strumień HTTP, RTMP(S), SRT (caller), RTSP – z dowolnego hosta
+// spoza tej maszyny (rtmp:// i srt:// na 0.0.0.0 i adresie lokalnym to odbiornik, do którego przychodzi nadawca). Wejście zostaje na liście; po końcu strumienia pobiera go znowu.
+const LINK = /^(https?|rtmps?|srt|rtsps?):\/\/[^\s/?#;]+([/?#]\S*)?$/i;
+const LISTEN_HOST = /^\w+:\/\/([^@/?#]*@)?(0\.0\.0\.0|\[::1?\]|127\.[\d.]+|localhost)(:|\/|\?|$)/i;
+const YOUTUBE_HOST = /^https?:\/\/((www|m|music)\.)?(youtube\.com|youtu\.be)(:|\/|\?|$)/i;
+const isLink = (url) => LINK.test(url) && !LISTEN_HOST.test(url) && !YOUTUBE_HOST.test(url);
+const LINK_HELP = 'link do strumienia: https://…/index.m3u8, rtmp(s)://serwer/app/klucz, srt://serwer:port albo rtsp://… (nie 0.0.0.0 ani 127.0.0.1 – to adres odbiornika RTMP/SRT)';
+const LINK_NOTE = 'CG Playout sam pobiera strumień (H.264 + AAC, bez przekodowania) i przejmuje nim kanał jak sygnałem ze studia; gdy strumień się skończy albo zerwie, pobiera go znowu – wejście zostaje na liście.';
+/** Link bez sekretów: bez loginu, zapytania (tokeny) i ostatniej części ścieżki RTMP (klucz). */
+const linkShown = (url) => {
+  const [base, query] = url.replace(/^(\w+:\/\/)[^@/]*@/, '$1***@').split('?');
+  return (/^rtmps?:/i.test(base) && base.split('/').length > 4 ? base.replace(/\/[^/]+$/, '/***') : base) + (query ? '?***' : '');
+};
 const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 function parseInput(l) {
@@ -120,7 +138,8 @@ function parseInput(l) {
 }
 
 function parseAddress(l) {
-  if (/^https?:/i.test(l.url)) return { channel: l.channel, kind: 'youtube', url: l.url, port: 0, app: '', secret: '', rest: '' };
+  if (YOUTUBE.test(l.url)) return { channel: l.channel, kind: 'youtube', url: l.url, port: 0, app: '', secret: '', rest: '' };
+  if (isLink(l.url)) return { channel: l.channel, kind: 'link', url: l.url, port: 0, app: '', secret: '', rest: '' };
   const m = /^(rtmp|srt):\/\/[^/:?]*:(\d+)([^?]*)\??(.*)$/i.exec(l.url) || [];
   const kind = (m[1] || 'rtmp').toLowerCase();
   const path = m[3] || '';
@@ -131,7 +150,7 @@ function parseAddress(l) {
 }
 
 function inputUrl(r) {
-  if (r.kind === 'youtube') return r.url;
+  if (r.kind === 'youtube' || r.kind === 'link') return r.url;
   if (r.kind === 'rtmp') return `rtmp://0.0.0.0:${r.port}${r.app || '/live'}/${r.secret}`;
   const q = [r.secret ? `passphrase=${r.secret}` : '', r.rest].filter(Boolean).join('&');
   return `srt://0.0.0.0:${r.port}` + (q ? `?${q}` : '');
@@ -168,10 +187,10 @@ async function editInputs(forChannel) {
     list.replaceChildren(...(rows.length ? rows.map((r, n) => {
       const ch = h('select', { 'aria-label': `Kanał wejścia ${n + 1}` }, channels.map((c) => opt(c, `${c} ${nameOf(c)}`.trim(), c === r.channel)));
       ch.addEventListener('change', () => { r.channel = ch.value; });
-      const kind = h('select', { 'aria-label': `Rodzaj wejścia ${n + 1}` }, opt('rtmp', 'RTMP', r.kind === 'rtmp'), opt('srt', 'SRT', r.kind === 'srt'), opt('youtube', 'YouTube', r.kind === 'youtube'));
+      const kind = h('select', { 'aria-label': `Rodzaj wejścia ${n + 1}` }, opt('rtmp', 'RTMP', r.kind === 'rtmp'), opt('srt', 'SRT', r.kind === 'srt'), opt('youtube', 'YouTube', r.kind === 'youtube'), opt('link', 'Link (HLS, RTMP, SRT, RTSP)', r.kind === 'link'));
       kind.addEventListener('change', () => {
         r.kind = kind.value;
-        if (r.kind === 'youtube') r.url = r.url || ''; else { r.port = freePort(r.kind); r.app = '/live'; if (!r.secret) r.secret = randomKey(); }
+        if (r.kind === 'youtube' || r.kind === 'link') r.url = r.url || ''; else { r.port = freePort(r.kind); r.app = '/live'; if (!r.secret) r.secret = randomKey(); }
         draw();
       });
       const del = btn('×', () => { rows.splice(n, 1); draw(); }, 'danger');
@@ -179,6 +198,14 @@ async function editInputs(forChannel) {
         const url = h('input', { value: r.url || '', class: 'mono grow', placeholder: 'https://www.youtube.com/watch?v=… albo https://www.youtube.com/@kanał/live', 'aria-label': `Adres YouTube wejścia ${n + 1}` });
         const note = h('span', { class: 'dim' }, r.url ? youtubeNote(youtubeChannel(r.url) ? 'channel' : 'video') : '');
         url.addEventListener('input', () => { r.url = url.value.trim(); note.textContent = YOUTUBE.test(r.url) ? youtubeNote(youtubeChannel(r.url) ? 'channel' : 'video') : 'adres YouTube: https://www.youtube.com/… albo https://youtu.be/…'; });
+        return row(r, n, ch, kind, url, del, note);
+      }
+      if (r.kind === 'link') {
+        const url = h('input', { value: r.url || '', class: 'mono grow', placeholder: 'https://serwer/live/index.m3u8, rtmp://serwer/app/klucz, srt://serwer:9000, rtsp://kamera/…', 'aria-label': `Link wejścia ${n + 1}` });
+        const note = h('span', { class: 'dim' }, '');
+        const explain = () => { note.textContent = !r.url || isLink(r.url) ? '' : LINK_HELP; };
+        url.addEventListener('input', () => { r.url = url.value.trim(); explain(); });
+        explain();
         return row(r, n, ch, kind, url, del, note);
       }
       const port = h('select', { 'aria-label': `Port wejścia ${n + 1}` }, range(r.kind).map((p) => opt(p, String(p), p === r.port)));
@@ -196,7 +223,8 @@ async function editInputs(forChannel) {
   const body = h('div', null,
     h('p', { class: 'dim' }, `Każde wejście to osobny port: RTMP ${ports.rtmp[0]}–${ports.rtmp[1]}, SRT ${ports.srt[0]}–${ports.srt[1]} (UDP). ` +
       'Klucz RTMP i hasło SRT to hasła nadawcy – po zmianie podaj je nadawcy na nowo. Zapis działa w ciągu kilku sekund, bez restartu; trwający sygnał na zmienionym wejściu zostanie przerwany. ' +
-      'Wejście YouTube nie zajmuje portu: CG Playout sam pobiera transmisję albo nagranie (H.264 do 1080p) i przejmuje kanał jak sygnał ze studia – poza audycjami LIVE tylko przy „studio także poza audycjami”.'),
+      'Wejście YouTube nie zajmuje portu: CG Playout sam pobiera transmisję albo nagranie (H.264 do 1080p) i przejmuje kanał jak sygnał ze studia – poza audycjami LIVE tylko przy „studio także poza audycjami”. ' +
+      'Tak samo wejście „Link”: CG Playout sam pobiera strumień spod adresu (HLS .m3u8, RTMP, SRT, RTSP; obraz H.264 i dźwięk AAC).'),
     data.from === 'env' ? h('p', { class: 'dim' }, 'Teraz obowiązuje VIZRS_INGEST z konfiguracji CG Playout; po zapisie – lista z panelu.') : null,
     data.ingest ? null : h('div', { class: 'note warn' }, 'Odbiór sygnałów w CG Playout jest wyłączony (brak VIZRS_INGEST_TOKEN) – wejścia zapiszą się, ale nie zadziałają.'),
     ownGraphics ? h('p', { class: 'dim' }, 'Grafika wejścia (np. logo z dopiskiem NA ŻYWO) wchodzi, gdy kanał przejmuje sygnał z tego wejścia – zamiast grafiki live kanału z ekranu Grafika kanału; po zejściu sygnału wraca grafika ramówki.') : null,
@@ -204,6 +232,8 @@ async function editInputs(forChannel) {
   if (!await dialog('Wejścia studia', body, [['Anuluj', false], ['Zapisz', true, 'acc']])) return;
   const bad = rows.find((r) => r.kind === 'youtube' && !YOUTUBE.test(r.url || ''));
   if (bad) { toast(`Kanał ${bad.channel}: to nie jest adres YouTube (https://www.youtube.com/… albo https://youtu.be/…)`, 'bad'); return; }
+  const badLink = rows.find((r) => r.kind === 'link' && !isLink(r.url || ''));
+  if (badLink) { toast(`Kanał ${badLink.channel}: ${LINK_HELP}`, 'bad'); return; }
   let listeners;
   try {
     listeners = rows.map((r) => {
@@ -289,16 +319,41 @@ function channelCard(c, receivedAt) {
       'takeover' in c ? [h('dt', null, 'Grafika'), h('dd', { 'data-live-graphics': '' }, c.takeover ? pill('live – ramówka wstrzymana', 'on') : 'z ramówki')] : null,
       h('dt', null, 'Najbliższa LIVE'), h('dd', null, c.next_live ? `${c.next_live.title} · ${day(c.next_live.start)} ${at(c.next_live.start)}` : '—')),
     h('div', { class: 'now' + (warn ? ' warn' : '') }, left, right),
+    inputPicker(c),
     h('div', { class: 'bar ctl' }, main,
       h('label', { class: 'chk' }, anytime, 'studio także poza audycjami'),
       btn('⟲ Przebuduj ramówkę', () => act(c, 'rebuild', `Kanał ${c.number}: ramówka przebudowana – EPG odświeży się za chwilę`))),
     how);
 }
 
+// ---------- Sloty na żywo: wybór wejścia kanału ----------
+// CG Playout z `input_select`: kanał bierze wybrane wejście, pozostałe czekają (YouTube i linki wtedy nie pobierają);
+// „automatycznie” = pierwsze z sygnałem. Wybór zapisuje CG Playout (PUT /api/live/channels/<n> {"input"}).
+const INPUT_STATE = { on: '● nadaje', waiting: '● sygnał czeka', off: '○ nie pobiera' };
+const inputName = (i) => i.label || ({ rtmp: `RTMP ${i.port}`, srt: `SRT ${i.port}`, youtube: 'YouTube', link: 'Link' })[i.kind] || i.kind;
+
+function inputPicker(c) {
+  const list = c.inputs || [];
+  if (!(view?.state.features || []).includes('input_select') || list.length < 2) return null;
+  const sel = h('select', { 'aria-label': `Wejście kanału ${c.number}`, class: 'grow', 'data-input-select': c.number },
+    h('option', { value: '', selected: !c.input }, 'automatycznie – pierwsze z sygnałem'),
+    list.map((i) => h('option', { value: i.id, selected: c.input === i.id }, inputName(i) + (INPUT_STATE[i.state] ? `  ${INPUT_STATE[i.state]}` : ''))));
+  sel.addEventListener('change', async () => {
+    sel.disabled = true;
+    try {
+      await cg(`live/channels/${encodeURIComponent(c.number)}`, 'PUT', { input: sel.value || null });
+      toast(sel.value ? `Kanał ${c.number}: wejście ${sel.selectedOptions[0].textContent.split('  ')[0]}` : `Kanał ${c.number}: wejście automatycznie`);
+    } catch (e) { toast(e.message, 'bad'); }
+    route(true);
+  });
+  return h('div', { class: 'bar in-pick' }, h('span', { class: 'dim' }, 'Wejście:'), sel);
+}
+
 // ---------- Sloty na żywo: tabela wejść (jak w makiecie) ----------
 /** Adres wejścia bez sekretów (klucz RTMP i hasło SRT są tylko w „Jak nadawać na ten kanał”). */
 function inputAddr(i) {
   if (i.kind === 'youtube') return [i.url || '', i.youtube === 'channel' ? ' (strona live kanału)' : ' (jeden film)'];
+  if (i.kind === 'link') return [linkShown(i.url || ''), ' (pobiera CG Playout)'];
   const host = i.host || location.hostname;
   if (i.kind === 'rtmp') return [`rtmp://${host}:${i.port}${i.app || ''}`, i.key ? ' + klucz' : ''];
   return [`srt://${host}:${i.port}` + (i.streamid ? `?streamid=${encodeURIComponent(i.streamid)}` : ''), i.passphrase ? ' + hasło' : ''];
@@ -307,10 +362,19 @@ function inputsTable(list) {
   const rows = list.flatMap((c) => (c.inputs || []).map((i, n) => ({ c, i, n })));
   return table(rows, [
     [({ c }) => h('span', null, h('span', { class: 'num' }, c.number), ' ', c.name || ''), 'Kanał'],
-    [({ i }) => ({ rtmp: 'RTMP', srt: 'SRT', youtube: 'YouTube' })[i.kind] || i.kind, 'Wejście'],
+    [({ i }) => ({ rtmp: 'RTMP', srt: 'SRT', youtube: 'YouTube', link: 'Link' })[i.kind] || i.kind, 'Wejście'],
     [({ i }) => { const [a, extra] = inputAddr(i); return h('span', null, h('span', { class: 'mono' }, a), h('span', { class: 'dim' }, extra)); }, 'Adres'],
-    [({ c }) => (c.hold ? pill('wstrzymany', 'warn') : c.source?.live ? pill(c.on_air ? 'nadaje · na antenie' : 'nadaje', c.on_air ? 'on' : 'ok') : pill('czeka')), 'Stan'],
-    [({ c }) => (c.source?.live ? `${c.source.video || '?'} · ${c.source.audio ? 'z dźwiękiem' : 'bez dźwięku'}` : h('span', { class: 'dim' }, 'brak sygnału')), 'Obraz'],
+    [({ c, i }) => {
+      const chosen = c.input && c.input === i.id ? [' ', pill('wybrane', 'info')] : null;
+      // CG Playout z `input_select` podaje stan każdego wejścia; starszy – tylko kanału
+      if ('state' in i) {
+        const p = i.state === 'on' ? (c.hold ? pill('wstrzymany', 'warn') : pill(c.on_air ? 'nadaje · na antenie' : 'nadaje', c.on_air ? 'on' : 'ok'))
+          : i.state === 'waiting' ? pill('sygnał czeka', 'warn') : i.state === 'off' ? pill('nie wybrane') : pill('czeka');
+        return h('span', null, p, chosen);
+      }
+      return c.hold ? pill('wstrzymany', 'warn') : c.source?.live ? pill(c.on_air ? 'nadaje · na antenie' : 'nadaje', c.on_air ? 'on' : 'ok') : pill('czeka');
+    }, 'Stan'],
+    [({ c, i }) => (c.source?.live && (!('state' in i) || i.state === 'on') ? `${c.source.video || '?'} · ${c.source.audio ? 'z dźwiękiem' : 'bez dźwięku'}` : h('span', { class: 'dim' }, 'brak sygnału')), 'Obraz'],
   ], { empty: 'Żaden kanał nie ma wejścia studia – „Ustaw wejścia…”.' });
 }
 

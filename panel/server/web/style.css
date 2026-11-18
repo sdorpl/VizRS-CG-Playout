@@ -210,6 +210,8 @@ td.log { font-family: var(--mono, monospace); font-size: 12px; white-space: pre-
 .live-ch .now { display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: var(--r-sm); background: var(--panel2); }
 .live-ch .now.warn { background: var(--warn-bg); color: var(--link); }
 .live-ch .ctl { gap: 10px; }
+.live-ch .in-pick { gap: 8px; margin-bottom: 8px; }
+.live-ch .in-pick select { flex: 1 1 0; width: 0; min-width: 0; text-overflow: ellipsis; }
 button.big { font-size: 15px; font-weight: 700; padding: 10px 20px; letter-spacing: .03em; border-radius: var(--r); }
 button.big.off { background: var(--bad-bg); border-color: var(--red); color: var(--red-t); }
 button.big.off.arm { background: var(--red); color: #fff; box-shadow: 0 0 18px rgba(239, 68, 68, .45); }

@@ -70,12 +70,14 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live'],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'input_select'],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
-          inputs: [{ kind: 'rtmp', host: 'tv.example.pl', port: 1936, app: '/live', key: 'studio-klucz', passphrase: '', streamid: '' },
-            { kind: 'srt', host: '', port: 9000, app: '', key: '', passphrase: 'tajne haslo', streamid: '' },
-            { kind: 'youtube', url: 'https://youtu.be/abc123', youtube: 'video' }] }],
+          input: CG.input || null,
+          inputs: [{ kind: 'rtmp', host: 'tv.example.pl', port: 1936, app: '/live', key: 'studio-klucz', passphrase: '', streamid: '', id: '00000000000000a1', label: 'RTMP 1936', state: 'on' },
+            { kind: 'srt', host: '', port: 9000, app: '', key: '', passphrase: 'tajne haslo', streamid: '', id: '00000000000000a2', label: 'SRT 9000', state: 'waiting' },
+            { kind: 'youtube', url: 'https://youtu.be/abc123', youtube: 'video', id: '00000000000000a3', label: 'YouTube youtu.be/abc123', state: CG.input ? 'off' : '' },
+            { kind: 'link', url: 'https://cdn.example.pl/live/index.m3u8?token=tajny-token', scheme: 'https', id: '00000000000000a4', label: 'Link HLS cdn.example.pl', state: CG.input ? 'off' : '' }] }],
         events: [{ at: T0 - 5000, channel: '24', text: 'nadawca połączony' }],
         version: '0.9.0-test', etv: { configured: true, ok: true, error: null }, settings: { library: null, store: true, graphics_off: !!CG.graphicsOff },
         guide: { 24: [{ title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true }] },
@@ -116,7 +118,7 @@ function check(cond, msg) {
           cg: [{ t: T0 - 45000, level: 'info', text: 'ingest: channel 24: live (h264, with audio)' }],
         }[lg[1]] });
       }
-      if (u === '/api/live/channels/24' && q.method === 'PUT') { CG.anytime = body.anytime; return send(200, { ok: true }); }
+      if (u === '/api/live/channels/24' && q.method === 'PUT') { if ('input' in body) CG.input = body.input; else CG.anytime = body.anytime; return send(200, { ok: true }); }
       if (u === '/api/live/inputs' && q.method === 'GET') {
         return send(200, { listeners: CG.inputs || [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/studio-klucz' }], from: CG.inputs ? 'panel' : 'env', store: true, ingest: true, ports: { rtmp: [1936, 1943], srt: [9000, 9007] } });
       }
@@ -1616,10 +1618,13 @@ function check(cond, msg) {
   check(await page.getAttribute('input[aria-label="Klucz RTMP 24-1"]', 'type') === 'text', 'sloty: „Pokaż” odsłania klucz');
   check(await page.inputValue('input[aria-label="Adres SRT 24-2"]') === 'srt://127.0.0.1:9000?mode=caller&passphrase=tajne%20haslo', 'sloty: adres SRT z hasłem (host z panelu)');
   check(await page.inputValue('input[aria-label="Adres YouTube 24-3"]') === 'https://youtu.be/abc123' && /znika z listy/.test(await page.textContent('[data-inputs="24"]')), 'sloty: wejście YouTube – adres i jeden film');
+  check(await page.inputValue('input[aria-label="Link wejścia 24-4"]') === 'https://cdn.example.pl/live/index.m3u8?token=tajny-token'
+    && await page.getAttribute('input[aria-label="Link wejścia 24-4"]', 'type') === 'password' && /pobiera go znowu/.test(await page.textContent('[data-inputs="24"]')), 'sloty: wejście z linku – adres ukryty (token), opis');
   check(/NA ANTENIE/.test(await page.textContent('main')), 'sloty: kanał 24 z sygnałem studia NA ANTENIE');
   check(/live – ramówka wstrzymana/.test(await page.textContent('[data-live-channel="24"] [data-live-graphics]')), 'sloty: przejęcie – grafika live zamiast ramówki');
   const inTab = await page.textContent('[data-inputs-table]');
-  check(inTab.includes('rtmp://tv.example.pl:1936/live') && inTab.includes('YouTube') && inTab.includes('https://youtu.be/abc123') && /nadaje/.test(inTab) && /h264 · z dźwiękiem/.test(inTab) && !inTab.includes('studio-klucz') && !inTab.includes('tajne'),
+  check(inTab.includes('rtmp://tv.example.pl:1936/live') && inTab.includes('YouTube') && inTab.includes('https://youtu.be/abc123') && /nadaje/.test(inTab) && /h264 · z dźwiękiem/.test(inTab) && !inTab.includes('studio-klucz') && !inTab.includes('tajne')
+    && inTab.includes('Link') && inTab.includes('https://cdn.example.pl/live/index.m3u8?***') && !inTab.includes('tajny-token'),
     'sloty: tabela wejść – adres bez klucza i hasła, stan, obraz');
   // wejścia studia ustawiane z panelu (CG Playout GET/PUT /api/live/inputs)
   await page.click('button:has-text("Ustaw wejścia…")');
@@ -1632,6 +1637,12 @@ function check(cond, msg) {
   await page.selectOption('select[aria-label="Rodzaj wejścia 3"]', 'youtube');
   await page.fill('input[aria-label="Adres YouTube wejścia 3"]', 'https://www.youtube.com/@kanal/live');
   check(/każda jego transmisja/.test(await page.textContent('[data-inputs-edit]')), 'wejścia: YouTube – strona live kanału rozpoznana');
+  await page.click('[data-inputs-edit] button:has-text("+ Wejście")');
+  await page.selectOption('select[aria-label="Rodzaj wejścia 4"]', 'link');
+  await page.fill('input[aria-label="Link wejścia 4"]', 'rtmp://0.0.0.0:1937/live/x');
+  check(/nie 0\.0\.0\.0 ani/.test(await page.textContent('[data-inputs-edit]')), 'wejścia: link na 0.0.0.0 odrzucony (to adres odbiornika)');
+  await page.fill('input[aria-label="Link wejścia 4"]', 'rtmp://studio.example.pl/live/abc');
+  check(!/nie 0\.0\.0\.0 ani/.test(await page.textContent('[data-inputs-edit]')), 'wejścia: link RTMP do zdalnego serwera przyjęty');
   // grafika wejścia (CG Playout z „input_on_live”): logo NA ŻYWO na czas przejęcia z tego wejścia
   check(await page.inputValue('#in-gr-0') === 'inherit', 'wejścia: grafika wejścia domyślnie jak grafika live kanału');
   await page.selectOption('#in-gr-2', 'cmd');
@@ -1639,8 +1650,9 @@ function check(cond, msg) {
   await page.click('#dlg-buttons button:has-text("Zapisz")');
   await page.waitForSelector('#overlay', { state: 'hidden' });
   const saved = JSON.stringify(CG.inputs || []);
-  check(saved.includes('rtmp://0.0.0.0:1936/live/studio-klucz') && saved.includes('srt://0.0.0.0:9000?passphrase=haslo-studia-2') && saved.includes('"url":"https://www.youtube.com/@kanal/live"'),
-    'wejścia: zapis listy do CG Playout (RTMP 1936, SRT 9000 z hasłem, YouTube)');
+  check(saved.includes('rtmp://0.0.0.0:1936/live/studio-klucz') && saved.includes('srt://0.0.0.0:9000?passphrase=haslo-studia-2') && saved.includes('"url":"https://www.youtube.com/@kanal/live"')
+    && saved.includes('"url":"rtmp://studio.example.pl/live/abc"'),
+    'wejścia: zapis listy do CG Playout (RTMP 1936, SRT 9000 z hasłem, YouTube, link)');
   check(CG.inputs[2].on_live === 'TAKE 1001' && CG.inputs[0].on_live === null, `wejścia: grafika tylko przy wejściu YouTube (${saved})`);
   await page.click('button:has-text("Ustaw wejścia…")');
   await page.waitForSelector('[data-inputs-edit]');
@@ -1678,6 +1690,16 @@ function check(cond, msg) {
   await rerender(() => page.click('input[aria-label="Studio poza audycjami 24"]'));
   check(CG.anytime === false, 'sloty: „poza audycjami” zapisane w CG Playout');
   await rerender(() => page.click('input[aria-label="Studio poza audycjami 24"]'));
+  // wybór wejścia kanału (CG Playout z „input_select”): lista ze stanem wejść, zapis w CG Playout, tabela z „wybrane”
+  const picks = await page.$$eval('select[aria-label="Wejście kanału 24"] option', (o) => o.map((x) => x.textContent));
+  check(picks.length === 5 && /^automatycznie/.test(picks[0]) && /RTMP 1936.*nadaje/.test(picks[1]) && /SRT 9000.*sygnał czeka/.test(picks[2]) && !picks.join().includes('tajny-token'),
+    `sloty: lista wejść kanału ze stanem, bez sekretów (${picks.join(' | ')})`);
+  await rerender(() => page.selectOption('select[aria-label="Wejście kanału 24"]', '00000000000000a2'));
+  check(CG.input === '00000000000000a2', 'sloty: wybór wejścia zapisany w CG Playout');
+  check(await page.inputValue('select[aria-label="Wejście kanału 24"]') === '00000000000000a2' && /wybrane/.test(await page.textContent('[data-inputs-table]'))
+    && /nie wybrane/.test(await page.textContent('[data-inputs-table]')), 'sloty: wybrane wejście na karcie i w tabeli, YouTube i link nie pobierają');
+  await rerender(() => page.selectOption('select[aria-label="Wejście kanału 24"]', ''));
+  check(CG.input === null, 'sloty: powrót do „automatycznie”');
   await shot('r12-sloty');
   // Audycje LIVE: nowa audycja – najpierw błąd walidacji CG wraca do operatora, potem poprawna z kreatorem
   await page.goto(`${BASE}/#audycje`);

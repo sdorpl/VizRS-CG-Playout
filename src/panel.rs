@@ -7,7 +7,7 @@
 //   PUT    /api/live/settings             {"library": id|null}
 //   POST   /api/live/channels/<n>/hold    keep the studio off the channel
 //   POST   /api/live/channels/<n>/release let it on again
-//   PUT    /api/live/channels/<n>         {"anytime": bool|null}
+//   PUT    /api/live/channels/<n>         {"anytime": bool|null, "input": id|null}
 //   POST   /api/live/channels/<n>/rebuild reset of the channel's playout in ErsatzTV
 //   GET    /api/live/shows                live programmes with their state in ErsatzTV
 //   POST   /api/live/shows                a new one: file, library scan, smart collection
@@ -81,7 +81,14 @@ struct Settings {
 impl Settings {
     fn to_json(&self) -> String {
         let channels = self.channels.iter().map(|(number, c)| {
-            (number.clone(), json::object([("hold", c.hold.into()), ("anytime", c.anytime.map_or(Value::Null, Value::from))]))
+            (
+                number.clone(),
+                json::object([
+                    ("hold", c.hold.into()),
+                    ("anytime", c.anytime.map_or(Value::Null, Value::from)),
+                    ("input", c.input.as_deref().map_or(Value::Null, Value::from)),
+                ]),
+            )
         });
         let value = json::object([
             ("library", self.library.map_or(Value::Null, Value::from)),
@@ -105,12 +112,18 @@ impl Settings {
                 let control = ChannelControl {
                     hold: c.get("hold").and_then(Value::as_bool).unwrap_or(false),
                     anytime: c.get("anytime").and_then(Value::as_bool),
+                    input: c.get("input").and_then(Value::as_str).filter(|id| valid_input_id(id)).map(str::to_owned),
                 };
                 settings.channels.insert(number.clone(), control);
             }
         }
         Ok(settings)
     }
+}
+
+/// An input id (`listener::input_id`): 16 hexadecimal digits.
+fn valid_input_id(id: &str) -> bool {
+    id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Graphics of the inputs on air in a takeover (in place of the channel's
@@ -375,7 +388,12 @@ impl Panel {
         }
         // A hold survives a restart: the studio must not come back on by itself.
         for (number, control) in &lock(&panel.settings).channels {
-            ingest.set_control(number, control.clone());
+            let mut control = control.clone();
+            // A chosen input no longer on the list: automatic (the file keeps it until a change).
+            if control.input.as_deref().is_some_and(|id| !panel.has_input(number, id)) {
+                control.input = None;
+            }
+            ingest.set_control(number, control);
         }
         if panel.enabled() {
             crate::info!("live API on /api/live");
@@ -512,11 +530,59 @@ impl Panel {
         lock(&self.input_graphics).get(&entry_of(listener)).cloned()
     }
 
-    /// Inputs of a channel as publishers see them.
-    fn inputs_of(&self, number: &str) -> Vec<Value> {
+    /// The channel has the input `id` (`listener::input_id`) on its list.
+    fn has_input(&self, channel: &str, id: &str) -> bool {
+        lock(&self.listeners).0.iter().any(|l| l.channel == channel && crate::listener::input_id(l) == id)
+    }
+
+    /// Chosen inputs no longer on the list: those channels back to automatic.
+    fn drop_gone_choices(&self, ingest: &Ingest) {
+        let gone: Vec<String> = lock(&self.settings)
+            .channels
+            .iter()
+            .filter(|(number, c)| c.input.as_deref().is_some_and(|id| !self.has_input(number, id)))
+            .map(|(number, _)| number.clone())
+            .collect();
+        for number in gone {
+            if let Err(e) = self.set_channel(&number, ingest, |c| c.input = None) {
+                crate::warn!("panel settings: {e}");
+            }
+            self.record(ingest, "CG Playout", &number, "wybrane wejście zniknęło z listy – wejście: automatycznie");
+        }
+    }
+
+    /// Inputs of a channel as publishers see them, each with its id and state:
+    /// `on` (the source on the channel), `waiting` (a signal refused for now),
+    /// `off` (another input chosen; YouTube and links do not read then) or "".
+    fn inputs_of(&self, number: &str, ingest: &Ingest) -> Vec<Value> {
         let (host, rtmp, srt) = &self.public;
         let listeners = lock(&self.listeners);
-        listeners.0.iter().filter(|l| l.channel == number).map(|l| crate::listener::publisher(l, host, *rtmp, *srt)).collect()
+        let (current, waiting, chosen) = (ingest.input_of(number), ingest.waiting(number), ingest.control(number).input);
+        let live = ingest.source(number).and_then(|s| s.get("live").and_then(Value::as_bool)).unwrap_or(false);
+        listeners
+            .0
+            .iter()
+            .filter(|l| l.channel == number)
+            .map(|l| {
+                let id = crate::listener::input_id(l);
+                let state = if current.as_deref() == Some(id.as_str()) && live {
+                    "on"
+                } else if waiting.contains(&id) {
+                    "waiting"
+                } else if chosen.as_deref().is_some_and(|c| c != id) {
+                    "off"
+                } else {
+                    ""
+                };
+                let mut value = crate::listener::publisher(l, host, *rtmp, *srt);
+                if let Value::Object(fields) = &mut value {
+                    fields.push(("id".into(), id.as_str().into()));
+                    fields.push(("label".into(), crate::listener::label(l).into()));
+                    fields.push(("state".into(), state.into()));
+                }
+                value
+            })
+            .collect()
     }
 
     /// `GET /ingest/listeners` (the listener service, ingest token): `VIZRS_INGEST`'s format.
@@ -524,7 +590,17 @@ impl Panel {
         if !ingest.authorized(request) {
             return http::respond(&mut stream, 401, None, b"");
         }
-        let text = lock(&self.listeners).0.iter().map(|l| format!("{}={}", l.channel, l.url)).collect::<Vec<_>>().join("; ");
+        // YouTube and links of a channel with another input chosen do not read (no bandwidth, no source to refuse).
+        let fetches = |l: &crate::listener::Listener| {
+            matches!(crate::listener::kind_of(&l.url), Some(crate::listener::Kind::YouTube | crate::listener::Kind::Link))
+        };
+        let text = lock(&self.listeners)
+            .0
+            .iter()
+            .filter(|l| !fetches(l) || ingest.control(&l.channel).input.is_none_or(|id| id == crate::listener::input_id(l)))
+            .map(|l| format!("{}={}", l.channel, l.url))
+            .collect::<Vec<_>>()
+            .join("; ");
         http::respond(&mut stream, 200, Some("text/plain; charset=utf-8"), text.as_bytes())
     }
 
@@ -561,6 +637,7 @@ impl Panel {
             }
         }
         self.record(ingest, "odbiornik", channel, &format!("wejście YouTube zakończone i usunięte z listy: {url}"));
+        self.drop_gone_choices(ingest);
         http::respond(&mut stream, 200, Some("text/plain"), b"done")
     }
 
@@ -597,7 +674,13 @@ impl Panel {
             let url = item.get("url").and_then(Value::as_str);
             let entry = match (channel, url) {
                 (Some(c), Some(u)) if Self::valid_channel(c.trim()) => format!("{}={}", c.trim(), u.trim()),
-                _ => return fail(stream, 400, "wejście: kanał (np. 2) i adres rtmp://, srt:// albo YouTube"),
+                _ => {
+                    return fail(
+                        stream,
+                        400,
+                        "wejście: kanał (np. 2) i adres rtmp:// albo srt:// (odbiornik na 0.0.0.0), YouTube albo link do strumienia",
+                    );
+                }
             };
             match item.get("on_live") {
                 None | Some(Value::Null) => {}
@@ -634,6 +717,7 @@ impl Panel {
         );
         *lock(&self.listeners) = (list, true);
         *lock(&self.input_graphics) = graphics;
+        self.drop_gone_choices(ingest);
         reply(stream, 200, &self.inputs_json(ingest))
     }
 
@@ -1045,6 +1129,7 @@ impl Panel {
             Value::from("logs"),
             Value::from("on_live"),
             Value::from("input_on_live"),
+            Value::from("input_select"),
         ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
@@ -1111,7 +1196,8 @@ impl Panel {
                     ("anytime_own", control.anytime.map_or(Value::Null, Value::from)),
                     ("now", current.map_or(Value::Null, |p| programme_json(p, in_slot))),
                     ("next_live", next_live.map_or(Value::Null, |p| programme_json(p, true))),
-                    ("inputs", Value::Array(self.inputs_of(number))),
+                    ("input", control.input.as_deref().map_or(Value::Null, Value::from)),
+                    ("inputs", Value::Array(self.inputs_of(number, ingest))),
                     ("layers", Value::Array(self.layers_of(number))),
                 ])
             })
@@ -1240,11 +1326,17 @@ impl Panel {
         if !Self::valid_channel(channel) {
             return fail(stream, 400, "kanał?");
         }
+        if body.get("anytime").is_none() && body.get("input").is_some() {
+            return self.choose_input(channel, body.get("input"), stream, ingest, who);
+        }
         let anytime = match body.get("anytime") {
             Some(Value::Bool(b)) => Some(*b),
             Some(Value::Null) => None,
             _ => return fail(stream, 400, "anytime: true, false albo null"),
         };
+        if body.get("input").is_some() {
+            return fail(stream, 400, "anytime i input osobno");
+        }
         let saved = self.set_channel(channel, ingest, |c| c.anytime = anytime);
         let text = match anytime {
             Some(true) => "studio także poza audycjami",
@@ -1254,6 +1346,32 @@ impl Panel {
         self.record(ingest, who, channel, text);
         match saved {
             Ok(_) => reply(stream, 200, &json::object([("anytime", ingest.anytime_of(channel).into())])),
+            Err(e) => fail(stream, 500, &format!("decyzja działa, ale nie zapisała się na dysku: {e}")),
+        }
+    }
+
+    /// `PUT /api/live/channels/<n>` `{"input": id|null}`: the input the channel takes (null = automatic).
+    fn choose_input(&self, channel: &str, input: Option<&Value>, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        let input = match input {
+            Some(Value::Null) => None,
+            Some(Value::String(id)) if self.has_input(channel, id) => Some(id.clone()),
+            Some(Value::String(_)) => return fail(stream, 400, "kanał nie ma takiego wejścia (lista wejść się zmieniła?)"),
+            _ => return fail(stream, 400, "input: id wejścia albo null"),
+        };
+        let text = match &input {
+            None => "wejście: automatycznie (pierwsze z sygnałem)".to_owned(),
+            Some(id) => {
+                let listeners = lock(&self.listeners);
+                let label =
+                    listeners.0.iter().find(|l| l.channel == channel && crate::listener::input_id(l) == *id).map(crate::listener::label);
+                format!("wejście: {}", label.unwrap_or_default())
+            }
+        };
+        let saved = self.set_channel(channel, ingest, |c| c.input = input.clone());
+        crate::asrun::log(&self.etv_config, channel, &crate::asrun::Entry::of(crate::asrun::INPUT).operator(who).detail(&text));
+        self.record(ingest, who, channel, &text);
+        match saved {
+            Ok(_) => reply(stream, 200, &json::object([("input", input.as_deref().map_or(Value::Null, Value::from))])),
             Err(e) => fail(stream, 500, &format!("decyzja działa, ale nie zapisała się na dysku: {e}")),
         }
     }
@@ -1500,14 +1618,15 @@ mod tests {
             [("2=srt://0.0.0.0:9000?passphrase=0123456789".to_owned(), "TAKE 7510".to_owned())]
         );
         assert_eq!(inputs_from_json(r#"{"listeners":""}"#).unwrap(), (vec![], none));
-        assert!(inputs_from_json(r#"{"listeners":"1=http://x"}"#).is_err());
+        assert!(inputs_from_json(r#"{"listeners":"1=ftp://x"}"#).is_err());
     }
 
     #[test]
     fn settings_round_trip() {
         let mut settings =
             Settings { library: Some(7), channels: BTreeMap::new(), graphics_off: true, graphics_off_since: Some(1_700_000_000_000) };
-        settings.channels.insert("4".into(), ChannelControl { hold: true, anytime: Some(false) });
+        settings.channels.insert("4".into(), ChannelControl { hold: true, anytime: Some(false), input: None });
+        settings.channels.insert("5".into(), ChannelControl { hold: false, anytime: None, input: Some("00112233aabbccdd".into()) });
         assert_eq!(Settings::from_json(&settings.to_json()).unwrap(), settings);
         assert_eq!(Settings::from_json("{}").unwrap(), Settings::default());
     }
