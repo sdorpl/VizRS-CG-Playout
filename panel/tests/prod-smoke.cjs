@@ -46,6 +46,8 @@ const check = (ok, msg) => { console.log(`${ok ? 'ok  ' : 'BŁĄD'} ${msg}`); if
   page.on('response', (r) => { if (r.status() >= 500) errors.push(`${r.status()} ${new URL(r.url()).pathname}`); });
 
   try {
+    // token awaryjny przez API (ciasteczko sesji w kontekście) – działa przy każdym ekranie logowania (konto, pierwsze konto, token)
+    if (process.env.PANEL_TOKEN) await page.request.post(`${BASE}/api/login`, { headers: { 'X-VizRS-Live': '1' }, data: process.env.PANEL_TOKEN });
     await page.goto(`${BASE}/#antena`);
     const first = await Promise.race([
       page.waitForSelector('#login-token', { timeout: 15000 }).then(() => 'login'),

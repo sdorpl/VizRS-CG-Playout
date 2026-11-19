@@ -48,9 +48,9 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 
 <!-- pakiet:B -->
 - **Emisja nie pada przez nasz błąd.** Błędy przez `Result`, limity czasu na połączeniach, blokady odporne na zatrucie; awaria grafiki, panelu albo zapisu na dysk nie zatrzymuje anteny ani kanału.
-- **Dane z zewnątrz są obce.** Wejście z sieci, plików, ErsatzTV i sąsiednich aplikacji – walidacja i limity; tekst do DOM tylko przez `textContent` (bez `innerHTML`/`eval`); sekrety (tokeny) nie trafiają do przeglądarki ani do logów.
+- **Dane z zewnątrz są obce.** Wejście z sieci, plików, ErsatzTV i sąsiednich aplikacji – walidacja i limity; tekst do DOM przez `textContent`, a HTML tylko szablonem `html` z `dom.js` (escapuje wstawiane wartości; `setHtml` to jedyne miejsce z `innerHTML`; wyjątek: zamrożony `/artist` CG System); bez `eval`; sekrety (tokeny) nie trafiają do przeglądarki ani do logów.
 - **Zależności tylko z listy.** Serwery pakietu (`vizrs`, `vizrs-live`) nie mają zależności zewnętrznych; front-end to czysty JS (moduły ES) bez bundlera, bibliotek i CDN. Wyjątki (okna Tauri, renderer natywny, sidecar) – tylko crate'y wymienione w nagłówku ich `Cargo.toml`; nowa zależność to decyzja użytkownika.
-- **Kod wspólny tylko przez synchronizację.** Kod, wygląd (`vizrs-ui.css`), moduły okna (`gpu.rs`, `scale.rs`, `screen.rs`) i zasady pakietu mają źródło w VizRS CG System; kopie aktualizują skrypty (`tools/sync-cg.sh`, `scripts/sync-ui.sh`, `tools/sync-zasady.sh`) ze sprawdzaniem `--check` w CI – kopii nie edytuje się ręcznie. Cudzy kod tylko na licencji zgodnej z MIT i z wpisem w `THIRD-PARTY.md`. ErsatzTV – wyłącznie przez jego interfejsy (element „script”, ścieżka FFmpeg, startup hook mostu, komendy MediatR), bez kopiowania i bez zmian w jego kodzie.
+- **Kod wspólny tylko przez synchronizację.** Kod, wygląd (`vizrs-ui.css`), moduły okna (`gpu.rs`, `scale.rs`, `screen.rs`, `conn_url.rs`) i zasady pakietu mają źródło w VizRS CG System; kopie aktualizują skrypty (`tools/sync-cg.sh`, `scripts/sync-ui.sh`, `tools/sync-zasady.sh`) ze sprawdzaniem `--check` w CI – kopii nie edytuje się ręcznie. Cudzy kod tylko na licencji zgodnej z MIT i z wpisem w `THIRD-PARTY.md`. ErsatzTV – wyłącznie przez jego interfejsy (element „script”, ścieżka FFmpeg, startup hook mostu, komendy MediatR), bez kopiowania i bez zmian w jego kodzie.
 - **Licencja: MIT** (`LICENSE`, `Copyright (c) 2026 sdorpl`; pole `license` w manifestach); składniki zewnętrzne – `THIRD-PARTY.md`.
 - **Numer wersji: rok.miesiąc.rewizja** (`26.11.1` = listopad 2026, pierwsze wydanie w miesiącu; kolejne `26.11.2`, w grudniu od `26.12.1`), bez zer wiodących (semver: Cargo, paczki, obrazy). Znacznik `v<wersja>` = wersja we wszystkich manifestach projektu (lista – „Tego projektu”). Wydania z gałęzi `main`; `main-oldstable` to stan sprzed 26.11.1.
 - **Gdzie co opisywać:** README tylko wprowadza i odsyła; opis działania, opcje i zmienne tylko w `docs/DOKUMENTACJA.md` (nie powielaj w README, planach ani STATUS); API, którego aplikacja jest dostawcą – `docs/API.md` (albo sekcja wskazana w „Tego projektu”); praca użytkownika – `docs/INSTRUKCJA*.md`; wdrożenie i awarie – `docs/RUNBOOK.md`; plany – `docs/plany/` + wiersz w `docs/plany/README.md`; opis całego pakietu – sdorpl/VizRS.
@@ -77,7 +77,7 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 - **Biała lista jest granicą bezpieczeństwa.** Nie dopisuj komend, które zwracają sekret w innym kształcie niż pole (`Get{Jellyfin,Emby,Plex}ConnectionParameters`), komend wewnętrznych (`TryCompletePlexPinFlow`, `RebuildSearchIndex`) ani takich, które legacy psuje (DOKUMENTACJA §13).
 - **Zero zależności w serwerze.** `server/Cargo.toml` ma pustą sekcję `[dependencies]` – własny HTTP/1.1 (`http.rs`), klient mostu (`bridge.rs`), JSON. Nie dodawaj crate'ów. UI to czysty JS (moduły ES) bez bundlera, bibliotek i CDN.
 - **Wyjątek: aplikacja `desktop/`** (`vizrs-live-desktop`, Tauri 2, decyzja użytkownika 2026-11-12, plan `../VizRS CG System/docs/plany/PLAN-wyglad-live-i-tauri.md` T2) – osobny workspace z własnym `Cargo.lock`; dozwolone tylko crate'y z nagłówka `desktop/Cargo.toml` (tauri, tauri-plugin-dialog, tauri-plugin-single-instance, serde_json, ureq/rustls, getrandom, webkit2gtk; tauri-build). **Natywny klient panelu na serwerze** (decyzja użytkownika 2026-11-15): nie wkompilowuje ani nie uruchamia panelu – łączy się z panelem przez pośrednika (`desktop/src/proxy.rs`), który dokleja token – **token nie trafia do strony**. Strona → okno tylko przez białą listę `desktop/src/bridge.rs` (komenda `ipc`, uprawnienie tylko dla adresu bieżącego panelu). Test: `node desktop/tests/okno.cjs` (otwiera okna).
-- **UI jest wbudowane w binarkę** (`include_str!`, tablica `STATIC` w `server/src/main.rs`). Wniosek:
+- **UI jest wbudowane w binarkę** (`include_str!`, tablica `STATIC` w `server/src/routes.rs`). Wniosek:
   - zmiana w `server/web/*` nie działa w uruchomionym panelu, dopóki nie przebudujesz binarki albo nie uruchomisz z `--web server/web`;
   - nowy plik w `server/web/` trzeba dopisać do `STATIC` (test `module_imports_resolve` pilnuje importów).
 - **Dane z legacy i CG są obce.** Tekst do DOM tylko przez `textContent` (żadnego `innerHTML`/`eval`), bez stylów i skryptów inline (CSP na każdej odpowiedzi). Komunikat błędu legacy pokaż operatorowi (toast), z polskim wstępem.
@@ -137,7 +137,7 @@ cd server && cargo build --release                        # sam panel
 
 | Adres | Co |
 |---|---|
-| `http://<serwer>:8090/` | panel (logowanie tokenem `VIZRS_LIVE_TOKEN`) |
+| `http://<serwer>:8090/` | panel (konta operatorów: login i hasło, pierwsze konto kodem z logu kontenera; token awaryjny `VIZRS_LIVE_TOKEN`) |
 | `http://<serwer>:8409/iptv/channels.m3u`, `/iptv/xmltv.xml` | widzowie – przez proxy Caddy (web GUI legacy i most z zewnątrz = 403) |
 
 Stos testowy (`tests/stack.sh up|seed|test|down|reset|mem`, dane w `$VIZRS_LIVE_TEST_DIR`, domyślnie `~/.cache/vizrs-live-test` – nie w `/tmp`, bo to często tmpfs, czyli RAM; limity pamięci: DOKUMENTACJA §7 „Testy panelu”):
@@ -189,7 +189,7 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `src/http.rs`, `src/json.rs` | własny minimalny HTTP/1.1 (strumienie chunked jak w Node; HTTP/1.0 dla nakładki) i JSON |
 | `src/template.rs`, `src/time.rs` | kontekst klipu z danych szablonu ErsatzTV, symbole `{title}`, `{next_*}`…, wykrywanie reklam (`regex`), daty ISO |
 | `src/vizrs.rs` | klient TCP VizRS (`AUTH`, `STATE`, komendy), zdarzenia kanału w kolejności, zdejmowanie/przywracanie stron przy reklamach |
-| `src/capture.rs`, `src/devtools.rs`, `src/sys.rs` | bezgłowy Chromium (screencast DevTools albo klatki na żądanie `beginFrame`, `capture_mode`, przez `--remote-debugging-pipe`), restart po awarii, `PR_SET_PDEATHSIG`, sygnały (też dla nakładki), zegar monotoniczny |
+| `src/capture/` (`tape.rs` – taśma crawla), `src/devtools.rs`, `src/sys.rs` | bezgłowy Chromium (screencast DevTools albo klatki na żądanie `beginFrame`, `capture_mode`, przez `--remote-debugging-pipe`), restart po awarii, `PR_SET_PDEATHSIG`, sygnały (też dla nakładki), zegar monotoniczny |
 | `src/native.rs` | renderer natywny VizRS (`renderer: native\|auto`): proces `vizrs-render stream` na warstwę show (`?layers=`, `native_layers`; kolejność `layerZ`, mieszanie nachodzących warstw) albo jeden na całą antenę, rekordy klatek, prostokąty dla historii (DOKUMENTACJA §1) |
 | `src/frames.rs`, `src/png.rs`, `src/rects.rs`, `src/scale.rs`, `src/area.rs`, `src/footprint.rs`, `src/bounds.rs` | historia klatek, dekodowanie PNG, widoczne prostokąty, skalowanie jak libvips, obszar grafiki (`area`), ślady stron i strefy `area: auto` (komórki 16 px, PLAN-strefy), granice stron z VizRS (`vizrs-render bounds`, PLAN-strefy S6) |
 | `src/packets.rs`, `src/stream.rs`, `src/yuva.rs`, `src/delta.rs` | pakiety ETV (`Rectangles`/`Repeat`; piksele `Arc`, wspólne między obrazami), tempo strumienia i `lead_seconds`, wstrzymanie strumienia przed obrazem spoza stref, klatki `yuva420p` dla nakładki ffmpeg (z poprzedniej klatki, liczby całkowite, wątki przy dużej zmianie), delta klatek do `vizrs-ffmpeg` (tylko zmienione wiersze) |
@@ -197,7 +197,7 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 | `src/etv_sync.rs` | sidecar instaluje programy ErsatzTV i `vizrs.yml`, a cyklicznie synchronizuje kanały i elementy stron (DOKUMENTACJA §4) |
 | `src/sync.rs` | strony VizRS → elementy `page-<ID>.yml` ErsatzTV (także `vizrs-cg sync`); plików nie kasuje, bo ErsatzTV usunąłby przypisania (DOKUMENTACJA §3) |
 | `src/net.rs` | wspólny klient HTTP programów ErsatzTV (URL, połączenia z limitami czasu) |
-| `src/overlay.rs`, `src/bin/vizrs-ffmpeg.rs` | nakładka ffmpeg ErsatzTV (binarka `vizrs-ffmpeg`): płótno grafiki zastąpione klatkami `yuva420p` z sidecara (DOKUMENTACJA §1) |
+| `src/overlay/`, `src/bin/vizrs-ffmpeg.rs` | nakładka ffmpeg ErsatzTV (binarka `vizrs-ffmpeg`): płótno grafiki zastąpione klatkami `yuva420p` z sidecara (DOKUMENTACJA §1); `settings.rs`, `args.rs` (argumenty ffmpeg), `cuda.rs`, `cpu.rs`, `ram_sync.rs`, `canvas.rs`, `zones.rs`, `relay.rs` (strumień klatek), `run.rs` (przebieg, przejęcie anteny) |
 | `src/ingest.rs` | live ingest w sidecarze: `POST /ingest` (MPEG-TS z odbiornika, token), `GET /ingest` (strumień od ostatniej klatki kluczowej), `GET /ingest/state`; parser PAT/PMT/klatek kluczowych |
 | `src/listener.rs` | odbiorniki live ingest (`vizrs-ffmpeg vizrs-ingest`, usługa `ingest` w profilu compose): ffmpeg `-listen` RTMP/SRT → `-c copy` MPEG-TS → sidecar |
 | `src/live_shows.rs`, `src/standby.ts` | audycje na żywo w ramówce: lista `<etv_config>/vizrs-live/shows.json` (z `live_shows` tylko pierwszy raz), definicje Remote Stream ErsatzTV obok; sekunda czerni MPEG-TS slotu bez sygnału (dla ffprobe ErsatzTV) |
@@ -221,10 +221,14 @@ Nowa funkcja = nowe przypadki w `tests/e2e.cjs` (sprawdzi je CI; w razie potrzeb
 |---|---|
 | `bridge/Bridge.cs` | VizRS Bridge (C#, .NET 10): hak startowy, `/vizrs-bridge/{health,commands,command/…,upload/…}`, refleksja po `ErsatzTV.Application`, serializacja wyników |
 | `bridge/commands.txt` | biała lista komend legacy (jedna w wierszu, `#` – komentarz) |
-| `server/src/main.rs` | serwer panelu: opcje i `VIZRS_LIVE_*`, logowanie i limit prób, CSRF/CSP, `/api/*`, pośrednik CG (`/api/cg/…`), `mask_secrets`, `STATIC` |
+| `server/src/main.rs` | serwer panelu: start, połączenia, healthcheck, stan aplikacji |
+| `server/src/config.rs`, `session.rs` | opcje i `VIZRS_LIVE_*`; ciasteczko, logowanie (konto, token, pierwsze konto), limit prób, autoryzacja, API kont `/api/users` |
+| `server/src/accounts.rs`, `crypto.rs` | konta i sesje w katalogu danych (`users.json`, `sessions.json`, role); SHA-256, HMAC, PBKDF2 bez crate'ów |
+| `server/src/routes.rs` | routing `/api/*`, komendy ErsatzTV, stan, `STATIC` (CSRF/CSP – `http.rs`) |
+| `server/src/proxy.rs`, `upload.rs`, `secrets.rs` | pośrednik ErsatzTV i CG (`/api/cg/…`, strumienie, podgląd, miniatury); przesyłanie obrazów; `mask_secrets` |
 | `server/src/bridge.rs` | klient HTTP mostu i CG Playout (sieć wewnętrzna) |
 | `server/src/http.rs` | minimalny HTTP/1.1: jedno żądanie na połączenie, limity rozmiaru i czasu, nagłówki bezpieczeństwa |
-| `desktop/` | aplikacja VizRS CG Playout – natywny klient panelu (Tauri 2): `src/main.rs` (opcje, okna, menu, komenda `ipc`), `src/proxy.rs` (pośrednik z tokenem), `src/connect.rs` + `ui/connect.html` (okno połączenia), `src/bridge.rs` (biała lista), `tests/okno.cjs`; `tauri.conf.json` (paczki: sam klient) |
+| `desktop/` | aplikacja VizRS CG Playout – natywny klient panelu (Tauri 2): `src/main.rs` (opcje, stan, start), `src/window.rs` (okna), `src/menu.rs`, `src/ipc.rs` (komenda `ipc`, okno połączenia); `src/gpu.rs`, `scale.rs`, `screen.rs`, `conn_url.rs` (adres i token serwera) – kopie z VizRS CG System (`scripts/sync-ui.sh`, `--check` w CI), `src/proxy.rs` (pośrednik z tokenem), `src/connect.rs` + `ui/connect.html` (okno połączenia), `src/bridge.rs` (biała lista), `tests/okno.cjs`; `tauri.conf.json` (paczki: sam klient) |
 | `server/web/desktop.js` | most panelu z aplikacją `desktop/` (tytuł okna, alarm); w przeglądarce nic nie robi |
 | `server/web/app.js`, `core.js` | wejście i pasek górny; DOM (`h`, `table`…), `api`/`cmd`, toast, dialog, router (`VIEWS`), etykiety `PL`, kontrola białej listy |
 | `server/web/form.js`, `parts.js`, `when.js`, `tasks.js`, `check.js` | formularz z metadanych komend; `crudView`, `itemsEditor`, `contentPicker`, `dayBar`; „kiedy obowiązuje”; wyniki zadań w tle z logu legacy; kontrola ramówki |

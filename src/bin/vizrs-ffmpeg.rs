@@ -1,5 +1,5 @@
 // ffmpeg overlay for ErsatzTV: `vizrs-ffmpeg <ffmpeg arguments>`, set as the
-// FFmpeg path in ErsatzTV (src/overlay.rs, DOKUMENTACJA §1).
+// FFmpeg path in ErsatzTV (src/overlay/, DOKUMENTACJA §1).
 // `vizrs-ffmpeg vizrs-ingest`: the live ingest listeners (src/listener.rs).
 
 use vizrs_cg::listener;

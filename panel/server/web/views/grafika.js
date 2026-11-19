@@ -180,7 +180,7 @@ function whenTable(pages, channel, rules, elements, redraw) {
 const numField = (v) => { const t = String(v).trim(); return t === '' ? null : Number(t); };
 
 /** Strony show VizRS ze wszystkich kanałów CG Playout (zwykle jeden show) – nr → {name, fields?}. */
-async function allPages(channels) {
+export async function allPages(channels) {
   const out = new Map();
   const lists = await Promise.all((channels.length ? channels : [{ number: '' }]).map((c) => cg('pages/' + encodeURIComponent(c.number)).catch(() => null)));
   for (const r of lists) {

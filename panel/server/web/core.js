@@ -6,6 +6,7 @@ export const main = document.getElementById('main');
 /** Stan wspólny widoków: status serwera, metadane komend mostu, odświeżanie bieżącego widoku. */
 export const S = {
   status: null,      // /api/status
+  auth: {},          // /api/auth: konta, zalogowany użytkownik (user: {name, role})
   meta: new Map(),   // nazwa komendy -> {name, kind, parameters}
   timers: [],
   cleanup: [],       // funkcje sprzątające przy zmianie ekranu (np. podglądy mozaiki – K10)
@@ -140,7 +141,7 @@ export async function api(path, opts = {}) {
   });
   let data;
   try { data = await res.json(); } catch { throw new ApiError(`odpowiedź ${res.status} bez JSON`); }
-  if (res.status === 401 && path !== '/api/login') { await login(); throw new ApiError('wymagane logowanie'); }
+  if (res.status === 401 && path !== '/api/login' && path !== '/api/setup') { await login(); throw new ApiError('wymagane logowanie'); }
   if (!data.ok) throw new ApiError(data.error || `błąd ${res.status}`);
   return data;
 }
@@ -260,13 +261,69 @@ export function needs(names, view) {
   };
 }
 
-export async function login() {
-  const input = h('input', { type: 'password', id: 'login-token', autocomplete: 'current-password', 'aria-label': 'Token panelu' });
+/** Jak się logować (`GET /api/auth`): konta, pierwsze konto, token awaryjny, zalogowany użytkownik. */
+export async function authState() {
+  try {
+    const d = await (await fetch('/api/auth', { credentials: 'same-origin' })).json();
+    return d.result || {};
+  } catch { return {}; }
+}
+
+/** Enter w polu okna = główny przycisk okna. */
+const enterSubmits = (...inputs) => inputs.forEach((i) => i.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); document.querySelector('#dlg-buttons button.acc')?.click(); }
+}));
+
+/** Pierwsze konto administratora – kod z logu panelu (albo token awaryjny). */
+async function firstAccount(st) {
+  const code = h('input', { id: 'setup-code', autocomplete: 'one-time-code', autocapitalize: 'characters', spellcheck: 'false', placeholder: 'XXXX-XXXX-XXXX' });
+  const user = h('input', { id: 'setup-user', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', maxlength: 32 });
+  const pass = h('input', { type: 'password', id: 'setup-pass', autocomplete: 'new-password' });
+  const pass2 = h('input', { type: 'password', id: 'setup-pass2', autocomplete: 'new-password' });
+  enterSubmits(code, user, pass, pass2);
+  const body = h('div', null,
+    h('p', null, 'Panel nie ma jeszcze kont. Utwórz konto administratora – potem dodasz konta operatorów na ekranie System → Użytkownicy.'),
+    h('div', { class: 'form' },
+      h('label', { for: 'setup-code' }, 'Kod z logu panelu'), code,
+      h('span'), h('span', { class: 'dim' }, `Panel wypisuje go przy starcie w logu kontenera (Portainer: kontener live → Logs): „kod pierwszej konfiguracji: …”.${st.token ? ' Możesz też wpisać token VIZRS_LIVE_TOKEN.' : ''}`),
+      h('label', { for: 'setup-user' }, 'Login'), user,
+      h('label', { for: 'setup-pass' }, 'Hasło'), pass,
+      h('label', { for: 'setup-pass2' }, 'Powtórz hasło'), pass2,
+      h('span'), h('span', { class: 'dim' }, 'Hasło: co najmniej 8 znaków.')));
   for (;;) {
-    const ok = await dialog('Logowanie do panelu VizRS CG Playout', h('div', null, h('label', { for: 'login-token' }, 'Token panelu (VIZRS_LIVE_TOKEN)'), input), [['Zaloguj', true, 'acc']]);
-    if (!ok) continue;
+    if (!(await dialog('VizRS CG Playout – pierwsze uruchomienie', body, [['Utwórz konto i zaloguj', true, 'acc']]))) continue;
+    if (pass.value !== pass2.value) { toast('Hasła się różnią', 'bad'); continue; }
     try {
-      await api('/api/login', { method: 'POST', body: input.value, type: 'text/plain' });
+      await api('/api/setup', { method: 'POST', body: JSON.stringify({ code: code.value.trim(), user: user.value.trim(), password: pass.value }) });
+      location.reload();
+      return;
+    } catch (e) { toast(e.message, 'bad'); }
+  }
+}
+
+export async function login() {
+  const st = await authState();
+  if (st.setup) return firstAccount(st);
+  let mode = st.accounts ? 'account' : 'token';
+  for (;;) {
+    const user = h('input', { id: 'login-user', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', 'aria-label': 'Login' });
+    const pass = h('input', { type: 'password', id: 'login-pass', autocomplete: 'current-password', 'aria-label': 'Hasło' });
+    const token = h('input', { type: 'password', id: 'login-token', autocomplete: 'current-password', 'aria-label': 'Token panelu' });
+    enterSubmits(user, pass, token);
+    const body = mode === 'account'
+      ? h('div', { class: 'form' }, h('label', { for: 'login-user' }, 'Login'), user, h('label', { for: 'login-pass' }, 'Hasło'), pass)
+      : h('div', null,
+        st.broken ? h('div', { class: 'note err' }, `Konta są wyłączone: ${st.broken}. Zaloguj się tokenem awaryjnym.`) : null,
+        h('label', { for: 'login-token' }, 'Token panelu (VIZRS_LIVE_TOKEN)'), token);
+    const buttons = [['Zaloguj', true, 'acc']];
+    if (mode === 'account' && st.token) buttons.unshift(['Token awaryjny', 'token']);
+    if (mode === 'token' && st.accounts) buttons.unshift(['Login i hasło', 'account']);
+    const v = await dialog('Logowanie do panelu VizRS CG Playout', body, buttons);
+    if (v === 'token' || v === 'account') { mode = v; continue; }
+    if (!v) continue;
+    try {
+      const b = mode === 'account' ? JSON.stringify({ user: user.value.trim(), password: pass.value }) : token.value;
+      await api('/api/login', { method: 'POST', body: b, type: mode === 'account' ? 'application/json' : 'text/plain' });
       location.reload();
       return;
     } catch (e) { toast(e.message, 'bad'); }

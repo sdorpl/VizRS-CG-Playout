@@ -288,6 +288,10 @@ services:
       VIZRS_INGEST_IDLE_MS: ${VIZRS_INGEST_IDLE_MS:-15000}
       # The log also in a file next to the sidecar's (vizrs-cg.log): it outlives the container.
       VIZRS_INGEST_LOG: /etv-config/vizrs-live/logs/vizrs-ingest.log
+      # YouTube inputs (https://www.youtube.com/…): yt-dlp, installed by the sidecar in
+      # /vizrs. A server YouTube asks to sign in: a cookies file (Netscape format,
+      # writable), e.g. /etv-config/vizrs-live/youtube-cookies.txt. Empty = none.
+      VIZRS_YTDLP_COOKIES: ${VIZRS_YTDLP_COOKIES:-}
     volumes:
       - vizrs-client:/vizrs:ro
       - ${ERSATZTV_CONFIG:-ersatztv-config}:/etv-config

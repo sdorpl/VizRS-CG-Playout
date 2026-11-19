@@ -323,11 +323,20 @@ type Batch = (Vec<Arc<Vec<u8>>>, Option<u64>);
 pub struct Feed {
     buffer: Mutex<Buffer>,
     changed: Condvar,
+    /// The listener's input the source comes from (`input=` of `POST /ingest`,
+    /// `listener::input_id`); empty from an older listener.
+    input: String,
 }
 
 impl Feed {
+    #[cfg(test)]
     fn new() -> Feed {
+        Feed::of_input(String::new())
+    }
+
+    fn of_input(input: String) -> Feed {
         Feed {
+            input,
             buffer: Mutex::new(Buffer {
                 runs: VecDeque::new(),
                 bytes: 0,
@@ -492,7 +501,16 @@ pub struct ChannelControl {
     pub hold: bool,
     /// Overrides `ingest_anytime` for the channel.
     pub anytime: Option<bool>,
+    /// The input the channel takes (`listener::input_id`); the others wait.
+    /// `None` = automatic: the first with a signal.
+    pub input: Option<String>,
 }
+
+/// An input refused for the channel (another one on it, another one chosen)
+/// that tried again within this long has a signal waiting. A listener tries
+/// again when data comes, and a source read from HLS (YouTube, a link) sends
+/// segments of up to 10 s at once.
+const WAITING: Duration = Duration::from_secs(15);
 
 /// Something that happened to the live sources: epoch ms, channel, text.
 pub type Event = (i64, String, String);
@@ -509,6 +527,8 @@ pub struct Ingest {
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
     control: Mutex<HashMap<String, ChannelControl>>,
     events: Mutex<VecDeque<Event>>,
+    /// Refused sources, by channel and input: when they last tried.
+    waiting: Mutex<HashMap<(String, String), Instant>>,
     /// The overlay's live runs (`take=`) of each channel: how many read now, when the last ended.
     takes: Arc<Mutex<HashMap<String, Takes>>>,
 }
@@ -565,6 +585,7 @@ impl Ingest {
             feeds: Mutex::new(HashMap::new()),
             control: Mutex::new(HashMap::new()),
             events: Mutex::new(VecDeque::new()),
+            waiting: Mutex::new(HashMap::new()),
             takes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -584,6 +605,12 @@ impl Ingest {
     }
 
     pub fn set_control(&self, channel: &str, control: ChannelControl) {
+        // Another input chosen: the source on the channel now goes off it.
+        if let (Some(chosen), Some(feed)) = (&control.input, self.feed(channel)) {
+            if feed.input != *chosen {
+                feed.end();
+            }
+        }
         let mut all = self.control.lock().unwrap_or_else(|e| e.into_inner());
         if control == ChannelControl::default() {
             all.remove(channel);
@@ -635,15 +662,31 @@ impl Ingest {
         self.feeds().get(channel).cloned()
     }
 
-    /// A new source of `channel`; None while another one is on it.
-    fn start(&self, channel: &str) -> Option<Arc<Feed>> {
+    /// A new source of `channel`; `Err` while another one is on it or another
+    /// input is chosen – `true` when the input was not waiting already (worth
+    /// a line in the log). The chosen input takes the channel from another one.
+    fn start(&self, channel: &str, input: &str) -> Result<Arc<Feed>, bool> {
+        let chosen = self.control(channel).input;
         let mut feeds = self.feeds();
-        if feeds.get(channel).is_some_and(|feed| !feed.lock().ended) {
-            return None;
+        let busy = feeds.get(channel).filter(|feed| !feed.lock().ended).cloned();
+        let refused = match &chosen {
+            Some(chosen) => chosen != input,
+            None => busy.is_some(),
+        };
+        if refused {
+            drop(feeds);
+            let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+            waiting.retain(|_, at| at.elapsed() < WAITING);
+            let first = waiting.insert((channel.to_owned(), input.to_owned()), Instant::now()).is_none();
+            return Err(first);
         }
-        let feed = Arc::new(Feed::new());
+        if let Some(busy) = busy {
+            busy.end();
+        }
+        self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&(channel.to_owned(), input.to_owned()));
+        let feed = Arc::new(Feed::of_input(input.to_owned()));
         feeds.insert(channel.to_owned(), Arc::clone(&feed));
-        Some(feed)
+        Ok(feed)
     }
 
     fn finish(&self, channel: &str, feed: &Arc<Feed>) {
@@ -652,6 +695,18 @@ impl Ingest {
         if feeds.get(channel).is_some_and(|f| Arc::ptr_eq(f, feed)) {
             feeds.remove(channel);
         }
+    }
+
+    /// The input (`listener::input_id`) of the channel's source; `None` without
+    /// one, or from an older listener.
+    pub fn input_of(&self, channel: &str) -> Option<String> {
+        self.feed(channel).map(|feed| feed.input.clone()).filter(|input| !input.is_empty())
+    }
+
+    /// Inputs of the channel refused just now, still trying: a signal waits on them.
+    pub fn waiting(&self, channel: &str) -> Vec<String> {
+        let waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        waiting.iter().filter(|((c, _), at)| c == channel && at.elapsed() < WAITING).map(|((_, input), _)| input.clone()).collect()
     }
 
     /// The channel's source is live and not held: the studio is on the channel.
@@ -736,10 +791,28 @@ impl Ingest {
         if channel.is_empty() {
             return http::respond(&mut stream, 400, Some("text/plain"), b"channel?");
         }
-        let Some(feed) = self.start(&channel) else {
-            crate::warn!("ingest: channel {channel} already has a live source; the new one is refused");
-            self.event(&channel, "drugi sygnał odrzucony (kanał ma już źródło)");
-            return http::respond(&mut stream, 409, None, b"");
+        let input: String = request.param("input").unwrap_or("").chars().filter(char::is_ascii_hexdigit).take(16).collect();
+        let feed = match self.start(&channel, &input) {
+            Ok(feed) => feed,
+            Err(first) => {
+                // A refused input tries again every second: one line until it stops waiting.
+                if first {
+                    let chosen = self.control(&channel).input.is_some();
+                    crate::warn!(
+                        "ingest: channel {channel}: the source refused ({}); it waits",
+                        if chosen { "another input chosen" } else { "the channel has one" }
+                    );
+                    self.event(
+                        &channel,
+                        if chosen {
+                            "sygnał odrzucony – wybrane jest inne wejście (czeka)"
+                        } else {
+                            "drugi sygnał odrzucony (kanał ma już źródło, czeka)"
+                        },
+                    );
+                }
+                return http::respond(&mut stream, 409, None, b"");
+            }
         };
         stream.write_all(b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n")?;
         stream.set_read_timeout(Some(self.idle))?;
@@ -778,7 +851,8 @@ impl Ingest {
         let mut announced = false;
         loop {
             let n = stream.read(&mut buffer)?;
-            if n == 0 {
+            // Ended from outside: another input chosen for the channel.
+            if n == 0 || feed.lock().ended {
                 return Ok(());
             }
             let runs = scanner.push(&buffer[..n]);
@@ -1065,12 +1139,29 @@ mod tests {
     #[test]
     fn one_source_per_channel() {
         let ingest = Ingest::new("t", true);
-        let first = ingest.start("1").unwrap();
-        assert!(ingest.start("1").is_none(), "an active source is not pre-empted");
-        assert!(ingest.start("2").is_some());
+        let first = ingest.start("1", "00ab").unwrap();
+        assert!(ingest.start("1", "").is_err(), "an active source is not pre-empted");
+        assert_eq!(ingest.input_of("1").as_deref(), Some("00ab"), "the input the source comes from");
+        assert!(ingest.start("2", "").is_ok());
+        assert_eq!(ingest.input_of("2"), None, "an older listener names no input");
         ingest.finish("1", &first);
-        assert!(ingest.start("1").is_some());
+        assert!(ingest.start("1", "").is_ok());
         assert!(!Ingest::new("", true).enabled());
+        // A chosen input: the others are refused (and wait), it takes the channel over.
+        let ingest = Ingest::new("t", true);
+        let auto = ingest.start("1", "aa").unwrap();
+        assert_eq!(ingest.start("1", "bb").err(), Some(true), "the first refusal is told");
+        assert_eq!(ingest.start("1", "bb").err(), Some(false), "the next ones, while it waits, are not");
+        assert_eq!(ingest.waiting("1"), ["bb"]);
+        ingest.set_control("1", ChannelControl { input: Some("bb".into()), ..ChannelControl::default() });
+        assert!(auto.lock().ended, "the source of another input goes off at once");
+        assert!(ingest.start("1", "aa").is_err(), "only the chosen one");
+        let chosen = ingest.start("1", "bb").unwrap();
+        assert_eq!(ingest.input_of("1").as_deref(), Some("bb"));
+        assert_eq!(ingest.waiting("1"), ["aa"]);
+        ingest.finish("1", &auto);
+        assert_eq!(ingest.input_of("1").as_deref(), Some("bb"), "the old source ending leaves the new one");
+        drop(chosen);
         // The standby second is MPEG-TS with H.264 and audio.
         let mut scanner = Scanner::default();
         let runs = scanner.push(STANDBY);

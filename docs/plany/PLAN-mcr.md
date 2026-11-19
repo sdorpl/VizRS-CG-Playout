@@ -92,6 +92,9 @@ Przebieg łączy [LUKI.md](../LUKI.md) i punkty z §2–§3 w jedną kolejkę: n
 | K16 | Ważność (od–do) i zatwierdzanie stron promo (Vizrt G; CG) | K15 | kontrakt opisany (2026-11-09); czeka na CG Playout |
 | K17 | Alarmy: banner, dźwięk, webhook (Vizrt I; webhook w CG) | K9, K14 | zrobione (panel + CG Playout 26.11.x) |
 | K18 | Podgląd kanału: HEVC w `mux.js`, dźwięk inny niż AAC – sprawdzić wykonalność (LUKI #21, G3) | – | zrobione (2026-11-09) |
+| K19 | Konta operatorów: login i hasło zamiast tokenu, konfiguracja z panelu (pierwsze konto kodem z logu, Użytkownicy, Moje konto, role admin/operator, sesje na wolumenie) | – | zrobione (2026-11-18, gałąź `live-ingest-new`) |
+| K20 | Okno AppImage logowane kontem (pośrednik z sesją konta zamiast `Bearer`) | K19 | do zrobienia |
+| K21 | Jedno konto w pakiecie (opcja): konta panelu logują do VizRS Trio i Artist (przełącznik w Użytkownicy, `/api/sso`, CG System `--panel-login`) | K19 | zrobione (2026-11-18, `live-ingest-new` + CG System `konta-panelu`) |
 
 **Poza przebiegiem** (wiersze zostają w LUKI):
 
@@ -163,6 +166,15 @@ Panel (przeglądarka): banner i opcjonalny dźwięk, gdy K9 znajdzie błąd w na
 
 ### K18 – podgląd HEVC i inne dźwięki (LUKI #21)
 `mux.js` przepakowuje tylko H.264 + AAC. Sprawdzić koszt `hvcC` (HEVC) i dźwięku AC-3/E-AC-3 w MSE (`MediaSource.isTypeSupported`); jeśli wykonalne bez bibliotek – dodać, inaczej opisać w DOKUMENTACJA §3 i zostawić lukę. Najniższy priorytet.
+
+### K19 – konta operatorów (decyzje użytkownika 2026-11-18)
+Logowanie tokenem przez www jest uciążliwe; konfiguracja tylko z poziomu www, bez edycji plików i zmiennych. Decyzje: role **administrator + operator**; stary token **zostaje awaryjnie** (skrypty, przycisk „Token awaryjny”, pierwsze konto); konta **osobne w każdej aplikacji pakietu** – Trio bywa uruchamiane samo jako sterownik grafiki dla OBS, bez panelu i ErsatzTV, więc nie może zależeć od kont panelu. Zrobione: DOKUMENTACJA §11 „Konta operatorów”, API.md §2.
+
+### K20 – okno AppImage z kontem
+Pośrednik okna (`desktop/src/proxy.rs`) dokleja dziś `Bearer <token>`. Z kontami: okno „Połącz z panelem” pyta o login i hasło, samo woła `POST /api/login`, trzyma identyfikator sesji (nie hasło) w `live-connections.json` i dokleja ciasteczko `vizrs_live`; 401 → okno połączenia. Token zostaje jako druga ścieżka.
+
+### K21 – jedno konto w pakiecie (decyzja użytkownika 2026-11-18)
+„Pozwól na logowanie jednym kontem, ale jako opcję, a nie konieczność” → jedno konto w całym pakiecie: panel jest źródłem kont, VizRS CG System przyjmuje je opcjonalnie. Przełącznik w panelu (domyślnie wyłączony), adres panelu w compose (`VIZRS_PANEL_LOGIN`); Trio samo (OBS) bez zmian – token. Zamiast osobnych kont w CG System (dawny pomysł K21) – CG System nie trzyma haseł. Zrobione: DOKUMENTACJA §11 „Logowanie w pakiecie”, API.md §2 `/api/sso…`, CG System DOKUMENTACJA §12. Otwarte: okna natywne (`vizrs-shell`, Artist) dalej tokenem – razem z K20.
 
 ## 6. Legacy czy Next
 

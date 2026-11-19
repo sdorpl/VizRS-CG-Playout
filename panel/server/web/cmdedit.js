@@ -102,12 +102,13 @@ export function cmdEditor(opts) {
   const { pages, used = new Map(), label } = opts;
   const uid = `ce${++seq}`;
   const offText = opts.ad ? 'tylko zdejmij grafikę' : opts.scoped ? 'wyłączone – nic nie wchodzi' : 'nic nie wchodzi';
+  // inheritText: inna nazwa „jak globalnie” (np. grafika wejścia: „jak kanał”); noOff – bez trybu „nic nie wchodzi”
   const mode = h('select', { id: opts.id, class: 'ce-mode', 'aria-label': `${label}: tryb` },
-    opts.scoped ? h('option', { value: 'inherit' }, 'jak globalnie') : null,
-    h('option', { value: 'off' }, offText),
+    opts.scoped ? h('option', { value: 'inherit' }, opts.inheritText || 'jak globalnie') : null,
+    opts.noOff ? null : h('option', { value: 'off' }, offText),
     h('option', { value: 'cmd' }, 'grafiki VizRS'));
   const v = opts.value;
-  mode.value = v == null ? (opts.scoped ? 'inherit' : 'off') : v === '' ? 'off' : 'cmd';
+  mode.value = v == null || (v === '' && opts.noOff) ? (opts.scoped ? 'inherit' : 'off') : v === '' ? 'off' : 'cmd';
   let steps = parseCmds(v);
   let textMode = false;
 

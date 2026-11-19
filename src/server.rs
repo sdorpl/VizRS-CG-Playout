@@ -26,6 +26,7 @@
 //                         zones (empty = the whole channel), its frame 0 at
 //                         S seconds into the piece; it replaces the one before
 //   GET /ingest/listeners  the listeners in force (VIZRS_INGEST or VizRS Live), for vizrs-ingest
+//   POST /ingest/listeners/done?channel=&url=  a YouTube video input is over: off the list
 //   POST /ingest?channel=1, GET /ingest?channel=1, GET /ingest/state?channel=1
 //                         live ingest: a live source of the channel in, out
 //                         to the overlay, its state (src/ingest.rs)
@@ -364,6 +365,11 @@ impl Server {
         }
     }
 
+    /// The own graphics of the input the channel's live source comes from (VizRS Live).
+    fn input_on_live(&self, channel: &str) -> Option<String> {
+        self.ingest.input_of(channel).and_then(|input| self.panel.input_on_live(channel, &input))
+    }
+
     /// With live ingest, follows the overlay's takeovers of the channels: while a
     /// live is on air, the channel's schedule graphics are held and its `on_live`
     /// (a LIVE logo) goes on air instead (`ChannelEvents::live_takeover`).
@@ -383,7 +389,8 @@ impl Server {
                         } else {
                             on_air.remove(&channel);
                         }
-                        server.events_for(&channel).live_takeover(on);
+                        let own = server.input_on_live(&channel);
+                        server.events_for(&channel).live_takeover(on, own.as_deref());
                     }
                 }
             }
@@ -517,6 +524,7 @@ impl Server {
         // A live source of the channel: its takeover graphics may come on air in this run.
         if self.ingest.is_live(channel) {
             lines.extend(config.on_live.lines().map(str::to_owned));
+            lines.extend(self.input_on_live(channel).unwrap_or_default().lines().map(str::to_owned));
         }
         let mut numbers = vizrs::taken_pages(&lines);
         // Pages this piece may take besides its rules: back from a break, or by
@@ -847,6 +855,7 @@ impl Server {
                 Ok(())
             }
             ("GET", "/ingest/listeners") => self.panel.listeners_request(&request, stream, &self.ingest),
+            ("POST", "/ingest/listeners/done") => self.panel.listener_done(&request, stream, &self.ingest),
             ("GET", "/ingest/state") => self.ingest.state_request(&request, stream),
             ("GET", "/ingest") => self.ingest.read_request(&request, stream),
             ("POST", "/ingest") => self.ingest.source_request(&request, stream),

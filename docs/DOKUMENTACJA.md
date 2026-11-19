@@ -231,7 +231,15 @@ z EXTINF – ta sama playlista HLS, ciągłe znaczniki czasu). Nowy przebieg
 dostaje nowy strumień klatek tej samej sesji
 (`/ffmpeg/frames?session=N&rev=R&zones=…&at=S&area=1`: klatki w podanych
 strefach, klatka 0 w sekundzie S kawałka), a poprzedni strumień znika – sesja
-elementu kończy się dopiero z ostatnim.
+elementu kończy się dopiero z ostatnim. Dotyczy to także przebiegu live
+(przejęcie, §1 Live ingest): po poszerzeniu stref kończy się i rusza od nowa
+z nowymi strefami, a sidecar dokłada sygnał od miejsca, w którym przebieg
+stanął (`take`). Do 2026-11-18 restartował się tylko przebieg ramówki: live
+jechał na starym strumieniu klatek, który sidecar wstrzymywał (niżej) – w
+miejscu belek wychodziły poszarpane, kolorowe pasy, a zatrzymanie takiego
+przebiegu trwało ok. 3 s. Typowo na starcie kawałka po ręcznym TAKE z panelu:
+strona bez śladu poszerzała strefy w ciągu 0,1 s. W logu nakładki: `live run
+restarted for new graphics zones`.
 
 **Grafika nie jest ucinana na wejściu.** Strumień klatek nakładki sprawdza
 każdy nowy obraz, zanim zamieni go na klatkę: gdy którakolwiek narysowana
@@ -580,7 +588,7 @@ sidecar (równe 25 kl./s), ani główny ffmpeg (ok. 5× z grafiką z pliku) tego
 nie ograniczają, a `render_size` nie pomaga, bo płótno ErsatzTV zawsze ma
 rozmiar kanału.
 
-Nakładka `vizrs-ffmpeg` ([src/overlay.rs](../src/overlay.rs)) omija ten
+Nakładka `vizrs-ffmpeg` ([src/overlay/](../src/overlay/mod.rs)) omija ten
 łańcuch. To
 też statyczna binarka (musl), więc działa w obrazie ErsatzTV na amd64
 i arm64 bez względu na jego glibc; `seed` kładzie ją do `/vizrs` (§4). W ErsatzTV ustawia się ją jako ścieżkę FFmpeg
@@ -1012,13 +1020,15 @@ harmonogramu jest dużo krótsza, więc w trakcie emisji pauza nie występuje.
 ### Live ingest
 
 Kanał można przełączyć z harmonogramu na
-przychodzący sygnał na żywo (RTMP albo SRT). ErsatzTV zostaje bez zmian:
+przychodzący sygnał na żywo (RTMP albo SRT, YouTube albo strumień z linku –
+HLS, RTMP, SRT, RTSP). ErsatzTV zostaje bez zmian:
 sygnał przyjmuje osobna usługa, sidecar trzyma jego stan, a podmianę obrazu
 robi nakładka ffmpeg.
 
 ```
 OBS/koder ── RTMP/SRT ──► vizrs-ffmpeg vizrs-ingest ── POST /ingest (MPEG-TS) ──► sidecar
-                           (ffmpeg -listen, -c copy)                               │
+YouTube ◄── yt-dlp, ffmpeg ┤(ffmpeg -listen, -c copy)
+HLS/RTMP/SRT/RTSP ◄── ffmpeg┘                              │
 ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state, GET /ingest ◄────┘
                                   └─ ta sama playlista HLS: kawałek │ live │ kawałek
 ```
@@ -1027,7 +1037,7 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    dla każdego wpisu `kanał=URL` z `VIZRS_INGEST` ffmpeg czeka na nadawcę
    (RTMP `-listen 1`, SRT `mode=listener`), przepakowuje strumień do MPEG-TS
    bez transkodowania (`-c copy`; pierwszy obraz i pierwszy dźwięk) i wysyła
-   go do sidecara (`POST /ingest?channel=N`, `Authorization: Bearer
+   go do sidecara (`POST /ingest?channel=N&input=<id wejścia>`, `Authorization: Bearer
    <VIZRS_INGEST_TOKEN>`). Nadawca, który przez `VIZRS_INGEST_IDLE_MS`
    (domyślnie 15000 ms) nic nie wyśle, jest rozłączany, a ffmpeg czeka na
    następnego. Próg jest celowo dłuższy niż cisza, po której sidecar
@@ -1047,6 +1057,23 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    późniejsze przejęcie); ścieżka, która zacznie się później, przepada
    (dźwięk: cisza do końca sygnału). Każdy pakiet idzie od razu (`-flush_packets 1`).
    Do 16 odbiorników, każdy z innym adresem; kilka może zasilać jeden kanał.
+   **Które wejście bierze kanał:** sidecar przyjmuje na kanał jedno źródło
+   naraz. Bez wyboru (automatycznie) wygrywa pierwsze z sygnałem, następne
+   dostaje 409 i próbuje co sekundę – gdy pierwsze zejdzie, przejmuje kanał.
+   Operator może wybrać wejście kanału (Live API `PUT /api/live/channels/<n>`
+   `{"input": "<id>"}`, panel: lista „Wejście” na karcie kanału w Sloty na
+   żywo; zapis w `control.json`, przeżywa restart): wtedy kanał bierze tylko
+   to wejście – źródło z innego schodzi od razu (sidecar zamyka jego
+   połączenie), a pozostałe są odrzucane, choćby wybrane nie miało sygnału
+   (kanał wraca wtedy do ramówki). Odbiorniki RTMP/SRT dalej przyjmują
+   nadawców, więc po przełączeniu na nie sygnał wchodzi w ciągu ok. 1 s;
+   wejścia YouTube i z linku nie wybrane znikają z listy dla usługi `ingest`
+   (`GET /ingest/listeners`) i nie pobierają strumienia – po przełączeniu na
+   nie usługa uruchamia je w ciągu ok. 5 s (YouTube: plus zapytanie yt-dlp).
+   Stan każdego wejścia w Live API: nadaje, sygnał czeka (odrzucony w
+   ostatnich 15 s – odbiornik ponawia, gdy przyjdą dane, a HLS przysyła segmenty do 10 s naraz; w dzienniku zdarzeń odmowa raz, gdy wejście zaczyna czekać), nie pobiera (wybrane inne), brak. Wybrane wejście, które
+   zniknie z listy (zmiana wejść, koniec filmu YouTube), przywraca
+   „automatycznie” (zdarzenie w dzienniku operacji).
    **Lista odbiorników z sidecara:** co 5 s usługa pyta `GET /ingest/listeners`
    (ten sam token; odpowiedź w formacie `VIZRS_INGEST`) i sama uruchamia nowe
    oraz zatrzymuje zmienione odbiorniki – bez restartu, pozostałe trwają.
@@ -1055,6 +1082,58 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    Starszy sidecar (404) albo nieosiągalny przy starcie = `VIZRS_INGEST` usługi.
    Wejścia z panelu używają tylko portów, które compose wystawia: RTMP
    1936–1943, SRT 9000–9007 (UDP), po jednym odbiorniku na port.
+   **Wejście YouTube** (wpis `kanał=https://www.youtube.com/…` albo
+   `https://youtu.be/…`, bez portu): usługa sama pobiera strumień zamiast
+   czekać na nadawcę. `yt-dlp` (`VIZRS_YTDLP`, domyślnie `/vizrs/yt-dlp` –
+   samodzielna binarka z Pythonem w środku, przypięta w `Dockerfile` do wersji
+   i sum SHA-256, instalowana przez sidecara na wolumen `vizrs-client` obok
+   `vizrs-ffmpeg`) znajduje adresy obrazu i dźwięku: H.264 do 1080p i AAC
+   (VP9, AV1 i Opus nie przechodzą do MPEG-TS bez transkodowania), najwyżej
+   90 s na zapytanie. ffmpeg czyta je (`-reconnect`) i przepakowuje do
+   MPEG-TS jak strumień nadawcy – dalej wszystko jak przy RTMP/SRT (przejęcie,
+   `hold`, `anytime`, grafika `on_live`). Rodzaje adresu:
+   - **strona live kanału** (`…/@nazwa/live`, `…/channel/<ID>/live`) – stałe
+     wejście: każda transmisja kanału przejmuje antenę, bez transmisji
+     odbiornik pyta ponownie co 30 s;
+   - **jeden film** (`watch?v=…`, `youtu.be/…`, `/live/<ID>`) – transmisja do
+     jej końca (zapowiedziana: pytanie co 30 s, aż ruszy) albo nagranie raz,
+     od początku, w czasie rzeczywistym (`-re`; przerwany odczyt idzie dalej
+     od miejsca przerwania). Potem odbiornik zgłasza koniec
+     (`POST /ingest/listeners/done?channel=N&url=…`, ten sam token; 200 także,
+     gdy wpisu już nie ma, 400 dla strony live kanału),
+     a sidecar usuwa wpis z listy i z `inputs.json` (zdarzenie w dzienniku
+     operacji) – restart usługi nie odtworzy go ponownie. Starszy sidecar
+     (404) wpisu nie usuwa: film nie wraca do restartu usługi `ingest`.
+   Odmowa YouTube (np. „Sign in to confirm you're not a bot” z adresów
+   serwerowni) trafia do logu usługi i jest ponawiana co 30 s; wtedy pomaga
+   plik cookies zalogowanego konta (`VIZRS_YTDLP_COOKIES`, format Netscape,
+   zapisywalny – yt-dlp go odświeża). Wejście YouTube nie potrzebuje portów
+   ani klucza: wchodzi na antenę jak sygnał ze studia, więc poza audycjami
+   LIVE tylko przy `anytime` kanału. Pobieranie treści z YouTube podlega jego
+   regulaminowi i prawom autorów – za uprawnienia do emisji odpowiada nadawca.
+   **Wejście z linku** (wpis `kanał=<adres strumienia>`, bez portu): usługa
+   sama pobiera strumień spod adresu – HLS (`https://…/index.m3u8`) i inny
+   strumień HTTP(S) (np. MPEG-TS), RTMP(S) (`rtmp://serwer/app/klucz`), SRT
+   jako caller (`srt://serwer:port`, `mode=caller` dopisywany, gdy brak
+   `mode=`) albo RTSP(S) (`rtsp://kamera/…`, transport TCP). `rtmp://` i
+   `srt://` na `0.0.0.0`, `[::]` albo adresie lokalnym (`127.*`, `[::1]`, `localhost`) to odbiornik, każdy inny host – link;
+   adres `https://` YouTube to wejście YouTube. ffmpeg czyta strumień
+   (`-c copy`, pierwszy obraz i pierwszy dźwięk; obraz H.264 i dźwięk AAC
+   jak od nadawcy) i dalej wszystko jak przy RTMP/SRT. Strumień HTTP idzie w
+   czasie rzeczywistym (`-re` – nagranie albo plik nie przeleci w sekundę;
+   na żywo nie zmienia nic), z `-reconnect`; każdy rodzaj ma limit odczytu
+   i połączenia 15 s (`-rw_timeout`/`-timeout`), więc milczący serwer kończy
+   odczyt. Lista protokołów ffmpeg jest zawężona do schematu linku
+   (`-protocol_whitelist`, np. dla HTTP: `http,https,tcp,tls,crypto,httpproxy`)
+   – lista HLS nie wskaże pliku lokalnego. Z listy wariantów HLS (master)
+   ffmpeg bierze pierwszy wariant – inny wybiera się linkiem do jego listy.
+   Wejście z linku jest stałe: po końcu albo zerwaniu strumienia odbiornik
+   czyta go ponownie po 1 s, a gdy nic nie przyszło – co 10 s (w logu raz,
+   do pierwszego udanego odczytu). Adres do 1000 znaków; tokeny w adresie
+   ukrywa log (jak klucz RTMP) i tabela wejść panelu. Link wskazuje serwer, z
+   którym łączy się usługa `ingest` – także w sieci wewnętrznej, więc
+   wejścia ustawia tylko operator panelu. Jak YouTube – poza audycjami LIVE
+   na antenę tylko przy `anytime` kanału.
 2. **Stan w sidecarze** ([src/ingest.rs](../src/ingest.rs)): kanał jest „live”
    od pierwszej klatki kluczowej obrazu (flaga *random access* w MPEG-TS albo
    IDR/SPS H.264, IRAP/VPS/SPS HEVC) do końca połączenia albo ciszy dłuższej
@@ -1185,6 +1264,16 @@ wprowadza dedykowaną grafikę kanału zdefiniowaną w polu `on_live`
   `PUT /api/live/graphics`). Nie ma globalnego `on_live`. Składnia komend jest
   taka sama jak w `on_clip` (wiersze, `#` jako komentarz), natomiast symbole
   ramówki `{…}` są puste, ponieważ przejęcie nie ma pozycji harmonogramu.
+- **Grafika wejścia**: wejście z panelu może mieć własne `on_live`
+  (`PUT /api/live/inputs`, pole `on_live` wejścia; w `inputs.json` obiekt
+  `"on_live": {"<kanał>=<adres>": "TAKE 7510"}` obok `listeners`). Gdy kanał
+  przejmuje sygnał z tego wejścia, zamiast `on_live` kanału wchodzi grafika
+  wejścia – np. inne logo NA ŻYWO dla transmisji z YouTube niż dla studia.
+  Wejście bez własnej grafiki = `on_live` kanału. Sidecar wie, z którego wejścia
+  jest sygnał, bo odbiornik podaje je w `POST /ingest?channel=N&input=<id>`
+  (`id` – skrót 64-bitowy wpisu `kanał=adres`, bez klucza i hasła w adresie
+  żądania); starszy odbiornik bez `input` = `on_live` kanału. Zmiana grafiki
+  wejścia działa od następnego przejęcia.
 - **Kiedy zachodzi przejęcie**: kanał ma sygnał live (dostępny, niewstrzymany
   przez `hold`/ZDEJMIJ), a nakładka czyta go w przebiegu live
   (`GET /ingest?channel=N&take=…`), bądź taki przebieg zakończył się nie dawniej
@@ -1232,6 +1321,7 @@ sidecara:
 # /config/vizrs-live/1-wiadomosci-na-zywo.yml – pisze go sidecar
 title: "Wiadomości na żywo"
 plot: "Serwis ze studia"
+content_rating: "12"
 url: "http://cg:7700/ingest?channel=1&slot=1"
 is_live: true
 duration: "00:30:00"
@@ -1246,7 +1336,7 @@ duration: "00:30:00"
    `<etv_config>/vizrs-live/<kanał>-<tytuł>.yml` (albo `<file>.yml`), tylko gdy
    plik się zmienił. Pól `channel`, `title`,
    `duration` (`"HH:MM:SS"`, `"MM:SS"` albo sekundy, do 23:59:59) nie można
-   pominąć; `plot` i `file` są opcjonalne. Nazwa pliku powstaje raz, przy
+   pominąć; `plot`, `content_rating` (kategoria wiekowa w EPG, do 20 znaków, np. `12`) i `file` są opcjonalne. Nazwa pliku powstaje raz, przy
    dodaniu: zmiana tytułu w panelu zostawia plik, więc pozycja w ErsatzTV i jej
    miejsca w harmonogramach zostają. Adres sidecara pochodzi z adresu
    elementu `vizrs.yml` (domyślnie `http://cg:7700`). Synchronizacja nie kasuje
@@ -1686,7 +1776,8 @@ ErsatzTV (jego ffmpeg, bez dodatkowego pobierania) z programem
 
 ```sh
 VIZRS_INGEST_TOKEN=<długi losowy tekst>              # sidecar i odbiorniki
-VIZRS_INGEST=1=rtmp://0.0.0.0:1936/live/<klucz>      # kilka: "1=rtmp://…; 2=srt://0.0.0.0:9000?passphrase=…"
+VIZRS_INGEST=1=rtmp://0.0.0.0:1936/live/<klucz>      # kilka: "1=rtmp://…; 2=srt://0.0.0.0:9000?passphrase=…; 3=https://www.youtube.com/@kanal/live"
+# VIZRS_YTDLP_COOKIES=/etv-config/vizrs-live/youtube-cookies.txt  – wejścia YouTube na serwerze, od którego YouTube chce logowania
 # INGEST_RTMP_PORT=1936, INGEST_SRT_PORT=9000 (UDP) – porty na hoście
 ```
 
@@ -1697,7 +1788,9 @@ musi być nakładka (`/vizrs/vizrs-ffmpeg`, wyżej). Bez tokenu sidecar ma inges
 wyłączony, a odbiorniki nie startują (`VIZRS_INGEST_TOKEN is empty` w logu).
 Pierwszy start po aktualizacji może zastać w wolumenie starą nakładkę bez
 trybu `vizrs-ingest` – usługa restartuje się, aż `cg` ją podmieni (§4,
-Synchronizacja z ErsatzTV). Odbiornik tylko przepakowuje strumień (ułamek
+Synchronizacja z ErsatzTV); tak samo przy pierwszym wejściu YouTube może
+brakować `/vizrs/yt-dlp` (log: `/vizrs/yt-dlp: No such file…`, ponawiane co
+30 s). Odbiornik tylko przepakowuje strumień (ułamek
 rdzenia); CPU kosztuje przebieg live w ErsatzTV: dekodowanie sygnału
 w miejsce dekodowania materiału.
 
@@ -1807,7 +1900,7 @@ buduje, więc działa także w Portainerze: **Additional paths** →
 
 Wymagane zmienne (w Portainerze **Environment variables**; min. 16 znaków):
 `COMPOSE_PROFILES=grafika` (lub `grafika,ingest` dla live ingest; wymagane przed aktualizacją!),
-`VIZRS_BRIDGE_TOKEN` (most), `VIZRS_LIVE_TOKEN` (logowanie do panelu oraz okna AppImage),
+`VIZRS_BRIDGE_TOKEN` (most), opcjonalnie `VIZRS_LIVE_TOKEN` (token awaryjny panelu i okna AppImage; operatorzy logują się kontami zakładanymi w panelu, konta na wolumenie `live-data`),
 `VIZRS_PANEL_TOKEN` (Live API sidecara, [API.md §1](API.md#1-live-api-sidecara-apilive-etv-ffmpeg-ingest-health)); opcjonalnie
 `VIZRS_LIVE_STREAM_URL=http://<serwer>:8409`. Panel (`LIVE_IMAGE`), ErsatzTV z mostem
 (`LIVE_LEGACY_IMAGE`) idą z `:latest`, jak sidecar (`vizrs-cg`) – decyzja użytkownika 2026-11-16; wydanie produktu przesuwa `:latest` wszystkich obrazów naraz, a stos pobiera je przy każdym przeładowaniu stosu (Portainer „Re-pull image”, np. po commicie `.release` ze `stack-refresh`); konkretną wersję daje zmienna stosu `LIVE_IMAGE`/`LIVE_LEGACY_IMAGE`; proxy to zawsze najnowsze `caddy:alpine`.
@@ -2273,11 +2366,29 @@ nigdy tego nie odrobił: playlista widzów była pusta przez 3,5 h, aż do resta
 ErsatzTV. Nakładka przed kawałkiem czyta z playlisty (ErsatzTV nadpisuje ją
 własną osią czasu przed każdym kawałkiem), o ile kanał jest za zegarem, a w
 trakcie przebiegu live co sekundę dolicza czas zegara minus wyprodukowany
-materiał. Powyżej 10 s (`LIVE_BEHIND_MAX`) przebieg live jest kończony, a
-kawałek leci z harmonogramu (ErsatzTV robi go wtedy szybciej niż w czasie
-rzeczywistym), aż oś czasu dogoni zegar; potem live wraca. W logu ErsatzTV:
-`live leaves the channel's timeline … s behind the clock; the schedule makes it
-up`, `the channel's timeline caught up with the clock`, a na starcie kawałka
+materiał. Dwa progi (`src/takeover.rs`):
+- **przebieg wolniejszy od zegara** – gdy przebieg live od swojego startu
+  stracił do zegara ponad 10 s (`LIVE_LAG_MAX`), źródło jest za wolne:
+  przebieg jest kończony, a live wraca najwcześniej po 30 s (w logu `the live
+  run lost … s against the clock (the source is slower than the clock)`);
+- **oś czasu daleko za zegarem** – powyżej 60 s (`LIVE_BEHIND_MAX`, połowa
+  z 2 min, po których ErsatzTV kasuje segmenty) przebieg live jest kończony
+  i leci harmonogram; nowy przebieg live nie rusza, dopóki oś czasu jest dalej
+  niż 45 s za zegarem (`LIVE_BEHIND_START`) – na starcie kawałka i po
+  nadgonieniu. Harmonogram nadgania tylko wtedy, gdy ErsatzTV robi kawałki
+  szybciej niż w czasie rzeczywistym; z `VIZRS_FFMPEG_SYNC_RAM` idzie w tempie
+  zegara i oś czasu zostaje tam, gdzie była.
+
+Do 2026-11-18 był jeden próg 10 s, w trakcie przebiegu i na starcie, a live
+wracał dopiero przy osi czasu równej zegarowi. Jeden wolny kawałek ramówki
+(np. restart przebiegu dla stref grafiki) zostawiał kanał 10–14 s za zegarem;
+sam start przebiegu live (ok. 1 s bez materiału) przekraczał wtedy próg, więc
+każdy kawałek dawał ok. 1 s live, a potem harmonogram – na antenie klatkowanie
+i skoki obrazu, a grafika przejęcia wchodziła i schodziła co 44 s (lokalny
+stos, wejście YouTube; także LUKI z 2026-11-14 po restarcie ErsatzTV). W logu
+ErsatzTV: `live leaves the channel's timeline … s behind the clock; the
+schedule takes over`, `the channel's timeline is … s behind the clock: live
+may come back`, a na starcie kawałka
 `the channel's timeline is … s behind the clock`. Playlista samych skasowanych
 segmentów (sekwencja powyżej 0, nic na liście) liczy się jako 2 min za zegarem.
 
@@ -2698,7 +2809,8 @@ Biała lista: jedna nazwa komendy w wierszu, `#` – komentarz. Nazwy nieznane w
 | `--port` | `VIZRS_LIVE_PORT` | `8090` |
 | `--bridge` | `VIZRS_LIVE_BRIDGE` | `http://127.0.0.1:8409` |
 | `--bridge-token` | `VIZRS_LIVE_BRIDGE_TOKEN` | wymagany (= `VIZRS_BRIDGE_TOKEN`) |
-| `--token` | `VIZRS_LIVE_TOKEN` | brak; **wymagany**, gdy panel nasłuchuje poza 127.0.0.1 |
+| `--token` | `VIZRS_LIVE_TOKEN` | brak; token awaryjny (min. 16 znaków): skrypty (`Authorization: Bearer`), logowanie awaryjne i kod pierwszego konta. Poza 127.0.0.1 wymagany token albo `--data` |
+| `--data KATALOG` | `VIZRS_LIVE_DATA` | brak (w obrazie `/data`, w compose wolumen `live-data`); konta operatorów i sesje (`users.json`, `sessions.json`); bez niego konta są wyłączone, a sesje tylko w pamięci |
 | `--stream-url` | `VIZRS_LIVE_STREAM_URL` | brak; adres legacy dla widzów (odnośniki „Strumień”, M3U, XMLTV) |
 | `--vizrs-url` | `VIZRS_LIVE_VIZRS_URL` | brak; VizRS CG System **widziany z przeglądarki operatora** (podgląd `/output`, odnośniki do Trio): `http(s)://host:port` albo sam port `:8788` – wtedy host, pod którym otwarto panel (ciasteczko VizRS `SameSite=Strict` działa w ramce tylko w tej samej witrynie; w `docker-compose.live.yml` domyślnie `:${VIZRS_PORT}`) |
 | `--vizrs-output-token` | `VIZRS_LIVE_VIZRS_OUTPUT_TOKEN` | brak; token wyjścia VizRS (`VIZRS_OUTPUT_TOKEN`, tylko odczyt – jak w OBS) dla ramki `/output`; **trafia do przeglądarki** (`/api/status`, adres ramki). Bez niego VizRS z tokenem pokazuje w ramce „wymagany token”, chyba że przeglądarka jest zalogowana w Trio. Wymaga `--vizrs-url` |
@@ -2713,9 +2825,13 @@ Biała lista: jedna nazwa komendy w wierszu, `#` – komentarz. Nazwy nieznane w
 
 Serwer panelu udostępnia wewnętrzne API HTTP (`/api/*`) dla interfejsu użytkownika i aplikacji okiennej oraz pośredniczy w komunikacji z mostem VizRS Bridge i CG Playout. Pełny opis wszystkich tras HTTP, kodów odpowiedzi, nagłówka CSRF `X-VizRS-Live` oraz logowania znajduje się w [API.md §2](API.md#2-api-panelu-api).
 
-**Sekrety tylko do zapisu (R8).** W każdej odpowiedzi `/api/cmd/*` serwer panelu zamienia tekstowe wartości pól, których nazwa kończy się na `apikey`, `token`, `password` albo `secret` (bez względu na wielkość liter), na `"********"` (pusty tekst zostaje pusty) – `mask_secrets` w `panel/server/src/main.rs`. Dotyczy to też konsoli komend w Diagnostyce. Komend, które zwracają sekret w innym kształcie (`Get{Jellyfin,Emby,Plex}ConnectionParameters` – gotowy nagłówek autoryzacji), nie ma na białej liście.
+**Sekrety tylko do zapisu (R8).** W każdej odpowiedzi `/api/cmd/*` serwer panelu zamienia tekstowe wartości pól, których nazwa kończy się na `apikey`, `token`, `password` albo `secret` (bez względu na wielkość liter), na `"********"` (pusty tekst zostaje pusty) – `mask_secrets` w `panel/server/src/secrets.rs`. Dotyczy to też konsoli komend w Diagnostyce. Komend, które zwracają sekret w innym kształcie (`Get{Jellyfin,Emby,Plex}ConnectionParameters` – gotowy nagłówek autoryzacji), nie ma na białej liście.
 
-**Bezpieczeństwo sesji i nagłówki:** Każde żądanie zmieniające (`POST`, `PUT`, `DELETE`) wymaga nagłówka `X-VizRS-Live: 1` (obce strony nie mogą go wysłać bez CORS – ochrona przed CSRF). Gdy ustawiony jest token panelu, `/api/*` wymaga ciasteczka ważnej sesji albo `Authorization: Bearer <token panelu>` (skrypty). Po udanym logowaniu serwer losuje identyfikator sesji (32 bajty z `/dev/urandom`, 64 znaki szesnastkowe – bez crate'ów; obraz `scratch` dostaje `/dev` od środowiska kontenera) i trzyma go w pamięci (`Sessions`: najwyżej 256 sesji – przy nadmiarze odpadają wygasłe, potem najdawniej używana; wygasanie po 30 dniach bezczynności, każde żądanie odświeża czas). Ciasteczko niesie tylko identyfikator, nie token – wyciek ciasteczka nie ujawnia tokenu, a „Wyloguj” unieważnia tę jedną sesję. Restart panelu (nowy obraz, `docker compose up -d live`) = ponowne logowanie w każdej przeglądarce. **Każda** odpowiedź (też API i UI z `--web`) ma CSP (`http::csp()`: bez skryptów i stylów inline, `img-src 'self' data:` plus origin `--stream-url` (okładki i logo legacy `/artwork`), `frame-src` tylko origin `--vizrs-url` (ramka `/output`; przy samym porcie `:N` – `http://*:N https://*:N`, bo host to adres, pod którym otwarto panel), bez tych opcji `frame-src 'none'`; `media-src 'self' blob:` – odtwarzacz MSE podglądu, `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`, `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`. Logowanie: najwyżej 10 nieudanych prób w oknie 60 s na adres IP klienta (bezpiecznik łączny: 100/60 s dla wszystkich), potem 429 do końca okna – także dla dobrego tokenu; każda nieudana próba czeka 400 ms i trafia do dziennika (`login: zły token (<adres IP>)`). Ciasteczko dostaje `Secure`, gdy panel stoi za proxy TLS (`X-Forwarded-Proto: https`).
+**Bezpieczeństwo sesji i nagłówki:** Każde żądanie zmieniające (`POST`, `PUT`, `DELETE`) wymaga nagłówka `X-VizRS-Live: 1` (obce strony nie mogą go wysłać bez CORS – ochrona przed CSRF). Gdy panel ma konta (`--data`) albo token awaryjny, `/api/*` (poza `/api/auth`, `/api/login`, `/api/setup`, `/api/logout`) wymaga ciasteczka ważnej sesji albo `Authorization: Bearer <token awaryjny>` (skrypty). Po udanym logowaniu serwer losuje identyfikator sesji (32 bajty z `/dev/urandom`, 64 znaki szesnastkowe – bez crate'ów; obraz `scratch` dostaje `/dev` od środowiska kontenera) i zapisuje w magazynie sesji (najwyżej 256 sesji – przy nadmiarze odpadają wygasłe, potem najdawniej używana; wygasanie po 30 dniach bezczynności, każde żądanie odświeża czas; z katalogiem danych w `sessions.json` – tylko skrót SHA-256 identyfikatora, plik z prawami 0600, odświeżenie czasu użycia zapisywane najwyżej co 10 min). Ciasteczko niesie tylko identyfikator, nie token – wyciek ciasteczka nie ujawnia tokenu, a „Wyloguj” unieważnia tę jedną sesję. Z katalogiem danych sesje przeżywają restart panelu i nowy obraz; bez niego restart = ponowne logowanie w każdej przeglądarce. **Każda** odpowiedź (też API i UI z `--web`) ma CSP (`http::csp()`: bez skryptów i stylów inline, `img-src 'self' data:` plus origin `--stream-url` (okładki i logo legacy `/artwork`), `frame-src` tylko origin `--vizrs-url` (ramka `/output`; przy samym porcie `:N` – `http://*:N https://*:N`, bo host to adres, pod którym otwarto panel), bez tych opcji `frame-src 'none'`; `media-src 'self' blob:` – odtwarzacz MSE podglądu, `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`, `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`. Logowanie: najwyżej 10 nieudanych prób w oknie 60 s na adres IP klienta (bezpiecznik łączny: 100/60 s dla wszystkich), potem 429 do końca okna – także dla dobrego tokenu; każda nieudana próba czeka 400 ms i trafia do dziennika (`login: zły token (<adres IP>)`, `login: złe hasło albo login <login> (<adres IP>)`). Ciasteczko dostaje `Secure`, gdy panel stoi za proxy TLS (`X-Forwarded-Proto: https`).
+
+**Konta operatorów (logowanie loginem i hasłem).** Z katalogiem danych (`--data`, w obrazie `/data` na wolumenie `live-data`) operatorzy logują się kontem zamiast wspólnego tokenu, a konta zakłada się w panelu – bez edycji plików i zmiennych. Pliki (`accounts.rs`): `users.json` – login, rola (`admin` / `operator`), czas założenia i skrót hasła PBKDF2-HMAC-SHA256 (sól 16 bajtów, 310 000 iteracji – liczba zapisana przy haśle, więc późniejsza zmiana nie unieważnia starych haseł; SHA-256 i PBKDF2 napisane w panelu bez crate'ów, `crypto.rs`, testy na wektorach FIPS 180-4, RFC 4231 i RFC 7914) oraz `sessions.json`. Zapis atomowy (plik tymczasowy + `rename`), prawa 0600; najpierw plik, potem pamięć – nieudany zapis nie zmienia kont. **Pierwsze uruchomienie:** bez kont panel przy starcie wypisuje w logu kontenera `kod pierwszej konfiguracji: XXXX-XXXX-XXXX` (12 znaków bez mylących 0/O i 1/I, nowy przy każdym starcie, ważny do założenia pierwszego konta); przeglądarka pokazuje okno „pierwsze uruchomienie” (kod, login, hasło) – zamiast kodu można wpisać token awaryjny, jeśli jest. Zły kod liczy się do limitu logowań. **Role:** administrator – wszystko, w tym ekran Użytkownicy (`/api/users`); operator – wszystko poza kontami. Jedynemu administratorowi nie da się odebrać roli ani usunąć konta. Zmiana roli działa od razu w otwartych sesjach, usunięcie konta kończy jego sesje. Nieznany login liczy skrót tak samo długo jak złe hasło (bez wycieku istnienia konta po czasie odpowiedzi); skrót liczy się poza blokadą magazynu. **Token awaryjny** (`--token`) zostaje: skrypty (`Bearer`), logowanie przyciskiem „Token awaryjny” w oknie logowania (sesja = administrator bez konta) i odzyskanie dostępu, gdy nikt nie pamięta hasła administratora. **Plik kont z błędem** (albo katalog tylko do odczytu) wyłącza konta: panel działa, loguje się tylko tokenem, powód jest w logu (`KONTA WYŁĄCZONE`) i w oknie logowania; pliku z błędem panel nie nadpisuje. **Dziennik CG Playout:** podpis operacji z panelu to konto i stanowisko z paska górnego – `VizRS Live · jan (Studio 1)`; bez konta jak dotąd `VizRS Live · stanowisko`. Natywny klient panelu (AppImage) łączy się dalej tokenem awaryjnym (pośrednik dokleja `Bearer`).
+
+**Logowanie w pakiecie (opcja).** Przełącznik na ekranie Użytkownicy („Konta panelu logują też do VizRS Trio i Artist”, `settings.json`, domyślnie wyłączony) pozwala VizRS CG System w tym stosie przyjmować konta panelu – jedno konto w całym pakiecie. Serwer `vizrs` dostaje adres panelu z compose (`VIZRS_PANEL_LOGIN=http://live:8090` w nakładce `docker-compose.live.yml` – nikt go nie wpisuje) i korzysta z `/api/sso…` ([API.md §2](API.md#2-api-panelu-api)): login i hasło z ekranu logowania Trio sprawdza panel i zakłada sesję konta, którą CG System sprawdza co 15 s; zalogowany w panelu pod tym samym hostem wchodzi do Trio bez ponownego logowania (ciasteczko `vizrs_live` jedzie też na port VizRS). Wyłączenie przełącznika, usunięcie konta albo wylogowanie jego sesji (Użytkownicy → Wyloguj) kończy sesję w Trio w ciągu 15 s; panel nieosiągalny Trio nie wylogowuje. Trio uruchomione samo (np. dla OBS, bez panelu) loguje się swoim tokenem. Opis po stronie Trio: VizRS CG System DOKUMENTACJA §12.
 
 **Alarmy (K17, 2026-11-09).** Na każdym ekranie, pod paskiem górnym, banner „ALARM” (`panel/server/web/alarms.js`, co 60 s, tylko odczyt): przerwa w ramówce teraz, dziura w ciągu 15 min, playout kończący się w ciągu 15 min (pozycje z `GetFuturePlayoutItemsById`, 30 na kanał), slot LIVE za ≤ 5 min bez sygnału studia, emisja zatrzymana (kanał nadawany przez CG Playout bez sesji legacy – ostrzeżenie), cała grafika zdjęta > 5 min (`graphics_off_since` z CG albo czas pierwszego zauważenia w panelu). Klik w alarm prowadzi do ekranu; „Dźwięk: wł./wył.” (krótki sygnał WebAudio przy nowym alarmie, wybór pamiętany w przeglądarce – przeglądarka wymaga kliknięcia, zanim zagra), „Ukryj na 10 min” (nowy błąd i tak pokaże banner). Webhook poza przeglądarką – w CG Playout ([API.md §1](API.md#1-live-api-sidecara-apilive-etv-ffmpeg-ingest-health)).
 
@@ -2733,9 +2849,10 @@ Serwer panelu udostępnia wewnętrzne API HTTP (`/api/*`) dla interfejsu użytko
 | `clip.js` | **odtwarzanie pozycji w karcie Przeglądarki**: `playSection` – domyślnie plik wprost (`<video>` z `/api/vod/…`, bez legacy i transkodowania, pełne przewijanie; `directSupport` sprawdza kodek obrazu i dźwięku z `GetMediaItemInfo` – HEVC tylko tam, gdzie przeglądarka go dekoduje, kontenery avi/ts/mpg – nie), przy niewspieranym kodeku albo błędzie odtwarzacza – test odtwarzania legacy; przyciski „Przez legacy (transkodowanie)” / „‹ Wprost z pliku”; zapasowo `ClipPlayer` – `POST /api/play/…` co 30 s (następny fragment, gdy w buforze zostaje < 12 s), segmenty TS z `/api/stream/session/.troubleshooting/` przez `Transmuxer` (`mux.js`) do jednego `MediaSource`; kolejne fragmenty jako nieciągłość jednej osi, `timestampOffset` = sekunda startu, więc `currentTime` = miejsce w materiale; `clipSection` – „▶ Odtwórz od g:mm:ss”, „‹ 30 s” / „30 s ›”, „■”, profil kodowania (pamiętany w `localStorage` `vizrs-live-clip-profile`) |
 | `cmdedit.js` | **edytor komend VizRS w regułach grafiki** (Grafika kanału): tekst komend (`on_clip`, `on_end`, `on_ad`) jako lista kroków – akcja (Wprowadź `TAKE`, Dalej `CONTINUE`, Zdejmij `OUT`, Podmień dane `UPDATE`), strony z show VizRS (lista z `/etv/pages` wszystkich kanałów CG Playout; strona spoza show – czerwona pigułka), pola strony `nazwa = wartość` z listą symboli ramówki (`{title}`, `{next_title}`, `{next_start}`…; nazwy pól podpowiada `fields` strony, gdy CG Playout je poda, inaczej pola użyte w bieżących regułach). Zapis w tej samej składni co `config.json` CG Playout (`k=v\|k=v`, JSON pól, gdy wartość ma `\|` albo koniec linii albo tak było w źródle); linia, której edytor nie rozumie (komentarz `#`, `@N`, inna komenda), zostaje krokiem „Komenda tekstowa” bez zmian. Tryb pola: „jak globalnie” (tylko reguła audycji/kanału), „wyłączone” / „tylko zdejmij grafikę” (przerwa), „grafiki VizRS”; przycisk „Tekst” – te same komendy jako tekst. Krok bez strony zatrzymuje zapis |
 | `views/*.js` | ekrany, po jednym pliku na grupę menu (`antena`, `kanaly`, `media` – biblioteki, przeglądarka, kosz, `zrodla` – Jellyfin, Emby, Plex, strumienie zdalne, `listy`, `grafika`, `system`), duże ekrany we własnym pliku (`harmonogramy`, `playouty`, `kalendarz` – kalendarz tygodnia playoutu blokowego, `bloki` – bloki i szablony dnia, `deco` – deco i szablony deco, `profile`, `znaki` – też pole obrazu `imageField` dla logo kanału, `wypelniacze`); każdy dopisuje się do `VIEWS` |
+| `views/uzytkownicy.js` | ekran System → Użytkownicy (konta, tylko administrator) |
 | `index.html`, `vizrs-ui.css`, `style.css` | szkielet (pasek górny, menu, okno, toast) i arkusze stylów: `vizrs-ui.css` – **wspólny rdzeń wyglądu rodziny VizRS** (tokeny, przyciski, pola, pigułki, pasek górny, menu i szuflada, panele, tabele, formularze, okna, karty); źródło w VizRS CG System (`source/web/vizrs-ui.css`), tu identyczna kopia – `panel/scripts/sync-ui.sh` kopiuje i zapisuje wersję źródła w `panel/server/web/CG_SYSTEM`, `panel/scripts/sync-ui.sh --check` (CI, `panel/tests/deploy.sh`) pilnuje zgodności; nie edytuj kopii. `style.css` (ładowany po rdzeniu) – tylko style własne panelu. Kolory, promienie i cienie tylko przez zmienne z `:root` (tokeny: powierzchnie `--bg…--panel3`, linie, akcent, stany `--ok/bad/warn/info-bg`). Ikony menu – maski SVG w `data:` (dozwolone przez CSP `img-src data:`), przypisane po `href` odnośnika. Przycisk ☰ (`#nav-toggle`, `app.js`): na szerokim ekranie zwija menu do paska ikon (klasa `nav-min` na `.app`, pamiętane w `localStorage` `vizrs-live-nav-min`; nazwa ekranu w podpowiedzi), poniżej 760 px otwiera menu jako szufladę (`nav-open`; zamyka ją wybór ekranu, klik obok i Esc). `prefers-reduced-motion` wyłącza animacje |
 
-Nowy plik w `panel/server/web/` trzeba dopisać do `STATIC` w `panel/server/src/main.rs`; test `module_imports_resolve` pilnuje, że każdy `import` wskazuje plik ze `STATIC`.
+Nowy plik w `panel/server/web/` trzeba dopisać do `STATIC` w `panel/server/src/routes.rs`; test `module_imports_resolve` pilnuje, że każdy `import` wskazuje plik ze `STATIC`.
 
 **Brakujące komendy.** Ekran (albo rodzaj treści w wyborze treści) sprawdza, czy jego komendy są w `GET /api/commands`; jeśli nie – pokazuje „ta funkcja wymaga komendy X na białej liście mostu” zamiast pustego ekranu albo błędu 403.
 
@@ -2784,11 +2901,12 @@ vizrs-live-desktop connect                           # najpierw okno „Połącz
 | Wystrój (deco) | deco: `GetAllDecoGroups`, `GetDecosByDecoGroupId`, `GetDecoById`, `CreateDecoGroup`, `DeleteDecoGroup`, `CreateDeco`, `UpdateDeco`, `DeleteDeco`; szablony deco: `GetAllDecoTemplateGroups`, `GetDecoTemplatesByDecoTemplateGroupId`, `CreateDecoTemplateGroup`, `DeleteDecoTemplateGroup`, `CreateDecoTemplate`, `DeleteDecoTemplate`, `GetDecoTemplateItems`, `ReplaceDecoTemplateItems` | **pełna edycja** w dwóch zakładkach: deco (znak wodny i grafika: dziedzicz / wyłącz / zastąp / scal, „także w wypełniaczu”; przerwy: playlista na starcie bloku; wypełniacz domyślny z przycinaniem; martwe powietrze); szablony deco (deco w przedziałach godzin na osi doby) |
 | Grafika kanału | `GetAllGraphicsElements`, `RefreshGraphicsElements`; na żądanie `GetAllProgramSchedules`, `GetProgramScheduleItems`, `GetAllBlocks`, `GetBlockItems`, `GetAllDecoGroups`, `GetDecosByDecoGroupId`, `GetDecoById`; CG Playout: `/health`, `/etv/pages`, `/api/live/graphics` | stan VizRS CG Playout (sesje elementu VizRS, nakładka ffmpeg, live ingest, przechwytywanie grafiki per kanał), **„Kiedy strona wchodzi na antenę”** – strony VizRS kanału z trzema źródłami naraz: czas z Trio (⏱ kanał, `playout` strony z `/etv/pages`: `at`, `out`, `ref`), reguły CG Playout z `TAKE` tej strony (globalne, audycji, kanału) i element legacy strony (`page-<nr>.yml` albo nazwa „… (nr)”) z przypisaniami w harmonogramach, blokach i deco (przycisk „Sprawdź przypisania w ramówce”, wynik pamiętany do przeładowania strony); kolumna **Skutek**: reguła CG, ramówka (z czasem z Trio), „nie wchodzi sama” albo ostrzeżenie „reguła i ramówka – może wejść dwa razy”, podgląd anteny VizRS `/output` (`--vizrs-url`, token wyjścia, antena kanału `bus=ch-N` przy `--vizrs-channels`) z odnośnikiem do Trio, elementy graficzne legacy i „Wczytaj pliki elementów”; **tabela reguł „Kiedy / Co / Ile”** (streszczenie reguł globalnych, audycji i wybranego kanału po polsku – akcja, strona z nazwą, pola, wiersz „przejęcie przez live ingest (grafika ramówki wstrzymana)” z czasem „na czas przejęcia”; tekst komendy w podpowiedzi; klik przenosi kursor do edytora) i pod nią **edytor reguł** z wyborem grafik zamiast komend tekstowych (`cmdedit.js`; reguły audycji i kanałów jako zwijane karty; w karcie reguły kanału wiersz „Na przejęcie przez live ingest” na komendy `on_live`, pokazywany gdy CG Playout ma cechę `on_live` w `features`, puste pole = pominięcie klucza przy zapisie; zapis PUT `/api/live/graphics`) |
 | Sloty na żywo | CG Playout: `/api/live/state`, `/api/live/channels/…`, `/api/live/inputs` | stanowisko MCR (dawny VizRS Live Panel z CG Playout `/live`, przeniesiony 2026-11-07; strona `/live` usunięta z CG Playout): lampki CG Playout / ErsatzTV / odbiór sygnałów; karta kanału: tally NA ANTENIE / WSTRZYMANY / RAMÓWKA, **sygnał studia** z licznikiem czasu (zegar CG), kodek i dźwięk, tryb studia (konfiguracja CG / panel), wiersz **„Grafika”** – „live – ramówka wstrzymana” (podczas przejęcia) albo „z ramówki” (gdy pole `takeover` w stanie kanału z CG Playout), linia „Teraz” z **ostrzeżeniem**, gdy audycja LIVE trwa albo zaczyna się w ciągu 10 min bez studia (odliczanie); **■ ZDEJMIJ** dwoma kliknięciami (pierwsze uzbraja „POTWIERDŹ ZDJĘCIE” na 3 s) / **▶ WPUŚĆ**, „studio także poza audycjami” (do zapisu pole zablokowane, a karta trzyma kliknięty stan, aż CG go potwierdzi – najdłużej 10 s; wcześniej odświeżanie co 1 s cofało pole i operator klikał kilka razy), przebudowa ramówki, zwijane „Jak nadawać”; **Ramówka** (EPG z CG, zakładki kanałów, bieżąca pozycja, znacznik LIVE z godziną; wybrany kanał pamiętany w przeglądarce); panel **Wejścia studia** (tabela wejść RTMP/SRT: kanał, wejście, adres bez sekretów, stan i parametry obrazu; **Ustaw wejścia…** – edytor wejść, niżej); **Zdarzenia** (40 ostatnich). Stan co 1 s, przebudowa kart tylko po zmianie treści |
-| Audycje LIVE | CG Playout: `/api/live/shows`, `/api/live/settings`; `GetAllLocalLibraries`, `GetLocalLibraryPaths` | tabela audycji: kanał, tytuł, długość, stan w ErsatzTV (plik / biblioteka / kolekcja), kolekcja do harmonogramu, najbliższa emisja („dziś 18:00 · +2”, „● teraz”, „nie ma w ramówce · jak dodać?”); nowa / zmiana / usunięcie (z potwierdzeniem), skan biblioteki; **kreator** po zapisie: kroki CG Playout (✓/!) i ostatni krok – pozycja w Harmonogramach (start stały, ściśle, kolekcja inteligentna `LIVE · …`, tryb One) z „Otwórz Harmonogramy” i „Przebuduj ramówkę kanału”; **biblioteka audycji** wybierana z bibliotek Remote Streams legacy (zamiast wpisywania ID) z kontrolą folderu `/config/vizrs-live`; przebudowa ramówki per kanał |
+| Audycje LIVE | CG Playout: `/api/live/shows`, `/api/live/settings`; `GetAllLocalLibraries`, `GetLocalLibraryPaths` | tabela audycji: kanał, tytuł, długość, stan w ErsatzTV (plik / biblioteka / kolekcja), kolekcja do harmonogramu, emisja w ramówce („dziś 18:00 · +2”, „● teraz”, „nie ma w ramówce”) z godzinami z harmonogramów, pod tytułem kolekcja `LIVE · …` i kategoria wiekowa; nowa / zmiana / usunięcie (z potwierdzeniem), skan biblioteki; **okno audycji** (nowa i „Edytuj…”) – w jednym oknie dane w EPG (tytuł, długość, kategoria wiekowa `content_rating`, opis; zapis w CG Playout, `PUT` tylko przy zmianie) i **emisje**: wiersz = godzina (z podglądem końca z długości), dni = harmonogram playoutu kanału (główny „pozostałe dni” / „codziennie” i alternatywne z dniami z `GetPlayoutAlternateSchedules`), start ściśle / elastycznie (`FixedStartTimeBehavior`), własny tytuł emisji w EPG (`CustomTitle`), znak wodny; na liście godziny emisji z harmonogramów (`emisje: 20:00, 10:00 (sob, nd)`), a gdy są w harmonogramie, ale nie w EPG – „brak w EPG – przebuduj ramówkę”. Zapis emisji: w każdym harmonogramie kanału panel zdejmuje dotychczasowe pozycje audycji i wstawia te z okna (z resztą pól dawnej pozycji, np. wypełniaczami i elementami graficznymi ustawionymi w Harmonogramach) przez `GetProgramScheduleItems` → `ReplaceProgramScheduleItems` (jak ekran Harmonogramy); harmonogram bez zmian nie jest zapisywany, a gdy nic się nie zmieniło – bez przebudowy; po zmianie przebudowa ramówki przez CG Playout (`/rebuild`). Pozycja (kolekcja inteligentna `LIVE · …` z `collection_id`, tryb One) trafia do bloku stałej godziny, w który wpada (za jego pozycjami „po poprzedniej”, przed następną stałą godziną); gdy zaraz po audycji jest następna stała godzina, a przed audycją treść „wypełnij”, za audycją wraca ta sama treść (kopia „po poprzedniej”, zdejmowana razem z emisją) – inaczej kreator ostrzega o wypełniaczu zapasowym / planszy do tej godziny; odmowa: playout nieklasyczny (wtedy ręcznie), harmonogram tasujący pozycje, stała godzina już zajęta, zły zapis godziny; **kreator** po zapisie: kroki CG Playout i panelu (✓/!); bez komend harmonogramu w moście – instrukcja ręczna i „Otwórz Harmonogramy”; **biblioteka audycji** wybierana z bibliotek Remote Streams legacy (zamiast wpisywania ID) z kontrolą folderu `/config/vizrs-live`; przebudowa ramówki per kanał |
 | Dziennik emisji | CG Playout: `GET /api/live/state` (`features`), `GET /api/live/asrun?channel=&day=`, `GET /api/live/logs?source=&channel=&day=`; most: `GetRecentLogEntries` | centralne miejsce logów systemu emisji kanału: wybór źródła – „antena (dziennik emisji)” (domyślne), „live ingest – odbiorniki”, „przejęcia kanału (ErsatzTV ↔ live)”, „sidecar VizRS CG” (te trzy z `logs` w `features` CG), „ErsatzTV legacy” (`GetRecentLogEntries`: strony po 200 od najnowszych, najwyżej 10, wpisy z wybranego dnia UTC – legacy nie dzieli logu na kanały) i „wszystko na jednej osi czasu” (źródła równolegle, posortowane po czasie, kolumna „Źródło”; źródło, które nie odpowiedziało, daje jeden wiersz błędu zamiast przerywać widok); logi: tabela Czas / Poziom (info, uwaga, błąd) / Wpis, próg „od: uwaga” / „tylko błędy”, filtr tekstu; CG bez `logs` – zostaje antena i legacy z uwagą o aktualizacji CG; eksport CSV bieżącego widoku (logi: czas, źródło, poziom, wpis). Antena – K14: kanał, dzień, filtr tekstu, tabela (czas, zdarzenie, pozycja, strona/warstwa, operator), etykiety zdarzeń w tym przejęcia przez live ingest: „przejęcie live – grafika ramówki wstrzymana” (`live_graphics_on`) i „koniec przejęcia – grafika ramówki wraca” (`live_graphics_off`), eksport CSV; zmiany anteny spoza panelu i reguł (Trio, `/mobile`, makra, karuzela VizRS, Companion) CG Playout wykrywa z odczytów warstw i zapisuje jako `take`/`out` z operatorem „VizRS (poza panelem)”; CG Playout bez `asrun` w `features` – opis, że ta wersja nie prowadzi dziennika (kontrakt, DOKUMENTACJA §7) |
 | Ustawienia | `GetFFmpegSettings`, `UpdateFFmpegSettings`, `GetMpegTsScripts`, `GetPlayoutSettings`, `UpdatePlayoutSettings`, `GetXmltvSettings`, `UpdateXmltvSettings`, `GetLibraryRefreshInterval`, `UpdateLibraryRefreshInterval`, `GetHDHRTunerCount`, `UpdateHDHRTunerCount`, `GetHDHRUUID`, `GetLoggingSettings`, `UpdateLoggingSettings`, `GetUiSettings`, `UpdateUiSettings` (+ profile, znaki wodne, wypełniacze do list) | **pełna edycja ustawień legacy** w siatce paneli obok siebie (wczytywanych równolegle, każdy z osobnym „Zapisz” w nagłówku): FFmpeg i strumienie, Playouty, Przewodnik XMLTV, Skaner i HDHomeRun, Poziomy logów, Web GUI legacy; pod nimi panele „Panel” i „Most”; błąd legacy izolowany w panelu danej sekcji |
 | Logi | `GetRecentLogEntries`; CG Playout: `/api/live/state` | wybór źródła: „ErsatzTV legacy” (najnowsze wpisy logu legacy, próg poziomu, wyszukiwanie w treści, stronicowanie po 200, odświeżanie co 5 s) albo „VizRS CG Playout” (dziennik zdarzeń z `/api/live/state`: czas, kanał, wpis; filtr tekstem; CG nie wystawia pliku log.jsonl przez API) |
 | Diagnostyka | `GetAllHealthCheckResults` (też z `Refresh`), `GetTroubleshootingInfo`, `GetNextVersion`, `GetNextDescribe`, `GetNextProbe`, `RefreshNextProbe` (karta **„Silnik Next”**, K5: wersja, schematy playoutu i kanału `breaking.compatible`, segment i klatka kluczowa, obsługiwane kodeki i akceleracje, czas ostatniego sprawdzenia sprzętu z wersją ffmpeg, tabela akceleracji – stan, urządzenie, sterownik, kodeki dekodowania/kodowania, błąd – i „Sprawdź ponownie”; bez tych komend karty nie ma), `RefreshFFmpegCapabilities`, `GetPlayoutWarningsCount`, `EmptyTrash`, `DeleteOrphanedArtwork`, `DeleteOrphanedSubtitles`, `ReleaseMemory`, `GetAllChannels` + wszystkie z listy, zapytania wyboru treści; CG Playout: `/health` (też `zones` przy `area: auto`), `/api/live/state` | panel **Stan** na górze (wiersz „strefy grafiki”, gdy CG Playout ma `VIZRS_AREA=auto`: liczba śladów stron i granic stron z VizRS – `bounds` w `/health`, CG Playout od 26.11.3 – strefy przebiegów nakładki, % ekranu, grafika poza strefami → UWAGA) (tabela Stan / Składnik / Opis, pigułki OK / UWAGA / BŁĄD / INFO, „Sprawdź ponownie”: wersja legacy z mostu, most i biała lista z ostrzeżeniem o nieznanych komendach, podsumowanie kontroli legacy, błędy budowy playoutów, Next i ffmpeg, stan CG Playout oraz adres VizRS), kontrole legacy („Sprawdź ponownie”), wersje i sprzęt (legacy, ffmpeg, procesor, karty grafiki), konserwacja z potwierdzeniami i oknem wyniku z logu legacy (K6), test odtwarzania („Odtwórz w panelu” – okno podglądu; odnośniki do strumienia HLS/TS kanału przy `--stream-url`), konsola komend, wybór treści; **web GUI legacy dla widzów** (R10: wynik `/api/exposure` – zamknięte / widoczne / nie sprawdzono) i **pokrycie web GUI legacy** (lista kontrolna §15 z odnośnikami do ekranów) |
+| Użytkownicy | – (panel: `/api/users`) | konta operatorów panelu (widoczne w menu tylko dla administratora z kontami włączonymi): tabela login / rola (zmiana listą od razu) / utworzone / ostatnio w panelu / liczba sesji, „Nowe hasło” (wylogowuje konto), „Wyloguj” (wszystkie sesje konta), „Usuń” (z potwierdzeniem); panel „Nowe konto” (login, hasło, rola); panel „Logowanie w pakiecie VizRS” – przełącznik kont panelu w Trio i Artist. Pasek górny: „konto: login · stanowisko” – okno **Moje konto** (stanowisko do dziennika CG, zmiana własnego hasła) |
 
 Na białej liście są też komendy bez ekranu, używane przez `panel/tests/stack.sh seed` i testy oraz dostępne w konsoli: `CreateLocalLibrary`, `QueueLibraryScanByLibraryId`, `GetProgramScheduleById`, `GetPlayoutIdByChannelNumber`.
 
@@ -2816,7 +2934,7 @@ Na białej liście są też komendy bez ekranu, używane przez `panel/tests/stac
 
 **Sloty na żywo – jak nadawać (2026-11-07).** Przy każdym kanale panel pokazuje dane dla nadawcy z pola `inputs` w `/api/live/state` VizRS CG Playout: **RTMP** – Serwer (`rtmp://host:port/app`) i Klucz strumienia osobno, jak pyta o nie OBS (Ustawienia → Strumień → „Własny…”); **SRT** – pełny adres `srt://host:port?mode=caller&passphrase=…` i hasło. Klucz, adres SRT i hasło są ukryte (pole hasła) z „Pokaż” i „Kopiuj” – to sekrety nadawania, a CG podaje je tylko z tokenem panelu. Host: `VIZRS_INGEST_PUBLIC` w CG Playout, a gdy pusty – host, z którego operator otwiera panel. Wejścia zna CG Playout z `VIZRS_INGEST` (pierwsze wypełnienie) albo z listy ustawionej w panelu (niżej); kanał bez wejścia ma przycisk „+ Dodaj wejście”.
 
-**Sloty na żywo – ustawianie wejść (2026-11-08).** „Ustaw wejścia…” (panel Wejścia studia) i „+ Dodaj wejście” (kanał bez wejścia) otwierają edytor całej listy wejść CG Playout (`GET/PUT /api/live/inputs`, VizRS CG Playout z 2026-11-08): wiersz = kanał, RTMP albo SRT, port, klucz strumienia (RTMP) albo hasło (SRT, 10–79 znaków, puste = bez hasła), „Losuj” (24 znaki szesnastkowe z `crypto.getRandomValues`), „×”. Porty tylko z zakresu, który compose CG wystawia na hoście (RTMP 1936–1943, SRT 9000–9007/UDP; CG podaje go w `ports`), po jednym wejściu na port. Panel składa adresy odbiorników (`rtmp://0.0.0.0:<port>/live/<klucz>`, `srt://0.0.0.0:<port>?passphrase=<hasło>`; inne parametry SRT z istniejącego adresu zostają) i wysyła całą listę; CG Playout ją sprawdza (błąd = toast z jego komunikatem, nic się nie zmienia), zapisuje w `<etv_config>/vizrs-live/inputs.json` – od tej chwili lista z panelu wygrywa z `VIZRS_INGEST` – a usługa odbiorników przejmuje ją w ciągu ok. 5 s bez restartu (zmienione odbiorniki startują od nowa, trwający na nich sygnał się urywa; reszta działa dalej). Adres dla nadawców (`VIZRS_INGEST_PUBLIC`) zostaje w konfiguracji CG Playout – to ustawienie serwera, nie kanału. Starsze CG Playout bez `/api/live/inputs`: toast, że wejścia ustawia się tam w `VIZRS_INGEST`. Pod kartami kanałów panel „Wejścia studia” zbiera w tabeli wszystkie wejścia (RTMP, SRT) z adresem serwera bez sekretów, bieżącym stanem („nadaje · na antenie”, „nadaje”, „wstrzymany”, „czeka”) oraz parametrami obrazu i dźwięku.
+**Sloty na żywo – ustawianie wejść (2026-11-08).** „Ustaw wejścia…” (panel Wejścia studia) i „+ Dodaj wejście” (kanał bez wejścia) otwierają edytor całej listy wejść CG Playout (`GET/PUT /api/live/inputs`, VizRS CG Playout z 2026-11-08): wiersz = kanał, RTMP albo SRT, port, klucz strumienia (RTMP) albo hasło (SRT, 10–79 znaków, puste = bez hasła), „Losuj” (24 znaki szesnastkowe z `crypto.getRandomValues`), „×”. Porty tylko z zakresu, który compose CG wystawia na hoście (RTMP 1936–1943, SRT 9000–9007/UDP; CG podaje go w `ports`), po jednym wejściu na port. Panel składa adresy odbiorników (`rtmp://0.0.0.0:<port>/live/<klucz>`, `srt://0.0.0.0:<port>?passphrase=<hasło>`; inne parametry SRT z istniejącego adresu zostają) i wysyła całą listę; CG Playout ją sprawdza (błąd = toast z jego komunikatem, nic się nie zmienia), zapisuje w `<etv_config>/vizrs-live/inputs.json` – od tej chwili lista z panelu wygrywa z `VIZRS_INGEST` – a usługa odbiorników przejmuje ją w ciągu ok. 5 s bez restartu (zmienione odbiorniki startują od nowa, trwający na nich sygnał się urywa; reszta działa dalej). Adres dla nadawców (`VIZRS_INGEST_PUBLIC`) zostaje w konfiguracji CG Playout – to ustawienie serwera, nie kanału. Starsze CG Playout bez `/api/live/inputs`: toast, że wejścia ustawia się tam w `VIZRS_INGEST`. Pod kartami kanałów panel „Wejścia studia” zbiera w tabeli wszystkie wejścia (RTMP, SRT) z adresem serwera bez sekretów, bieżącym stanem („nadaje · na antenie”, „nadaje”, „wstrzymany”, „czeka”) oraz parametrami obrazu i dźwięku. **Wejście YouTube** (2026-11-18): rodzaj „YouTube” zamiast portu i klucza ma pole adresu (`https://www.youtube.com/…`, `https://youtu.be/…`; panel sprawdza go przed zapisem i pod polem mówi, czy to strona live kanału, czy jeden film), w „Jak nadawać” karta „YouTube (CG Playout pobiera sam)” z adresem, w tabeli rodzaj YouTube; działanie – §1, Live ingest. Starszy CG Playout odrzuca adres YouTube (toast z jego komunikatem). **Wejście z linku** (2026-11-18): rodzaj „Link (HLS, RTMP, SRT, RTSP)” ma pole adresu strumienia (`http(s)://`, `rtmp(s)://`, `srt://`, `rtsp(s)://` z hostem spoza tej maszyny (nie `0.0.0.0`, `[::]`, `127.*`, `localhost`); zły adres – podpowiedź pod polem i toast przy zapisie, bez wysyłki); w „Jak nadawać” karta „Link do strumienia (CG Playout pobiera sam)” z adresem ukrytym jak klucz („Pokaż”, „Kopiuj” – link bywa z tokenem), w tabeli rodzaj Link i adres bez loginu, zapytania i klucza RTMP (`?***`, `/***`); działanie – §1, Live ingest. Starszy CG Playout odrzuca link (toast z jego komunikatem). **Wybór wejścia kanału** (2026-11-18, CG Playout z cechą `input_select`): karta kanału z co najmniej dwoma wejściami ma listę „Wejście:” – „automatycznie – pierwsze z sygnałem” i wejścia kanału po nazwie z CG Playout (`label`, bez sekretów) ze stanem (● nadaje, ● sygnał czeka, ○ nie pobiera); zmiana od razu wysyła `PUT /api/live/channels/<n>` `{"input"}` i odświeża widok, a toast mówi, co wybrano. W tabeli „Wejścia studia” stan każdego wejścia osobno (nadaje · na antenie, sygnał czeka, nie wybrane, czeka) i znaczek „wybrane”; obraz i dźwięk tylko przy wejściu, które nadaje. Starszy CG Playout (bez `state` przy wejściach) – lista się nie pokazuje, tabela jak dotąd. Dziennik emisji pokazuje `input` jako „wybór wejścia”; działanie – §1, Live ingest.
 
 **Grafika VizRS i sloty na żywo – szczegóły i decyzje (R9, 2026-11-07).** Panel rozmawia z VizRS CG Playout wyłącznie przez jego API (decyzja planu R9), przez pośrednika w serwerze (`/api/cg/…`, docs/API.md §2) – adres i token CG nie trafiają do przeglądarki. Spis API CG Playout, z którego panel korzysta: `/health`, `/etv/pages`, `/ingest/state` (pośrednik gotowy, UI używa stanu z `/api/live/state`, który zawiera to samo per kanał) i live API CG (`/api/live/*`, wymaga `panel_token` w CG Playout; docs/API.md §1). Decyzje: (1) **Reguły grafiki** (`on_clip`, `on_end`/`end_seconds`, `on_ad`/`ad_match`, `shows`, `channels` – kiedy która strona VizRS wchodzi, z polami `{title}`, `{next_title}`…) panel czyta i zapisuje przez API CG Playout `GET/PUT /api/live/graphics` (dodane w CG Playout 2026-11-07, docs/API.md §1; pośrednik: `live/graphics`, GET i PUT). Zapis wysyła cały dokument reguł; CG Playout go waliduje (błędny regex = 400, panel pokazuje komunikat, nic się nie zmienia), zapisuje w `<etv_config>/vizrs-live/graphics.json` – od tej chwili plik wygrywa z regułami z `config.json` (w panelu „z panelu” / „z config.json”) – i stosuje od następnej pozycji, bez restartu. W regułach audycji i kanałów tryb pola „jak globalnie” = pole pominięte, „wyłączone” = pusty tekst w CG (dawne „-” z pola tekstowego panel czyta jako wyłączone); w karcie reguły kanału pole „Na przejęcie przez live ingest” (`on_live`, np. `TAKE 7510` dla logo „NA ŻYWO”) definiuje komendy na czas przejęcia kanału przez live ingest nakładki ffmpeg – grafika ramówki jest wtedy wstrzymywana, a po zejściu studia wraca automatycznie (pole pokazywane, gdy CG Playout ma cechę `on_live` w `features`; starszy CG ukrywa pole, a zapisane wcześniej `on_live` zachowuje; puste pole = pominięcie klucza); komendy edytuje się jako wybór grafik (`cmdedit.js`, §11 UI) – zapis w tej samej składni tekstowej; reguły audycji przypisane do kanału i `ad_match` audycji panel przenosi bez zmian (nie ma ich w edytorze). Na górze ekranu reguły streszcza tabela „Kiedy / Co / Ile” (globalne, audycji i kanałów z komendami opisanymi po polsku – akcja, strona, pola, wiersz „przejęcie przez live ingest (grafika ramówki wstrzymana)” z czasem „na czas przejęcia” – lub pigułką „wyłączone” / „OUT” oraz czasem trwania), z której kliknięcie przenosi kursor wprost do edytora pod nią (karta reguły się rozwija). Adres, token i `output_url` kanału zostają w `config.json` CG Playout. Starsze CG Playout bez tego API: panel pokazuje, że reguły zmienia się w `config.json`. (2) **Audycje na żywo jako pozycje ramówki**: CG Playout zakłada plik Remote Stream i Smart Collection `LIVE · tytuł` w legacy; pozycję harmonogramu (start Fixed, Strict, Smart Collection, One) operator dodaje w panelu w Harmonogramach (R1) – panel tego nie automatyzuje, bo CG zmienia legacy przez własne API, a zapis harmonogramu z dwóch miejsc groziłby nadpisaniem. (3) **Elementy graficzne legacy** (pliki YAML) – tylko lista i `RefreshGraphicsElements` (legacy ponownie czyta katalog elementów); element VizRS (`vizrs.yml`) zakłada CG Playout przy synchronizacji, więc zapis plików z panelu nie był potrzebny i ogólnego endpointu zapisu w moście nie dodano (decyzja R2 bez zmian). (4) **Podgląd `/output` i Trio** – ramka i odnośniki z `--vizrs-url` (adres VizRS widoczny dla przeglądarki operatora; CG Playout nie podaje swojego `output_url` przez API). VizRS z tokenem odrzuca wejście bez tokenu (401), więc ramka dostaje token wyjścia (`--vizrs-output-token`, tylko odczyt; poprawka 2026-11-07 – wcześniej ramka i Trio dawały na produkcji „wymagany token”). Tokenu operatora VizRS panel nie zna i nie przekazuje: przy pierwszym wejściu do Trio w danej przeglądarce operator dopisuje `?token=…` (podpowiedź na odnośniku), potem VizRS pamięta go w ciasteczku. Przy antenach kanałów (`--vizrs-channels`) ramka idzie za wybranym kanałem (w Grafice kanału – lista stron VizRS, na Antenie – lista w nagłówku ramki, wybór przeżywa odświeżenie), a „Trio ↗” na karcie kanału otwiera jego antenę. Ustawienia live API CG: biblioteka Remote Streams – w Audycjach LIVE (pośrednik `PUT live/settings`, od 2026-11-07); publicznego adresu legacy (`etv_public`) CG Playout już nie ma – służył tylko odnośnikom strony `/live` do web GUI legacy. Testy: atrapa CG Playout w `panel/tests/e2e.cjs` (127.0.0.1:18700; panel testowy startuje z `--cg-url`); na prawdziwym CG Playout nie sprawdzone – krok ręczny przed wdrożeniem: ustawić `panel_token` w CG i `VIZRS_LIVE_CG_URL`/`VIZRS_LIVE_CG_TOKEN` w panelu, otworzyć Grafikę kanału (stan „połączony”, strony VizRS) i Sloty na żywo (sygnał z OBS, ZDEJMIJ/WPUŚĆ, audycja LIVE).
 

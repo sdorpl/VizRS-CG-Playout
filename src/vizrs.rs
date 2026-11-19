@@ -615,10 +615,11 @@ impl ChannelEvents {
 
     /// A live takeover of the channel began (`true`: the overlay put the studio on
     /// air) or ended: the schedule's graphics are held meanwhile and the channel's
-    /// `on_live` (a LIVE logo) goes on air instead; after it, the schedule's pages of now.
-    pub fn live_takeover(&self, on: bool) {
+    /// `on_live` (a LIVE logo) goes on air instead – or `own`, the graphics of the
+    /// input on air (`on_live` of an input, VizRS Live); after it, the schedule's pages of now.
+    pub fn live_takeover(&self, on: bool, own: Option<&str>) {
         let switch = if on {
-            let on_live = self.rules().on_live.clone();
+            let on_live = own.filter(|o| !o.trim().is_empty()).map_or_else(|| self.rules().on_live.clone(), str::to_owned);
             let commands = render_commands(&on_live, &ClipContext::default());
             crate::info!(
                 "channel {}: live takeover: schedule graphics held{}",

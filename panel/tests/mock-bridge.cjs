@@ -146,6 +146,14 @@ const probe = {
 };
 if (process.env.MOCK_NO_HW) for (const a of probe.Capability.accels) Object.assign(a, { status: a.configured ? 'ProbeFailed' : 'Skipped', error: a.configured ? 'no device' : null, decode: [], encode: [] });
 const VIDEOS = ['Serwis 06:00', 'Serwis 12:00', 'Pogoda', 'Pogoda', 'Rozmowa dnia', 'Magazyn regionalny', 'Gość VizRS'].map((Title, i) => ({ MediaItemId: 200 + i, Title, Subtitle: `/media/info24/${Title.toLowerCase().replace(/\W+/g, '-')}${i === 3 ? '-weekend' : ''}.mp4`, SortTitle: Title, Poster: '', State: 'Normal' }));
+const SCHEDULES = [
+  { Id: 1, Name: 'INFO24 – dzień', items: [
+    { Index: 1, StartType: 'Fixed', StartTime: '06:00:00', FixedStartTimeBehavior: null, PlayoutMode: 'Flood', CollectionType: 'SmartCollection', SmartCollectionId: 2, PlaybackOrder: 'Chronological', MultipleCount: '1' },
+    { Index: 2, StartType: 'Fixed', StartTime: '18:00:00', FixedStartTimeBehavior: null, PlayoutMode: 'Flood', CollectionType: 'SmartCollection', SmartCollectionId: 2, PlaybackOrder: 'Shuffle', MultipleCount: '1' }] },
+  { Id: 2, Name: 'Kino – wieczór', items: [] },
+  { Id: 3, Name: 'INFO24 – weekend', items: [
+    { Index: 1, StartType: 'Fixed', StartTime: '08:00:00', FixedStartTimeBehavior: null, PlayoutMode: 'Flood', CollectionType: 'SmartCollection', SmartCollectionId: 2, PlaybackOrder: 'Shuffle', MultipleCount: '1' }] },
+];
 const PLAYLISTS = [{ Id: 1, PlaylistGroupId: 1, Name: 'Poranek INFO24', IsSystem: false }];
 const PL_ITEMS = {};
 const LOGS = []; // wpisy dopisywane przez zadania w tle atrapy (K6)
@@ -173,7 +181,17 @@ const H = {
   RefreshNextProbe: () => probe,
   GetAllWatermarks: () => DB.watermarks,
   // kolekcje inteligentne: jedna audycji LIVE (prowadzi ją CG Playout – w panelu tylko do odczytu) i jedna zwykła
-  GetAllSmartCollections: () => [{ Id: 1, Name: 'LIVE · Koncert w studiu', Query: 'type:remote_stream AND sort_title:"koncert w studiu"' }, { Id: 2, Name: 'Archiwum INFO24', Query: 'type:other_video AND tag:info' }],
+  GetAllSmartCollections: () => [{ Id: 1, Name: 'LIVE · Koncert w studiu', Query: 'type:remote_stream AND sort_title:"koncert w studiu"' }, { Id: 2, Name: 'Archiwum INFO24', Query: 'type:other_video AND tag:info' },
+    { Id: 3, Name: 'LIVE · Wieczór na żywo', Query: 'type:remote_stream AND sort_title:"wieczór na żywo"' }],
+  // harmonogramy (w pamięci): „INFO24 – dzień” kanału 24 – godziny emisji audycji LIVE (Audycje LIVE → Ramówka…)
+  GetAllProgramSchedules: () => SCHEDULES.map(({ Id, Name }) => ({ Id, Name, FixedStartTimeBehavior: 'Strict', ShuffleScheduleItems: false })),
+  GetPlayoutAlternateSchedules: (a) => (a.PlayoutId === 1 ? [{ Id: 3, Index: 1, ProgramScheduleId: 3, DaysOfWeek: ['Saturday', 'Sunday'], DaysOfMonth: [], MonthsOfYear: [] }, { Id: 1, Index: 2, ProgramScheduleId: 1, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : a.PlayoutId === 3 ? [{ Id: 2, Index: 1, ProgramScheduleId: 2, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : []),
+  GetProgramScheduleItems: (a) => (SCHEDULES.find((x) => x.Id === a.Id)?.items || []).map((it) => {
+    const smart = it.SmartCollectionId && H.GetAllSmartCollections().find((c) => c.Id === it.SmartCollectionId);
+    return { ...it, Count: it.MultipleCount, Name: smart?.Name ?? 'Archiwum INFO24', SmartCollection: it.SmartCollectionId ? { Id: it.SmartCollectionId, Name: smart?.Name } : null,
+      Watermarks: (it.WatermarkIds || []).map((Id) => ({ Id })), GraphicsElements: (it.GraphicsElementIds || []).map((Id) => ({ Id })) };
+  }),
+  ReplaceProgramScheduleItems: (a) => { const sc = SCHEDULES.find((x) => x.Id === a.ProgramScheduleId); if (sc) sc.items = a.Items; return null; },
   GetAllFillerPresets: () => DB.fillers,
   GetPagedPlayouts: () => ({ TotalCount: DB.playouts.length, Page: DB.playouts }),
   GetAllBlockPlayouts: () => DB.playouts.filter((p) => p.ScheduleKind === 'Block'),
@@ -285,7 +303,23 @@ if (process.env.MOCK_CG === '1') {
   const CGT = 'test-cg-token-0123456789';
   const layers = { 24: [{ layer: 10, page: '101', name: 'belka 101', scene: 'belka', since: now - 300e3 }, { layer: 20, page: '4001', name: 'zegar', scene: 'zegar', since: now - 3600e3 }], 25: [{ layer: 10, page: '201', name: 'teraz gramy', since: now - 120e3 }], 26: [] };
   const asrun = [];
-  let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: '', qsv_preset: '', bframes: '0' }; // koder nakładki (GET/PUT /api/live/encoder)
+  // wejścia studia (zapis w pamięci): RTMP, YouTube i link; `inputs` kanału jak w CG Playout (listener::publisher)
+let inputs = [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/x' }, { channel: '24', url: 'https://www.youtube.com/@kanal/live' }, { channel: '25', url: 'https://cdn.example.pl/live/index.m3u8' }];
+const chosen = {}; // wybrane wejście kanału (PUT /api/live/channels/<n> {"input"})
+const idOf = (l) => [...`${l.channel}=${l.url}`].reduce((h, ch) => ((h * 31 + ch.charCodeAt(0)) >>> 0), 7).toString(16).padStart(16, '0');
+const labelOf = (l) => (/youtu/.test(l.url) ? `YouTube ${l.url.replace(/^https?:\/\/(www\.)?/, '')}` : /^\w+:\/\/0\.0\.0\.0/.test(l.url)
+  ? `${l.url.slice(0, 4).toUpperCase().replace(':', '')} ${l.url.split(':')[2].split(/[/?]/)[0]}` : `Link ${/\.m3u8/.test(l.url) ? 'HLS' : 'RTMP'} ${l.url.split('/')[2]}`);
+// stan wejścia: kanał 24 – nadaje wybrane (albo pierwsze), drugie z sygnałem czeka
+const stateOf = (l, all) => { const on = chosen[l.channel] || (all[0] && idOf(all[0])); const id = idOf(l);
+  return l.channel !== '24' ? (chosen[l.channel] && chosen[l.channel] !== id ? 'off' : '') : id === on ? 'on' : /youtu|cdn/.test(l.url) && chosen[l.channel] ? 'off' : 'waiting'; };
+const inputsOf = (n) => inputs.filter((l) => l.channel === n).map((l, _, all) => ({ id: idOf(l), label: labelOf(l), state: stateOf(l, all), ...(!/^\w+:\/\/(0\.0\.0\.0|\[::\])[:/?]/.test(l.url) && !/youtu/.test(l.url)
+  ? { kind: 'link', url: l.url, scheme: l.url.split(':')[0] }
+  : /^https?:/.test(l.url)
+  ? { kind: 'youtube', url: l.url, youtube: /\/[^/]+\/live\/?$/.test(l.url.replace(/^https?:\/\/[^/]+/, '')) ? 'channel' : 'video' }
+  : { kind: 'rtmp', host: '', port: 1936, app: '/live', key: l.url.split('/').pop(), passphrase: '', streamid: '' }) }));
+let cgShows = [{ id: '24-wieczor', channel: '24', title: 'Wieczór na żywo', duration: '01:00:00', plot: '', content_rating: '', collection: true, collection_id: 3, collection_name: 'LIVE · Wieczór na żywo', next: null, file_ok: true, airings: 0 },
+        { id: '25-koncert', channel: '25', title: 'Koncert w studiu', duration: '01:00:00', plot: '', content_rating: '', collection: true, collection_id: 1, collection_name: 'LIVE · Koncert w studiu', next: null, file_ok: true, airings: 2 }];
+let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: '', qsv_preset: '', bframes: '0' }; // koder nakładki (GET/PUT /api/live/encoder)
   const log = (e) => asrun.push({ t: Date.now(), operator: 'VizRS Live · atrapa', ...e });
   for (let i = 0; i < 8; i++) { const it = items(1, 8)[i]; asrun.push({ t: +new Date(it.Start), kind: 'item_start', title: it.Title }); if (i % 3 === 0) asrun.push({ t: +new Date(it.Start) + 10e3, kind: 'take', page: '101', layer: 10, title: it.Title, operator: 'reguła: on_clip' }); }
   asrun.push({ t: now - 1800e3, kind: 'hold', operator: 'VizRS Live · MCR 1' }, { t: now - 1700e3, kind: 'release', operator: 'VizRS Live · MCR 1' });
@@ -297,8 +331,8 @@ if (process.env.MOCK_CG === '1') {
       if (q.headers.authorization !== 'Bearer ' + CGT) return reply(r, 401, { error: 'zły token panelu' });
       if (u.pathname === '/health') return reply(r, 200, { sessions: 3, overlay: ['24'], ingest: { channels: ['24'] }, captures: [] });
       if (u.pathname === '/api/live/state') return reply(r, 200, {
-        ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live'], settings: { graphics_off: false },
-        channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name, source: { live: c.Number === '24' }, on_air: c.Number === '24', hold: false, takeover: c.Number === '24', anytime: c.Number === '24', layers: layers[c.Number] || [],
+        ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live', 'input_on_live', 'input_select'], settings: { graphics_off: false },
+        channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name, source: { live: c.Number === '24' }, inputs: inputsOf(c.Number), input: chosen[c.Number] || null, on_air: c.Number === '24', hold: false, takeover: c.Number === '24', anytime: c.Number === '24', layers: layers[c.Number] || [],
           next_live: c.Number === '25' ? { start: Date.now() + 3 * 60e3, title: 'Koncert w studiu' } : null })),
         events: [], guide: {},
       });
@@ -307,7 +341,16 @@ if (process.env.MOCK_CG === '1') {
         return reply(r, 200, { used: encoder, from: 'panel', store: true, presets: ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow', 'placebo'],
           profiles: ['baseline', 'main', 'high'], x264_keys: ['bframes', 'subme', 'ref', 'me', 'trellis'], nvenc_presets: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'], qsv_presets: ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'], max_bframes: 4 });
       }
-      if (u.pathname === '/api/live/inputs') return reply(r, 200, { listeners: [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/x' }] });
+      const chm = u.pathname.match(/^\/api\/live\/channels\/([\w.-]+)$/);
+      if (chm && q.method === 'PUT') {
+        const v = JSON.parse(b || '{}');
+        if ('input' in v) { if (v.input) chosen[chm[1]] = v.input; else delete chosen[chm[1]]; log({ kind: 'input', channel: chm[1], detail: v.input ? 'wejście wybrane' : 'automatycznie' }); return reply(r, 200, { input: v.input }); }
+        return reply(r, 200, { anytime: !!v.anytime });
+      }
+      if (u.pathname === '/api/live/inputs') {
+        if (q.method === 'PUT') inputs = JSON.parse(b || '{}').listeners || [];
+        return reply(r, 200, { listeners: inputs, from: 'panel', store: true, ingest: true, ports: { rtmp: [1936, 1943], srt: [9000, 9007] } });
+      }
       if (u.pathname === '/etv/pages') return reply(r, 200, { pages: [{ number: '101', name: 'belka tytułowa' }, { number: '102', name: 'za chwilę' }, { number: '4001', name: 'zegar' }] });
       if (u.pathname === '/api/live/asrun') return reply(r, 200, { entries: asrun });
       if (u.pathname === '/api/live/logs') {
@@ -318,8 +361,22 @@ if (process.env.MOCK_CG === '1') {
         return reply(r, 200, { tz: 'UTC', truncated: false, entries: lines.map(([t, level, text]) => ({ t, level, text })) });
       }
       if (u.pathname === '/api/live/graphics') return reply(r, 200, { rules: { on_clip: 'TAKE 101 headline={title}', on_ad: '', ad_match: { path: '/reklamy/', title: '' }, on_end: 'TAKE 102 next={next_title}', end_seconds: 30, shows: [], channels: { 24: { on_live: 'TAKE 4001' } } }, source: 'config', store: true });
-      if (u.pathname === '/api/live/shows') return reply(r, 200, { shows: [{ id: '25-koncert', channel: '25', title: 'Koncert w studiu', duration: '01:00:00', plot: '', collection: true, collection_name: 'LIVE · Koncert w studiu', next: null, file_ok: true, airings: 2 }], error: null,
+      if (u.pathname === '/api/live/shows' && q.method === 'GET') return reply(r, 200, { shows: cgShows, error: null,
         channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name })), guide_known: true, max: 50, etv: { configured: true, ok: true, error: null }, settings: { library: null, store: true } });
+      {
+        // zapis audycji w pamięci (jak CG Playout: kroki w odpowiedzi); nowa audycja dostaje kolejną kolekcję
+        const sm = u.pathname.match(/^\/api\/live\/shows(?:\/([\w.-]+))?$/);
+        if (sm && (q.method === 'POST' || q.method === 'PUT')) {
+          const v = JSON.parse(b || '{}');
+          const old = sm[1] && cgShows.find((x) => x.id === sm[1]);
+          if (sm[1] && !old) return reply(r, 404, { error: 'nie ma takiej audycji' });
+          const show = Object.assign(old || { id: `${v.channel}-${String(v.title).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, channel: v.channel, collection: true, collection_id: 10 + cgShows.length, next: null, file_ok: true, airings: 0 },
+            { title: v.title, duration: v.duration, plot: v.plot || '', content_rating: v.content_rating || '', collection_name: 'LIVE · ' + v.title });
+          if (!old) cgShows.push(show);
+          return reply(r, 200, { show, steps: [{ step: 'file', ok: true, detail: `vizrs-live/${show.id}.yml` }, { step: 'collection', ok: true, detail: `${show.collection_name} (ID ${show.collection_id})` }] });
+        }
+      }
+      if (/^\/api\/live\/channels\/\w+\/rebuild$/.test(u.pathname) && q.method === 'POST') return reply(r, 200, { ok: true });
       const m = u.pathname.match(/^\/api\/live\/channels\/(\w+)\/(take|continue|out)$/);
       if (m && q.method === 'POST') {
         const a = b ? JSON.parse(b) : {};

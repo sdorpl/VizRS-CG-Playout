@@ -70,11 +70,14 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live'],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'input_select'],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
-          inputs: [{ kind: 'rtmp', host: 'tv.example.pl', port: 1936, app: '/live', key: 'studio-klucz', passphrase: '', streamid: '' },
-            { kind: 'srt', host: '', port: 9000, app: '', key: '', passphrase: 'tajne haslo', streamid: '' }] }],
+          input: CG.input || null,
+          inputs: [{ kind: 'rtmp', host: 'tv.example.pl', port: 1936, app: '/live', key: 'studio-klucz', passphrase: '', streamid: '', id: '00000000000000a1', label: 'RTMP 1936', state: 'on' },
+            { kind: 'srt', host: '', port: 9000, app: '', key: '', passphrase: 'tajne haslo', streamid: '', id: '00000000000000a2', label: 'SRT 9000', state: 'waiting' },
+            { kind: 'youtube', url: 'https://youtu.be/abc123', youtube: 'video', id: '00000000000000a3', label: 'YouTube youtu.be/abc123', state: CG.input ? 'off' : '' },
+            { kind: 'link', url: 'https://cdn.example.pl/live/index.m3u8?token=tajny-token', scheme: 'https', id: '00000000000000a4', label: 'Link HLS cdn.example.pl', state: CG.input ? 'off' : '' }] }],
         events: [{ at: T0 - 5000, channel: '24', text: 'nadawca połączony' }],
         version: '0.9.0-test', etv: { configured: true, ok: true, error: null }, settings: { library: null, store: true, graphics_off: !!CG.graphicsOff },
         guide: { 24: [{ title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true }] },
@@ -84,12 +87,19 @@ function check(cond, msg) {
       if (u === '/api/live/settings' && q.method === 'PUT') { CG.library = body.library; return send(200, { library: CG.library, store: true }); }
       if (u === '/api/live/shows' && q.method === 'POST') {
         if (!/[\p{L}\d]/u.test(body.title || '')) return send(400, { error: 'tytuł: 1–200 znaków, choć jedna litera albo cyfra' });
-        const show = { id: `${body.channel}-${body.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, channel: body.channel, title: body.title, duration: body.duration, plot: body.plot, collection: true, collection_name: 'LIVE · ' + body.title, next: null, file_ok: true, airings: 0 };
+        const show = { id: `${body.channel}-${body.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, channel: body.channel, title: body.title, duration: body.duration, plot: body.plot, content_rating: body.content_rating ?? '', collection: true, collection_id: CG.collectionId ?? null, collection_name: 'LIVE · ' + body.title, next: null, file_ok: true, airings: 0 };
         CG.shows.push(show);
         return send(200, { show, steps: [{ step: 'file', ok: true, detail: 'vizrs-live/x.yml' }, { step: 'collection', ok: true, detail: '' }] });
       }
       let m;
+      if ((m = u.match(/^\/api\/live\/shows\/([\w.-]+)$/)) && q.method === 'PUT') {
+        const show = CG.shows.find((x) => x.id === m[1]);
+        if (!show) return send(404, { error: 'nie ma takiej audycji' });
+        Object.assign(show, { title: body.title, duration: body.duration, plot: body.plot, content_rating: body.content_rating ?? '', collection_name: 'LIVE · ' + body.title });
+        return send(200, { show, steps: [{ step: 'file', ok: true, detail: `vizrs-live/${show.id}.yml` }, { step: 'collection', ok: true, detail: '' }] });
+      }
       if ((m = u.match(/^\/api\/live\/shows\/([\w.-]+)$/)) && q.method === 'DELETE') { CG.shows = CG.shows.filter((x) => x.id !== m[1]); return send(200, { ok: true }); }
+      if (u === '/api/live/channels/24/rebuild' && q.method === 'POST') { CG.rebuilt = (CG.rebuilt || 0) + 1; return send(200, { ok: true }); }
       if ((m = u.match(/^\/api\/live\/channels\/24\/(hold|release)$/))) { CG.hold = m[1] === 'hold'; return send(200, { ok: true }); }
       // K13: TAKE / CONTINUE / OUT; K14: dziennik emisji (kontrakt DOKUMENTACJA §11)
       if ((m = u.match(/^\/api\/live\/channels\/24\/(take|continue|out)$/)) && q.method === 'POST') {
@@ -108,7 +118,7 @@ function check(cond, msg) {
           cg: [{ t: T0 - 45000, level: 'info', text: 'ingest: channel 24: live (h264, with audio)' }],
         }[lg[1]] });
       }
-      if (u === '/api/live/channels/24' && q.method === 'PUT') { CG.anytime = body.anytime; return send(200, { ok: true }); }
+      if (u === '/api/live/channels/24' && q.method === 'PUT') { if ('input' in body) CG.input = body.input; else CG.anytime = body.anytime; return send(200, { ok: true }); }
       if (u === '/api/live/inputs' && q.method === 'GET') {
         return send(200, { listeners: CG.inputs || [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/studio-klucz' }], from: CG.inputs ? 'panel' : 'env', store: true, ingest: true, ports: { rtmp: [1936, 1943], srt: [9000, 9007] } });
       }
@@ -1607,10 +1617,14 @@ function check(cond, msg) {
   await page.click('[data-inputs="24"] .input:first-child button:has-text("Pokaż")');
   check(await page.getAttribute('input[aria-label="Klucz RTMP 24-1"]', 'type') === 'text', 'sloty: „Pokaż” odsłania klucz');
   check(await page.inputValue('input[aria-label="Adres SRT 24-2"]') === 'srt://127.0.0.1:9000?mode=caller&passphrase=tajne%20haslo', 'sloty: adres SRT z hasłem (host z panelu)');
+  check(await page.inputValue('input[aria-label="Adres YouTube 24-3"]') === 'https://youtu.be/abc123' && /znika z listy/.test(await page.textContent('[data-inputs="24"]')), 'sloty: wejście YouTube – adres i jeden film');
+  check(await page.inputValue('input[aria-label="Link wejścia 24-4"]') === 'https://cdn.example.pl/live/index.m3u8?token=tajny-token'
+    && await page.getAttribute('input[aria-label="Link wejścia 24-4"]', 'type') === 'password' && /pobiera go znowu/.test(await page.textContent('[data-inputs="24"]')), 'sloty: wejście z linku – adres ukryty (token), opis');
   check(/NA ANTENIE/.test(await page.textContent('main')), 'sloty: kanał 24 z sygnałem studia NA ANTENIE');
   check(/live – ramówka wstrzymana/.test(await page.textContent('[data-live-channel="24"] [data-live-graphics]')), 'sloty: przejęcie – grafika live zamiast ramówki');
   const inTab = await page.textContent('[data-inputs-table]');
-  check(inTab.includes('rtmp://tv.example.pl:1936/live') && /nadaje/.test(inTab) && /h264 · z dźwiękiem/.test(inTab) && !inTab.includes('studio-klucz') && !inTab.includes('tajne'),
+  check(inTab.includes('rtmp://tv.example.pl:1936/live') && inTab.includes('YouTube') && inTab.includes('https://youtu.be/abc123') && /nadaje/.test(inTab) && /h264 · z dźwiękiem/.test(inTab) && !inTab.includes('studio-klucz') && !inTab.includes('tajne')
+    && inTab.includes('Link') && inTab.includes('https://cdn.example.pl/live/index.m3u8?***') && !inTab.includes('tajny-token'),
     'sloty: tabela wejść – adres bez klucza i hasła, stan, obraz');
   // wejścia studia ustawiane z panelu (CG Playout GET/PUT /api/live/inputs)
   await page.click('button:has-text("Ustaw wejścia…")');
@@ -1619,10 +1633,32 @@ function check(cond, msg) {
   await page.click('[data-inputs-edit] button:has-text("+ Wejście")');
   await page.selectOption('select[aria-label="Rodzaj wejścia 2"]', 'srt');
   await page.fill('input[aria-label="Hasło wejścia 2"]', 'haslo-studia-2');
+  await page.click('[data-inputs-edit] button:has-text("+ Wejście")');
+  await page.selectOption('select[aria-label="Rodzaj wejścia 3"]', 'youtube');
+  await page.fill('input[aria-label="Adres YouTube wejścia 3"]', 'https://www.youtube.com/@kanal/live');
+  check(/każda jego transmisja/.test(await page.textContent('[data-inputs-edit]')), 'wejścia: YouTube – strona live kanału rozpoznana');
+  await page.click('[data-inputs-edit] button:has-text("+ Wejście")');
+  await page.selectOption('select[aria-label="Rodzaj wejścia 4"]', 'link');
+  await page.fill('input[aria-label="Link wejścia 4"]', 'rtmp://0.0.0.0:1937/live/x');
+  check(/nie 0\.0\.0\.0 ani/.test(await page.textContent('[data-inputs-edit]')), 'wejścia: link na 0.0.0.0 odrzucony (to adres odbiornika)');
+  await page.fill('input[aria-label="Link wejścia 4"]', 'rtmp://studio.example.pl/live/abc');
+  check(!/nie 0\.0\.0\.0 ani/.test(await page.textContent('[data-inputs-edit]')), 'wejścia: link RTMP do zdalnego serwera przyjęty');
+  // grafika wejścia (CG Playout z „input_on_live”): logo NA ŻYWO na czas przejęcia z tego wejścia
+  check(await page.inputValue('#in-gr-0') === 'inherit', 'wejścia: grafika wejścia domyślnie jak grafika live kanału');
+  await page.selectOption('#in-gr-2', 'cmd');
+  await page.selectOption('select[aria-label="Grafika wejścia 3: strona 1"]', '1001');
   await page.click('#dlg-buttons button:has-text("Zapisz")');
   await page.waitForSelector('#overlay', { state: 'hidden' });
   const saved = JSON.stringify(CG.inputs || []);
-  check(saved.includes('rtmp://0.0.0.0:1936/live/studio-klucz') && saved.includes('srt://0.0.0.0:9000?passphrase=haslo-studia-2'), 'wejścia: zapis listy do CG Playout (RTMP 1936, SRT 9000 z hasłem)');
+  check(saved.includes('rtmp://0.0.0.0:1936/live/studio-klucz') && saved.includes('srt://0.0.0.0:9000?passphrase=haslo-studia-2') && saved.includes('"url":"https://www.youtube.com/@kanal/live"')
+    && saved.includes('"url":"rtmp://studio.example.pl/live/abc"'),
+    'wejścia: zapis listy do CG Playout (RTMP 1936, SRT 9000 z hasłem, YouTube, link)');
+  check(CG.inputs[2].on_live === 'TAKE 1001' && CG.inputs[0].on_live === null, `wejścia: grafika tylko przy wejściu YouTube (${saved})`);
+  await page.click('button:has-text("Ustaw wejścia…")');
+  await page.waitForSelector('[data-inputs-edit]');
+  check(await page.inputValue('#in-gr-2') === 'cmd' && /1001/.test(await page.textContent('[data-cmd-editor="in-gr-2"]')), 'wejścia: grafika wejścia wraca z CG Playout');
+  await page.click('#dlg-buttons button:has-text("Anuluj")');
+  await page.waitForSelector('#overlay', { state: 'hidden' });
   // M9: logi ze źródłem – zdarzenia VizRS CG Playout
   await page.goto(`${BASE}/#logi`);
   await page.waitForSelector('main[data-view="logi"] #log-src');
@@ -1654,6 +1690,16 @@ function check(cond, msg) {
   await rerender(() => page.click('input[aria-label="Studio poza audycjami 24"]'));
   check(CG.anytime === false, 'sloty: „poza audycjami” zapisane w CG Playout');
   await rerender(() => page.click('input[aria-label="Studio poza audycjami 24"]'));
+  // wybór wejścia kanału (CG Playout z „input_select”): lista ze stanem wejść, zapis w CG Playout, tabela z „wybrane”
+  const picks = await page.$$eval('select[aria-label="Wejście kanału 24"] option', (o) => o.map((x) => x.textContent));
+  check(picks.length === 5 && /^automatycznie/.test(picks[0]) && /RTMP 1936.*nadaje/.test(picks[1]) && /SRT 9000.*sygnał czeka/.test(picks[2]) && !picks.join().includes('tajny-token'),
+    `sloty: lista wejść kanału ze stanem, bez sekretów (${picks.join(' | ')})`);
+  await rerender(() => page.selectOption('select[aria-label="Wejście kanału 24"]', '00000000000000a2'));
+  check(CG.input === '00000000000000a2', 'sloty: wybór wejścia zapisany w CG Playout');
+  check(await page.inputValue('select[aria-label="Wejście kanału 24"]') === '00000000000000a2' && /wybrane/.test(await page.textContent('[data-inputs-table]'))
+    && /nie wybrane/.test(await page.textContent('[data-inputs-table]')), 'sloty: wybrane wejście na karcie i w tabeli, YouTube i link nie pobierają');
+  await rerender(() => page.selectOption('select[aria-label="Wejście kanału 24"]', ''));
+  check(CG.input === null, 'sloty: powrót do „automatycznie”');
   await shot('r12-sloty');
   // Audycje LIVE: nowa audycja – najpierw błąd walidacji CG wraca do operatora, potem poprawna z kreatorem
   await page.goto(`${BASE}/#audycje`);
@@ -1665,16 +1711,72 @@ function check(cond, msg) {
   check(CG.library === 7, 'audycje: biblioteka Remote Streams z legacy zapisana w CG Playout');
   await page.click('button:has-text("+ Nowa audycja LIVE")');
   await page.fill('#ls-title', '***');
-  await rerender(() => page.click('#dlg-buttons button:has-text("Utwórz w ErsatzTV")'));
+  await rerender(() => page.click('#dlg-buttons button:has-text("Utwórz")'));
   check(/tytuł/.test(await page.textContent('#toast')) && (await page.getAttribute('#toast', 'class')).includes('bad'), 'sloty: błąd walidacji CG Playout pokazany operatorowi');
+  // okno audycji: EPG + emisje. Kolekcję audycji zakłada w legacy CG Playout – tu przez API; harmonogram kanału 24
+  // („INFO24 dzień” z seed, jedyny harmonogram playoutu) wraca do stanu sprzed testu
+  const liveColl = (await api('CreateSmartCollection', { Name: 'LIVE · Debata E2E', Query: 'type:remote_stream AND title:"Debata E2E"' })).result?.Id;
+  CG.collectionId = liveColl;
+  const ps24 = (await api('GetAllProgramSchedules')).result.find((x) => x.Name === 'INFO24 dzień')?.Id;
+  const items24 = async () => (await api('GetProgramScheduleItems', { Id: ps24 })).result.sort((a, b) => a.Index - b.Index);
+  const liveItems = async () => (await items24()).filter((it) => it.SmartCollection?.Id === liveColl).sort((a, b) => a.StartTime.localeCompare(b.StartTime));
+  const before24 = (await items24()).length;
   await page.click('button:has-text("+ Nowa audycja LIVE")');
+  await page.waitForSelector('[data-airings] button:has-text("+ Emisja")');
   await page.fill('#ls-title', 'Debata E2E');
   await page.fill('#ls-duration', '00:30:00');
-  await page.click('#dlg-buttons button:has-text("Utwórz w ErsatzTV")');
+  await page.fill('#ls-rating', '12');
+  await page.click('[data-airings] button:has-text("+ Emisja")');
+  await page.fill('input[aria-label="Godzina emisji 1"]', '20:00');
+  check(/→ 20:30/.test(await page.textContent('[data-airings]')), 'audycje: koniec emisji z długości (20:00 → 20:30)');
+  await page.click('[data-airings] button:has-text("+ Emisja")');
+  await page.fill('input[aria-label="Godzina emisji 2"]', '7:15');
+  await page.selectOption('select[aria-label="Start emisji 2"]', 'Flexible');
+  await page.fill('input[aria-label="Tytuł emisji 2"]', 'Debata E2E – powtórka');
+  await shot('audycje-okno');
+  await page.click('#dlg-buttons button:has-text("Utwórz")');
   await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
-  check(/Audycja zapisana/.test(await page.textContent('[data-wizard]')) && /LIVE · Debata E2E/.test(await page.textContent('[data-wizard]')), 'audycje: kreator – kroki CG i pozycja w Harmonogramach');
+  const wiz = await page.textContent('[data-wizard]');
+  check(/Audycja zapisana/.test(wiz) && /Godzina emisji w harmonogramie.*INFO24 dzień.*07:15, 20:00/.test(wiz) && /Ramówka kanału przebudowana/.test(wiz) && CG.rebuilt === 1,
+    `audycje: dwie emisje zapisane przy zakładaniu, ramówka przebudowana (${wiz})`);
+  check(CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '12'), 'audycje: kategoria wiekowa zapisana w CG Playout');
+  let li = await liveItems();
+  check(li.length === 2 && li.every((it) => it.StartType === 'Fixed' && it.PlayoutMode === 'One') && /^07:15/.test(li[0].StartTime) && li[0].FixedStartTimeBehavior === 'Flexible'
+    && li[0].CustomTitle === 'Debata E2E – powtórka' && /^20:00/.test(li[1].StartTime) && li[1].FixedStartTimeBehavior === 'Strict' && !li[1].CustomTitle
+    && (await items24()).length === before24 + 2, 'audycje: pozycje w legacy – kolekcja LIVE, godziny, ściśle / elastycznie, tytuł emisji');
   await shot('r12-kreator');
   await page.click('#dlg-buttons button:has-text("Gotowe")');
+  await page.waitForSelector('tr:has(td:has-text("Debata E2E")) [data-air-times]');
+  check(/07:15, 20:00/.test(await page.textContent('tr:has(td:has-text("Debata E2E")) [data-air-times]')), 'audycje: godziny emisji z harmonogramu na liście');
+  // edycja: wczytane emisje, przeniesienie 20:00 → 21:15, usunięcie powtórki, zmiana kategorii (PUT do CG Playout)
+  await page.click('tr:has(td:has-text("Debata E2E")) button:has-text("Edytuj…")');
+  await page.waitForSelector('input[aria-label="Godzina emisji 2"]');
+  check((await page.inputValue('input[aria-label="Godzina emisji 1"]')) === '07:15' && (await page.inputValue('input[aria-label="Tytuł emisji 1"]')) === 'Debata E2E – powtórka'
+    && (await page.inputValue('#ls-rating')) === '12', 'audycje: okno wczytuje emisje z harmonogramu i kategorię');
+  await page.fill('input[aria-label="Godzina emisji 2"]', '21:15');
+  await page.click('[data-airings] tbody tr:first-child button:has-text("✕")');
+  await page.fill('#ls-rating', '16');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
+  li = await liveItems();
+  check(li.length === 1 && /^21:15/.test(li[0].StartTime) && (await items24()).length === before24 + 1 && CG.rebuilt === 2
+    && CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '16'), 'audycje: emisja przeniesiona, powtórka usunięta, kategoria zmieniona');
+  await page.click('#dlg-buttons button:has-text("Gotowe")');
+  // bez zmian = bez zapisu i bez przebudowy; potem usunięcie ostatniej emisji
+  await page.click('tr:has(td:has-text("Debata E2E")) button:has-text("Edytuj…")');
+  await page.waitForSelector('input[aria-label="Godzina emisji 1"]');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForFunction(() => /Bez zmian/.test(document.getElementById('toast').textContent));
+  check(CG.rebuilt === 2, 'audycje: zapis bez zmian nie przebudowuje ramówki');
+  await page.click('tr:has(td:has-text("Debata E2E")) button:has-text("Edytuj…")');
+  await page.waitForSelector('input[aria-label="Godzina emisji 1"]');
+  await page.click('[data-airings] tbody tr:first-child button:has-text("✕")');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
+  await page.click('#dlg-buttons button:has-text("Gotowe")');
+  check((await liveItems()).length === 0 && (await items24()).length === before24, 'audycje: emisje usunięte – harmonogram jak przed testem');
+  await api('DeleteSmartCollection', { SmartCollectionId: liveColl });
+  CG.collectionId = null;
   await page.waitForSelector('td:has-text("Debata E2E")');
   check(CG.shows.some((x) => x.title === 'Debata E2E' && x.duration === '00:30:00' && x.channel === '24'), 'sloty: audycja LIVE założona w CG Playout');
   await shot('r12-audycje');
@@ -1818,6 +1920,60 @@ function check(cond, msg) {
     const after = (await fetch(`${SEC}/api/login`, { method: 'POST', headers: { 'X-VizRS-Live': '1' }, body: PTOK })).status;
     check(tries.filter((x) => x === 401).length >= 9 && after === 429, `logowanie: po 10 nieudanych próbach 429 nawet dla dobrego tokenu (${after})`);
   } finally { secProc.kill(); }
+
+  // ---------- konta operatorów (logowanie loginem i hasłem, konfiguracja z panelu) – osobny panel z --data na 18093 ----------
+  const ACC = 'http://127.0.0.1:18093';
+  const accDir = require('fs').mkdtempSync(path.join(require('os').tmpdir(), 'vizrs-live-e2e-konta-'));
+  let accLog = '';
+  const accProc = require('child_process').spawn(path.join(__dirname, '..', 'server', 'target', 'release', 'vizrs-live'),
+    ['--port', '18093', '--bridge', 'http://127.0.0.1:18409', '--bridge-token', 'test-token-0123456789', '--token', PTOK, '--data', accDir], { stdio: ['ignore', 'ignore', 'pipe'] });
+  accProc.stderr.on('data', (d) => { accLog += d; });
+  try {
+    for (let i = 0; i < 50; i++) { try { if ((await fetch(`${ACC}/health`)).ok) break; } catch {} await new Promise((r) => setTimeout(r, 100)); }
+    const code = /kod pierwszej konfiguracji: ([A-Z0-9-]{14})/.exec(accLog)?.[1];
+    check(!!code, 'konta: kod pierwszej konfiguracji w logu panelu');
+    const au = (await (await fetch(`${ACC}/api/auth`)).json()).result;
+    check(au.setup && au.accounts && !JSON.stringify(au).includes(code), 'konta: /api/auth – pierwsze uruchomienie, bez kodu w odpowiedzi');
+    const ap = await browser.newPage();
+    await ap.goto(`${ACC}/#antena`);
+    await ap.waitForSelector('#setup-code');
+    await shot('konta-pierwsze', ap);
+    await ap.fill('#setup-code', code.toLowerCase());
+    await ap.fill('#setup-user', 'Szef');
+    await ap.fill('#setup-pass', 'haslo-szefa-1'); await ap.fill('#setup-pass2', 'haslo-szefa-1');
+    await ap.click('#dlg-buttons button.acc');
+    await ap.waitForSelector('main[data-view="antena"] .head h1');
+    check(/konto: szef/.test(await ap.textContent('#st-operator')), 'konta: pierwsze konto administratora i zalogowanie');
+    check(await ap.isVisible('#nav-users'), 'konta: administrator widzi „Użytkownicy”');
+    await ap.goto(`${ACC}/#uzytkownicy`);
+    await ap.waitForSelector('main[data-view="uzytkownicy"] #nu-user');
+    await ap.fill('#nu-user', 'ola'); await ap.fill('#nu-pass', 'haslo-oli-1');
+    await ap.click('button:has-text("Dodaj konto")');
+    await ap.waitForSelector('main[data-view="uzytkownicy"] td b:text-is("ola")');
+    await shot('konta-uzytkownicy', ap);
+    await ap.click('#logout');
+    await ap.waitForSelector('#login-user');
+    await ap.fill('#login-user', 'ola'); await ap.fill('#login-pass', 'zle-haslo-1'); await ap.press('#login-pass', 'Enter');
+    await ap.waitForSelector('#toast.bad');
+    check(/zły login albo hasło/.test(await ap.textContent('#toast')), 'konta: złe hasło – komunikat');
+    await ap.waitForSelector('#login-user');
+    await ap.fill('#login-user', 'Ola'); await ap.fill('#login-pass', 'haslo-oli-1'); await ap.press('#login-pass', 'Enter');
+    await ap.waitForSelector('main[data-view] .head h1');
+    check(await ap.isHidden('#nav-users'), 'konta: operator nie widzi „Użytkownicy”');
+    const sid = (await ap.context().cookies(ACC)).find((c) => c.name === 'vizrs_live');
+    check((await fetch(`${ACC}/api/users`, { headers: { Cookie: `vizrs_live=${sid.value}` } })).status === 403, 'konta: operator nie zarządza kontami (403)');
+    check((await fetch(`${ACC}/api/status`, { headers: { Authorization: `Bearer ${PTOK}` } })).status === 200, 'konta: token awaryjny dalej działa (skrypty)');
+    await ap.close();
+    // sesja przetrwa restart panelu
+    accProc.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    const again = require('child_process').spawn(path.join(__dirname, '..', 'server', 'target', 'release', 'vizrs-live'),
+      ['--port', '18093', '--bridge', 'http://127.0.0.1:18409', '--bridge-token', 'test-token-0123456789', '--data', accDir], { stdio: 'ignore' });
+    try {
+      for (let i = 0; i < 50; i++) { try { if ((await fetch(`${ACC}/health`)).ok) break; } catch {} await new Promise((r) => setTimeout(r, 100)); }
+      check((await fetch(`${ACC}/api/status`, { headers: { Cookie: `vizrs_live=${sid.value}` } })).status === 200, 'konta: sesja przetrwała restart panelu');
+    } finally { again.kill(); }
+  } finally { accProc.kill(); require('fs').rmSync(accDir, { recursive: true, force: true }); }
 
   cgServer.close(); // dopiero na końcu: pasek górny co 5 s pyta CG Playout o studio na antenie
   check(errors.length === 0, 'brak błędów JS' + (errors.length ? ': ' + errors.join(' | ') : ''));

@@ -7,80 +7,16 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { fakeErsatzTV, KEY } from "./fake-ersatztv.mjs";
 import { fakeVizrs } from "./helpers.mjs";
 import { startSidecar } from "./sidecar.mjs";
 
 const TOKEN = "panel-test";
-const KEY = "etv-key";
-
-/** ErsatzTV's API as the panel uses it; every call lands in `calls`. */
-async function fakeErsatzTV() {
-  const calls = [];
-  const collections = [];
-  let next = 40;
-  const pad = (n) => String(n).padStart(2, "0");
-  const xmltvTime = (ms) => {
-    const d = new Date(ms);
-    return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())} +0000`;
-  };
-  const server = http.createServer((req, res) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      calls.push({ method: req.method, url: req.url, key: req.headers["x-etv-api-key"], body });
-      const json = (status, value) => {
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(value === undefined ? "" : JSON.stringify(value));
-      };
-      if (req.headers["x-etv-api-key"] !== KEY && req.url.startsWith("/api/")) return json(401);
-      if (req.method === "GET" && req.url === "/api/channels") return json(200, [{ id: 1, number: "1", name: "BTB 24" }, { id: 2, number: "4", name: "BTB Info" }]);
-      if (req.method === "GET" && req.url === "/api/collections/smart") return json(200, collections);
-      if (req.method === "POST" && req.url === "/api/collections/smart/new") {
-        const { name, query } = JSON.parse(body);
-        const id = next++;
-        collections.push({ id, name, query });
-        return json(200, { id });
-      }
-      if (req.method === "PUT" && req.url === "/api/collections/smart/update") {
-        const { id, name, query } = JSON.parse(body);
-        const c = collections.find((x) => x.id === id);
-        if (!c) return json(404);
-        Object.assign(c, { name, query });
-        return json(200, {});
-      }
-      const del = req.url.match(/^\/api\/collections\/smart\/delete\/(\d+)$/);
-      if (req.method === "DELETE" && del) {
-        const at = collections.findIndex((x) => x.id === Number(del[1]));
-        if (at < 0) return json(404);
-        collections.splice(at, 1);
-        return json(200);
-      }
-      if (req.method === "POST" && /^\/api\/libraries\/\d+\/scan$/.test(req.url)) return json(200);
-      if (req.method === "POST" && /^\/api\/channels\/[^/]+\/playout\/reset$/.test(req.url)) return json(req.url.includes("/9/") ? 404 : 200);
-      if (req.method === "GET" && req.url === "/iptv/xmltv.xml") {
-        const now = Date.now();
-        const items = [
-          ["C4.2.ersatztv.org", "Film &amp; serial", now - 600000, now + 600000],
-          ["C4.2.ersatztv.org", "Rozmowa dnia", now + 600000, now + 3300000],
-          ["C1.1.ersatztv.org", "Pogoda", now - 60000, now + 60000],
-        ];
-        res.writeHead(200, { "Content-Type": "application/xml" });
-        return res.end(
-          `﻿<?xml version="1.0" encoding="utf-8"?><tv>` +
-            items.map(([ch, t, a, b]) => `<programme start="${xmltvTime(a)}" stop="${xmltvTime(b)}" channel="${ch}"><title lang="en">${t}</title></programme>`).join("") +
-            "</tv>",
-        );
-      }
-      json(404);
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${server.address().port}`, calls, collections, close: () => new Promise((r) => server.close(r)) };
-}
 
 async function setup(t, env = {}, config = {}) {
   const etv = await fakeErsatzTV();
@@ -276,13 +212,112 @@ test("the panel tells publishers where to send: RTMP server and key, SRT address
     VIZRS_INGEST_RTMP_PORT: "1940",
   });
   const { body } = await api("GET", "state");
-  const of = (n) => body.channels.find((c) => c.number === n).inputs;
+  const of = (n) => body.channels.find((c) => c.number === n).inputs.map(({ id, label, state, ...rest }) => rest);
   assert.deepEqual(of("4"), [
     { kind: "rtmp", host: "tv.example.pl", port: 1940, app: "/live", key: "studio", passphrase: "", streamid: "" },
     { kind: "srt", host: "tv.example.pl", port: 9000, app: "", key: "", passphrase: "tajne-haslo-1", streamid: "" },
   ]);
   assert.equal(of("7")[0].key, "drugi", "a channel with only a listener is listed too");
   assert.ok(body.channels.filter((c) => !["4", "7"].includes(c.number)).every((c) => c.inputs.length === 0), "other channels: no inputs");
+});
+
+test("an input may have its own graphics for a takeover from it, kept in inputs.json", async (t) => {
+  const { folder, api } = await setup(t);
+  const listeners = [
+    { channel: "1", url: "https://www.youtube.com/@kanal/live", on_live: "TAKE 7510" },
+    { channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", on_live: null },
+  ];
+  const put = await api("PUT", "inputs", { listeners });
+  assert.equal(put.status, 200);
+  assert.deepEqual(put.body.listeners, listeners);
+  const file = JSON.parse(readFileSync(path.join(folder, "vizrs-live", "inputs.json"), "utf8"));
+  assert.deepEqual(file.on_live, { "1=https://www.youtube.com/@kanal/live": "TAKE 7510" });
+  assert.equal(file.listeners, "1=https://www.youtube.com/@kanal/live; 1=rtmp://0.0.0.0:1936/live/studio", "an older reader sees the same list");
+  assert.deepEqual((await api("GET", "inputs")).body.listeners, listeners);
+  const bad = await api("PUT", "inputs", { listeners: [{ channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", on_live: 7510 }] });
+  assert.equal(bad.status, 400, "graphics of an input are text");
+});
+
+test("the operator chooses the input a channel takes; YouTube and links not chosen do not read", async (t) => {
+  const { folder, cg, api } = await setup(t);
+  const listeners = [
+    { channel: "1", url: "rtmp://0.0.0.0:1936/live/studio" },
+    { channel: "1", url: "https://www.youtube.com/@kanal/live" },
+    { channel: "1", url: "https://cdn.example.pl/live/index.m3u8?token=tajny" },
+    { channel: "2", url: "https://cdn.example.pl/drugi.m3u8" },
+  ];
+  assert.equal((await api("PUT", "inputs", { listeners })).status, 200);
+  const channel = async (n) => (await api("GET", "state")).body.channels.find((c) => c.number === n);
+  const one = await channel("1");
+  assert.equal(one.input, null, "automatic at first");
+  assert.deepEqual(one.inputs.map((i) => [i.label, i.state]), [["RTMP 1936", ""], ["YouTube youtube.com/@kanal/live", ""], ["Link HLS cdn.example.pl", ""]]);
+  assert.ok(one.inputs.every((i) => /^[0-9a-f]{16}$/.test(i.id)));
+  const forListeners = async () => (await (await fetch(`${cg.url}/ingest/listeners`, { headers: { Authorization: "Bearer ing" } })).text()).split("; ");
+  assert.equal((await forListeners()).length, 4);
+
+  const rtmp = one.inputs[0].id;
+  const put = await api("PUT", "channels/1", { input: rtmp });
+  assert.equal(put.status, 200);
+  assert.deepEqual(put.body, { input: rtmp });
+  const chosen = await channel("1");
+  assert.equal(chosen.input, rtmp);
+  assert.deepEqual(chosen.inputs.map((i) => i.state), ["", "off", "off"]);
+  assert.deepEqual(await forListeners(), ["1=rtmp://0.0.0.0:1936/live/studio", "2=https://cdn.example.pl/drugi.m3u8"], "the other channel reads on");
+  const saved = JSON.parse(readFileSync(path.join(folder, "vizrs-live", "control.json"), "utf8"));
+  assert.equal(saved.channels["1"].input, rtmp, "kept for a restart");
+  assert.equal((await api("PUT", "channels/1", { input: "0123456789abcdef" })).status, 400, "not an input of the channel");
+  assert.equal((await api("PUT", "channels/2", { input: rtmp })).status, 400, "an input of another channel");
+  assert.equal((await api("PUT", "channels/1", { input: 5 })).status, 400);
+  assert.equal((await api("GET", "state")).body.channels.find((c) => c.number === "1").anytime_own, null, "anytime untouched");
+
+  // The chosen input off the list: the channel goes back to automatic.
+  assert.equal((await api("PUT", "inputs", { listeners: listeners.slice(1) })).status, 200);
+  assert.equal((await channel("1")).input, null);
+  assert.equal((await forListeners()).length, 3);
+  assert.equal((await api("PUT", "channels/1", { input: null })).status, 200);
+});
+
+/** `POST /ingest` from an input: the status, and the socket for the body. */
+function postSource(cg, channel, input) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(cg.port, "127.0.0.1", () => {
+      socket.write(`POST /ingest?channel=${channel}&input=${input} HTTP/1.0\r\nHost: cg\r\nAuthorization: Bearer ing\r\n\r\n`);
+    });
+    let head = "";
+    socket.on("data", function onData(chunk) {
+      head += chunk.toString("latin1");
+      if (head.includes("\r\n\r\n")) {
+        socket.off("data", onData);
+        resolve({ status: Number(head.split(" ")[1]), socket });
+      }
+    });
+    socket.on("error", reject);
+  });
+}
+
+test("choosing another input takes the source on the channel off at once; the chosen one comes on", async (t) => {
+  const { api, cg } = await setup(t);
+  const listeners = [{ channel: "1", url: "rtmp://0.0.0.0:1936/live/a" }, { channel: "1", url: "srt://0.0.0.0:9000" }];
+  assert.equal((await api("PUT", "inputs", { listeners })).status, 200);
+  const [a, b] = (await api("GET", "state")).body.channels.find((c) => c.number === "1").inputs.map((i) => i.id);
+  const first = await postSource(cg, "1", a);
+  assert.equal(first.status, 200, "automatic: the first one");
+  const closed = new Promise((resolve) => first.socket.on("close", resolve));
+  const early = await postSource(cg, "1", b);
+  assert.equal(early.status, 409, "automatic: the second one waits");
+  early.socket.destroy();
+  const inputs = async () => (await api("GET", "state")).body.channels.find((c) => c.number === "1").inputs.map((i) => i.state);
+  assert.deepEqual(await inputs(), ["", "waiting"], "a source without a keyframe is not on yet; the refused one waits");
+
+  assert.equal((await api("PUT", "channels/1", { input: b })).status, 200);
+  first.socket.write(Buffer.alloc(188, 0xff));
+  await closed;
+  const chosen = await postSource(cg, "1", b);
+  assert.equal(chosen.status, 200, "the chosen input comes on");
+  const other = await postSource(cg, "1", a);
+  assert.equal(other.status, 409, "the other one is refused");
+  other.socket.destroy();
+  chosen.socket.destroy();
 });
 
 // K12–K17 of VizRS Live's PLAN-mcr: the layers on air, TAKE / CONTINUE / OUT by
@@ -294,7 +329,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -393,7 +428,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

@@ -4,7 +4,7 @@
 //   parts.js („lista + edytor”, edytor pozycji, wybór treści, grupy, oś doby) · when.js (dni, miesiące, zakres dat)
 //   · player.js + mux.js (podgląd strumienia kanału) · views/*.js (ekrany po grupach menu)
 
-import { S, main, h, btn, head, api, cmd, ApiError, route, hms, dialog, operatorName, has } from './core.js';
+import { S, main, h, btn, head, api, cmd, ApiError, route, hms, dialog, operatorName, has, authState, toast } from './core.js';
 import { openMonitor } from './player.js';
 import { startAlarms } from './alarms.js';
 import { desktopBridge } from './desktop.js';
@@ -25,6 +25,7 @@ import './views/grafika.js';
 import './views/live.js';
 import './views/system.js';
 import './views/asrun.js';
+import './views/uzytkownicy.js';
 
 async function refreshStatus() {
   const d = await api('/api/status');
@@ -135,17 +136,40 @@ function channelSelect() {
   });
 }
 
+/** Pasek górny: konto (gdy zalogowano kontem) albo nazwa stanowiska; klik – okno „Moje konto”. */
 function operatorButton() {
   const b = document.getElementById('st-operator');
-  const show = () => (b.textContent = `operator: ${operatorName() || '–'}`);
+  const account = () => S.auth.user?.name || '';
+  const show = () => {
+    const st = operatorName();
+    b.textContent = account() ? `konto: ${account()}${st ? ` · ${st}` : ''}` : `operator: ${st || '–'}`;
+    b.title = account() ? 'Moje konto: hasło i nazwa stanowiska' : 'Nazwa stanowiska – trafia do dziennika zdarzeń CG Playout';
+  };
   show();
   b.addEventListener('click', async () => {
     const input = h('input', { id: 'op-name', maxlength: 40, value: operatorName() });
-    const body = h('div', { class: 'form' }, h('label', { for: 'op-name' }, 'Stanowisko / operator'), input,
-      h('span'), h('span', { class: 'dim' }, 'Trafia do dziennika zdarzeń CG Playout (ZDEJMIJ, WPUŚĆ, audycje). Pamiętane w tej przeglądarce.'));
-    if (await dialog('Nazwa stanowiska', body, [['Anuluj', false], ['Zapisz', true, 'acc']])) {
-      operatorName(input.value.trim().slice(0, 40));
-      show();
+    const old = h('input', { type: 'password', id: 'pw-old', autocomplete: 'current-password' });
+    const p1 = h('input', { type: 'password', id: 'pw-new', autocomplete: 'new-password' });
+    const p2 = h('input', { type: 'password', id: 'pw-new2', autocomplete: 'new-password' });
+    const body = h('div', { class: 'form' },
+      account() ? [h('span', { class: 'dim' }, 'Konto'), h('span', null, h('b', null, account()), ` (${S.auth.user.role === 'admin' ? 'administrator' : 'operator'})`)] : null,
+      h('label', { for: 'op-name' }, 'Stanowisko'), input,
+      h('span'), h('span', { class: 'dim' }, `Trafia do dziennika zdarzeń CG Playout (ZDEJMIJ, WPUŚĆ, audycje)${account() ? ' obok nazwy konta' : ''}. Pamiętane w tej przeglądarce.`),
+      account() ? [
+        h('label', { for: 'pw-old' }, 'Obecne hasło'), old,
+        h('label', { for: 'pw-new' }, 'Nowe hasło'), p1,
+        h('label', { for: 'pw-new2' }, 'Powtórz'), p2,
+        h('span'), h('span', { class: 'dim' }, 'Puste pola = hasło bez zmian. Po zmianie inne przeglądarki tego konta zostaną wylogowane.'),
+      ] : null);
+    if (!(await dialog(account() ? 'Moje konto' : 'Nazwa stanowiska', body, [['Anuluj', false], ['Zapisz', true, 'acc']]))) return;
+    operatorName(input.value.trim().slice(0, 40));
+    show();
+    if (account() && (old.value || p1.value)) {
+      if (p1.value !== p2.value) return toast('Nowe hasła się różnią', 'bad');
+      try {
+        await api('/api/password', { method: 'POST', body: JSON.stringify({ old: old.value, new: p1.value }) });
+        toast('Hasło zmienione');
+      } catch (e) { toast(e.message, 'bad'); }
     }
   });
 }
@@ -186,6 +210,8 @@ function clock() {
 
 async function start() {
   clock();
+  S.auth = await authState();
+  document.getElementById('nav-users').hidden = !(S.auth.accounts && S.auth.user?.role === 'admin');
   navToggle();
   operatorButton();
   channelSelect();

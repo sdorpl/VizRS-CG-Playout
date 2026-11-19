@@ -66,7 +66,25 @@ function pixel(file, x, y) {
   return [...raw.subarray(0, 3)];
 }
 
-test("area auto: graphics beyond the zones widen them in the middle of the piece, the next run overlays them", { skip: !FFMPEG && "no ffmpeg", timeout: 90000 }, async (t) => {
+/** `POST /ingest` of a live source for `seconds`: ffmpeg's MPEG-TS at the clock, a yellow picture. */
+function liveSource(t, cg, seconds) {
+  const source = spawn(FFMPEG, [
+    "-v", "error", "-re", "-f", "lavfi", "-i", "color=c=yellow:s=320x180:r=25", "-f", "lavfi", "-i", "sine=f=220:sample_rate=48000",
+    "-t", String(seconds), "-c:v", "libx264", "-preset", "ultrafast", "-g", "25", "-c:a", "aac", "-f", "mpegts", "pipe:1",
+  ], { stdio: ["ignore", "pipe", "ignore"] });
+  t.after(() => source.kill("SIGKILL"));
+  const socket = net.connect(cg.port, "127.0.0.1", () => {
+    socket.write("POST /ingest?channel=1 HTTP/1.0\r\nHost: cg\r\nAuthorization: Bearer ing\r\n\r\n");
+    source.stdout.pipe(socket);
+  });
+  socket.on("error", () => {});
+  t.after(() => socket.destroy());
+}
+
+for (const live of [false, true]) {
+test(live
+  ? "area auto with a live takeover: zones widened in the middle of a live run restart it, the graphics come out whole"
+  : "area auto: graphics beyond the zones widen them in the middle of the piece, the next run overlays them", { skip: !FFMPEG && "no ffmpeg", timeout: 90000 }, async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "vizrs-zones-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = path.join(dir, "vizrs-render");
@@ -109,6 +127,7 @@ test("area auto: graphics beyond the zones widen them in the middle of the piece
       renderer_bin: bin,
       area: "auto",
       etv_config: dir,
+      ...(live ? { ingest_token: "ing" } : {}),
     },
     { FAKE_DIR: dir },
   );
@@ -126,7 +145,15 @@ test("area auto: graphics beyond the zones widen them in the middle of the piece
   const etvPort = await listen(etv);
   t.after(() => etv.close());
 
-  // The piece as ErsatzTV Next builds it; no live ingest in the sidecar: the runs serve the zones only.
+  if (live) {
+    liveSource(t, cg, 40);
+    const deadline = Date.now() + 15000;
+    while (!(await (await fetch(`${cg.url}/ingest/state?channel=1`)).json()).live) {
+      assert.ok(Date.now() < deadline, `the source goes live\n${cg.logs()}`);
+      await sleep(200);
+    }
+  }
+  // The piece as ErsatzTV Next builds it; without live ingest in the sidecar the runs serve the zones only.
   const headers = "x-etv-channel:1\r\nx-etv-offset-ms:0\r\nx-etv-duration-ms:14000\r\nx-etv-frame-rate:25/1\r\n";
   const piece = spawn(WRAPPER, [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-readrate", "1.0", "-i", media,
@@ -150,7 +177,15 @@ test("area auto: graphics beyond the zones widen them in the middle of the piece
   const code = await pieceExit;
   const log = Buffer.concat(pieceLog).toString();
   assert.equal(code, 0, log);
-  assert.match(log, /piece restarted for new graphics zones after \d+\.\d s/, log);
+  if (live) {
+    // Before 2026-11-18 a live run kept the zones it started with: the sidecar held
+    // their frames (graphics outside them) and the picture came out torn.
+    assert.match(log, /live from 0\.0 s of the piece/, log);
+    assert.match(log, /live run restarted for new graphics zones/, log);
+    assert.doesNotMatch(log, /gave no picture/, log);
+  } else {
+    assert.match(log, /piece restarted for new graphics zones after \d+\.\d s/, log);
+  }
   // Seen in the picture streamed, not at the next learning step: the run stops before a frame cut off.
   assert.match(cg.logs(), /graphics zones( widened to|: the whole channel) .*\(graphics outside the zones, frames held\)/, cg.logs());
 
@@ -175,4 +210,9 @@ test("area auto: graphics beyond the zones widen them in the middle of the piece
   // S3b it stayed cut off until the end of the run, here the whole piece).
   assert.deepEqual(pixel(path.join(out, segments[segments.length - 1][0]), 100, 110).map((v) => v > 128), [true, false, false], "the red box");
   assert.ok(!green[0] && green[green.length - 1], `green only after the widening: ${JSON.stringify(green)}\n${log}\n${cg.logs()}`);
+  if (live) {
+    const [r, g, b] = pixel(path.join(out, segments[segments.length - 1][0]), 160, 150);
+    assert.ok(r > 200 && g > 200 && b < 80, `the studio's yellow picture under the graphics: ${[r, g, b]}`);
+  }
 });
+}

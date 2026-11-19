@@ -29,13 +29,27 @@ RUN case "$TARGETARCH" in \
 # The native gcc of Debian arm64 has the same name.
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc
+# yt-dlp for YouTube inputs of live ingest (src/listener.rs): the standalone
+# build (Python inside, no Python in the ErsatzTV image needed), installed by
+# the sidecar next to vizrs-ffmpeg; pinned version and checksums.
+ARG YTDLP_VERSION=2026.10.26
+ARG YTDLP_SHA256_AMD64=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795
+ARG YTDLP_SHA256_ARM64=e87e9533e89fe5889abaa21f5114dfe7756d6aa6219b83551add04d48b18e483
+RUN case "$TARGETARCH" in \
+      amd64) file=yt-dlp_linux; sum="$YTDLP_SHA256_AMD64" ;; \
+      arm64) file=yt-dlp_linux_aarch64; sum="$YTDLP_SHA256_ARM64" ;; \
+    esac \
+    && mkdir -p /client \
+    && curl -fsSL --retry 3 -o /client/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/$YTDLP_VERSION/$file" \
+    && echo "$sum  /client/yt-dlp" | sha256sum -c - \
+    && chmod 755 /client/yt-dlp
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src src
 RUN RUSTFLAGS="$(cat /rust-opts)" cargo build --release --locked --target "$(cat /target)" \
     && cp "target/$(cat /target)/release/vizrs-cg" /vizrs-cg \
     && RUSTFLAGS="$(cat /rust-opts)" cargo build --release --locked --bin vizrs-etv-client --bin vizrs-ffmpeg --target "$(cat /target-musl)" \
-    && mkdir /client \
+    && mkdir -p /client \
     && cp "target/$(cat /target-musl)/release/vizrs-etv-client" "target/$(cat /target-musl)/release/vizrs-ffmpeg" /client/
 
 ARG VIZRS_REF=v26.11.10

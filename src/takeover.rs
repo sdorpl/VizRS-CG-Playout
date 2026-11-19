@@ -65,9 +65,21 @@ const LIVE_OVERRUN: Duration = Duration::from_secs(3);
 /// drops segments older than 2 min on arrival: live runs slower than the clock
 /// (a source at 0.3x, S1 2026-11-13 20:30) made each piece take 2-3x its length,
 /// the timeline fell over 2 min behind, and live at 1.0x never made it up – the
-/// channel went out empty for hours. Past this the schedule (made faster than
-/// the clock while ErsatzTV is behind) takes over until the timeline caught up.
-const LIVE_BEHIND_MAX: f64 = 10.0;
+/// channel went out empty for hours. Past this a live run is stopped and the
+/// schedule takes over.
+const LIVE_BEHIND_MAX: f64 = 60.0;
+/// No live run starts with the timeline further behind than this, and a schedule
+/// catching up gives live back at it. Below `LIVE_BEHIND_MAX` by more than a
+/// run's start, so that live does not come and go at one limit. The schedule
+/// does not always make up time (with `VIZRS_FFMPEG_SYNC_RAM` it goes at the
+/// clock): at 10 s for both (until 2026-11-18) a channel left 11 s behind by one
+/// slow piece put live on air for 1 s of every piece – its run's start alone
+/// crossed the limit – and the schedule for the rest, for good.
+const LIVE_BEHIND_START: f64 = 45.0;
+/// A live run that lost this much more against the clock since it started (s)
+/// is slower than the clock (the source, not the timeline before it): stopped,
+/// and live is left alone for `SUPPRESS`.
+const LIVE_LAG_MAX: f64 = 10.0;
 /// How often a run checks how far behind the clock the channel's timeline is.
 const BEHIND_EVERY: Duration = Duration::from_secs(1);
 /// A long live run writes its pace to the trace this often: a run slower than
@@ -288,6 +300,16 @@ pub fn live_args(
     format: &Format,
     graphics: Option<&Graphics>,
 ) -> Vec<OsString> {
+    let mut out = global_options(args);
+    let (inputs, audio_input) = picture_inputs(&mut out, job, elapsed, picture, format);
+    filter_graph(&mut out, args, format, graphics, inputs, &audio_input);
+    output_options(&mut out, args);
+    job.timing(&mut out, elapsed);
+    out
+}
+
+/// The global options of ErsatzTV's command (before its first `-i`).
+fn global_options(args: &[OsString]) -> Vec<OsString> {
     let first = (0..args.len()).find(|&i| args[i] == "-i").unwrap_or(args.len());
     let mut out: Vec<OsString> = Vec::new();
     let mut i = 0;
@@ -300,6 +322,12 @@ pub fn live_args(
         }
         i += 1;
     }
+    out
+}
+
+/// The live picture (or the standby picture) and its sound as inputs; the number of inputs
+/// and the audio stream to use.
+fn picture_inputs(out: &mut Vec<OsString>, job: &Job, elapsed: f64, picture: Picture, format: &Format) -> (usize, String) {
     let (w, h) = (format.width, format.height);
     let silence = |out: &mut Vec<OsString>, realtime: bool| {
         let pace: &[&str] = if realtime { &["-re"] } else { &[] };
@@ -333,7 +361,7 @@ pub fn live_args(
             if source.audio {
                 "0:a:0".to_owned()
             } else {
-                silence(&mut out, false);
+                silence(out, false);
                 inputs += 1;
                 "1:a".to_owned()
             }
@@ -345,11 +373,24 @@ pub fn live_args(
                 None => ["-re", "-f", "lavfi", "-i", &format!("color=c=black:s={w}x{h}:r={}", format.rate)].map(str::to_owned).to_vec(),
             };
             out.extend(video.into_iter().map(OsString::from));
-            silence(&mut out, true);
+            silence(out, true);
             inputs += 1;
             "1:a".to_owned()
         }
     };
+    (inputs, audio_input)
+}
+
+/// `-filter_complex`: the picture scaled to the channel's format, the graphics over it, the sound.
+fn filter_graph(
+    out: &mut Vec<OsString>,
+    args: &[OsString],
+    format: &Format,
+    graphics: Option<&Graphics>,
+    inputs: usize,
+    audio_input: &str,
+) {
+    let (w, h) = (format.width, format.height);
     let mut video = format!(
         "[0:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color=black,setsar=1,fps={},format=yuv420p",
         format.rate
@@ -381,7 +422,10 @@ pub fn live_args(
         "-map".into(),
         "[vz_a]".into(),
     ]);
+}
 
+/// ErsatzTV's output options without those the run sets itself, then its output.
+fn output_options(out: &mut Vec<OsString>, args: &[OsString]) {
     let last = last_input(args).map_or(0, |i| i + 2);
     let output = &args[last..args.len().saturating_sub(1)];
     let mut j = 0;
@@ -399,8 +443,6 @@ pub fn live_args(
         j += 1;
     }
     out.push(args[args.len() - 1].clone());
-    job.timing(&mut out, elapsed);
-    out
 }
 
 /// Names and lengths (EXTINF) of the segments in an HLS playlist.
@@ -651,7 +693,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
             job.channel, job.duration, job.offset, job.slot
         ),
     );
-    if behind_at_start > LIVE_BEHIND_MAX {
+    if behind_at_start > LIVE_BEHIND_START {
         catching_up.set(true);
         if live_now {
             trace(
@@ -685,6 +727,7 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         if source.is_some() {
             trace(job, format_args!("channel {}: live from {elapsed:.1} s of the piece", job.channel));
         }
+        let late_at_run = behind(produced(&job.playlist, &before));
         let mut child = match (runner.run)(elapsed, source.as_ref()) {
             Ok(child) => child,
             Err(e) if source.is_some() => {
@@ -718,21 +761,45 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
             if checked.elapsed() >= BEHIND_EVERY && !interrupted {
                 checked = Instant::now();
                 let late = behind(produced(&job.playlist, &before));
-                if source.is_some() && late > LIVE_BEHIND_MAX {
-                    trace(
-                        job,
-                        format_args!(
-                            "channel {}: live leaves the channel's timeline {late:.1} s behind the clock; the schedule makes it up",
-                            job.channel
-                        ),
-                    );
-                    catching_up.set(true);
-                    crate::sys::send_signal(child.id(), crate::sys::SIGINT);
-                    interrupted = true;
-                    stop.since = Some(Instant::now());
-                } else if source.is_none() && catching_up.get() && late <= 0.0 {
-                    trace(job, format_args!("channel {}: the channel's timeline caught up with the clock", job.channel));
-                    catching_up.set(false);
+                match judge(source.is_some(), catching_up.get(), late, late_at_run) {
+                    Judged::Go => {}
+                    Judged::TooFarBehind => {
+                        trace(
+                            job,
+                            format_args!(
+                                "channel {}: live leaves the channel's timeline {late:.1} s behind the clock; the schedule takes over",
+                                job.channel
+                            ),
+                        );
+                        catching_up.set(true);
+                        crate::sys::send_signal(child.id(), crate::sys::SIGINT);
+                        interrupted = true;
+                        stop.since = Some(Instant::now());
+                    }
+                    Judged::TooSlow => {
+                        trace(
+                            job,
+                            format_args!(
+                                "channel {}: the live run lost {:.1} s against the clock (the source is slower than the clock); the schedule goes on",
+                                job.channel,
+                                late - late_at_run
+                            ),
+                        );
+                        *quiet.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + SUPPRESS);
+                        crate::sys::send_signal(child.id(), crate::sys::SIGINT);
+                        interrupted = true;
+                        stop.since = Some(Instant::now());
+                    }
+                    Judged::CaughtUp => {
+                        trace(
+                            job,
+                            format_args!(
+                                "channel {}: the channel's timeline is {late:.1} s behind the clock: live may come back",
+                                job.channel
+                            ),
+                        );
+                        catching_up.set(false);
+                    }
                 }
             }
             if source.is_none() && !interrupted && !runner.stopping.load(Ordering::Relaxed) && live() {
@@ -741,7 +808,9 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
                 interrupted = true;
                 stop.since = Some(Instant::now());
             }
-            if source.is_none() && !interrupted && !runner.stopping.load(Ordering::Relaxed) && (runner.restart)() {
+            // A live run too: on the zones before, its frames are held by the sidecar
+            // (graphics outside them), and the picture under them came out torn.
+            if !interrupted && !runner.stopping.load(Ordering::Relaxed) && (runner.restart)() {
                 crate::sys::send_signal(child.id(), crate::sys::SIGINT);
                 interrupted = true;
                 restarted = true;
@@ -775,7 +844,9 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
                     code(status)
                 ),
             );
-            if no_picture(brought, job.duration - elapsed) {
+            if restarted {
+                trace(job, format_args!("channel {}: live run restarted for new graphics zones", job.channel));
+            } else if !interrupted && no_picture(brought, job.duration - elapsed) {
                 trace(job, format_args!("channel {}: the live source gave no picture; the schedule goes on", job.channel));
                 *quiet.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + SUPPRESS);
             }
@@ -834,6 +905,36 @@ fn timeline_behind(text: &str, now_ms: i64) -> Option<f64> {
         return (sequence > 0).then_some(120.0);
     }
     end.map(|end| (now_ms as f64 - end) / 1000.0)
+}
+
+/// What a check of the channel's timeline does to the run.
+#[derive(Debug, PartialEq)]
+enum Judged {
+    Go,
+    /// A live run with the timeline past `LIVE_BEHIND_MAX`: the schedule until it is back at `LIVE_BEHIND_START`.
+    TooFarBehind,
+    /// A live run that lost over `LIVE_LAG_MAX` since its start: its source is slower than the clock.
+    TooSlow,
+    /// The schedule caught up: live may come again.
+    CaughtUp,
+}
+
+/// A run (`live_run`, or the schedule `catching_up`) with the timeline `late`
+/// behind the clock, `late_at_run` when the run started.
+fn judge(live_run: bool, catching_up: bool, late: f64, late_at_run: f64) -> Judged {
+    if live_run {
+        if late > LIVE_BEHIND_MAX {
+            Judged::TooFarBehind
+        } else if late - late_at_run > LIVE_LAG_MAX {
+            Judged::TooSlow
+        } else {
+            Judged::Go
+        }
+    } else if catching_up && late <= LIVE_BEHIND_START {
+        Judged::CaughtUp
+    } else {
+        Judged::Go
+    }
 }
 
 /// Behind the clock (s) `wall` seconds into a piece that started `at_start` behind and made `made` seconds.
@@ -1046,7 +1147,7 @@ mod tests {
 
     #[test]
     fn timeline_behind_the_clock_from_the_playlist() {
-        use super::{LIVE_BEHIND_MAX, behind_clock, timeline_behind};
+        use super::{LIVE_BEHIND_START, LIVE_LAG_MAX, behind_clock, timeline_behind};
         let now = crate::time::parse_iso("2026-11-14T00:24:50.000Z").unwrap();
         let list = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:11708\n#EXT-X-DISCONTINUITY\n\
                     #EXTINF:4.000000,\n#EXT-X-PROGRAM-DATE-TIME:2026-11-14T01:24:14.847+0100\nlive011708.ts\n\
@@ -1062,10 +1163,26 @@ mod tests {
         assert_eq!(timeline_behind("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n", now), None);
         assert_eq!(timeline_behind("", now), None);
         // A source at 0.4x: 20 s of the clock made 8 s, on top of 1 s behind at the start.
-        assert!(behind_clock(1.0, 20.0, 8.0) > LIVE_BEHIND_MAX);
-        assert!(behind_clock(1.0, 44.0, 44.0) <= LIVE_BEHIND_MAX);
+        assert!(behind_clock(1.0, 20.0, 8.0) - 1.0 > LIVE_LAG_MAX);
+        assert!(behind_clock(1.0, 44.0, 44.0) <= LIVE_BEHIND_START);
         // The schedule made faster than the clock catches up.
         assert!(behind_clock(13.0, 10.0, 30.0) <= 0.0);
+    }
+
+    #[test]
+    fn live_is_judged_with_a_margin_between_its_limits() {
+        use super::{Judged, LIVE_BEHIND_MAX, LIVE_BEHIND_START, judge};
+        // Local stack 2026-11-18: 10 s behind at the start, the run's ffmpeg start
+        // (1 s, nothing made yet) once stopped live after 1 s of every piece.
+        assert_eq!(judge(true, false, 11.0, 10.0), Judged::Go);
+        const { assert!(LIVE_BEHIND_MAX - LIVE_BEHIND_START >= 10.0) };
+        // Slower than the clock: stopped by its own lag, long before the limit.
+        assert_eq!(judge(true, false, 21.5, 11.0), Judged::TooSlow);
+        assert_eq!(judge(true, false, 61.0, 58.0), Judged::TooFarBehind);
+        // The schedule gives live back at the start limit, not at 0 s (it may go at the clock).
+        assert_eq!(judge(false, true, 50.0, 0.0), Judged::Go);
+        assert_eq!(judge(false, true, LIVE_BEHIND_START, 0.0), Judged::CaughtUp);
+        assert_eq!(judge(false, false, 50.0, 0.0), Judged::Go);
     }
 
     #[test]

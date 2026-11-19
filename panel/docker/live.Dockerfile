@@ -17,14 +17,17 @@ RUN case "$TARGETARCH" in \
  && T=$T-unknown-linux-musl && rustup target add $T \
  && RUSTFLAGS="$OPTS" CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
     cargo build --release --locked --target $T \
- && cp target/$T/release/vizrs-live /vizrs-live \
+ && cp target/$T/release/vizrs-live /vizrs-live && mkdir /data \
  && if [ "$TARGETARCH" = "$BUILDARCH" ]; then /vizrs-live --version; fi
 
 FROM scratch
 COPY --from=build /vizrs-live /vizrs-live
+# konta i sesje (pusty wolumen dostaje właściciela z obrazu)
+COPY --from=build --chown=10001:10001 /data /data
 USER 10001:10001
 ENV VIZRS_LIVE_BIND=0.0.0.0 \
-    VIZRS_LIVE_PORT=8090
+    VIZRS_LIVE_PORT=8090 \
+    VIZRS_LIVE_DATA=/data
 EXPOSE 8090
 HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 CMD ["/vizrs-live", "--healthcheck"]
 ENTRYPOINT ["/vizrs-live"]

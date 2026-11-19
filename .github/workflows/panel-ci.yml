@@ -21,8 +21,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      # wspólny rdzeń wyglądu (vizrs-ui.css) = kopia z VizRS CG System w wersji z server/web/CG_SYSTEM
-      - name: Wersja CG System dla vizrs-ui.css
+      # wspólny rdzeń wyglądu (vizrs-ui.css) i moduły okna (desktop/src/gpu.rs, scale.rs, screen.rs, conn_url.rs)
+      # = kopie z VizRS CG System w wersji z server/web/CG_SYSTEM
+      - name: Wersja CG System dla vizrs-ui.css i modułów okna
         id: cg
         run: echo "ref=$(cat panel/server/web/CG_SYSTEM)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
@@ -30,9 +31,14 @@ jobs:
           repository: sdorpl/VizRS-CG-System
           ref: ${{ steps.cg.outputs.ref }}
           path: cg
-          sparse-checkout: source/web/vizrs-ui.css
+          sparse-checkout: |
+            source/web/vizrs-ui.css
+            source/shell/src/gpu.rs
+            source/shell/src/scale.rs
+            source/shell/src/screen.rs
+            source/shell/src/conn_url.rs
           sparse-checkout-cone-mode: false
-      - name: vizrs-ui.css zgodny z CG System
+      - name: vizrs-ui.css i moduły okna zgodne z CG System
         working-directory: panel
         run: scripts/sync-ui.sh --check ../cg
       - name: Caddyfile proxy = kopia w docker-compose.live.yml
