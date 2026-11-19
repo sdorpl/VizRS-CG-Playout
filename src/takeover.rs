@@ -66,8 +66,10 @@ const LIVE_OVERRUN: Duration = Duration::from_secs(3);
 /// (a source at 0.3x, S1 2026-11-13 20:30) made each piece take 2-3x its length,
 /// the timeline fell over 2 min behind, and live at 1.0x never made it up – the
 /// channel went out empty for hours. Past this a live run is stopped and the
-/// schedule takes over.
-const LIVE_BEHIND_MAX: f64 = 60.0;
+/// schedule takes over. 30 s short of those 2 min: at 60 s (2026-11-18) a channel
+/// that ErsatzTV restarted 64 s behind (S1, 2026-11-19, new legacy image) never had
+/// live again – with `VIZRS_FFMPEG_SYNC_RAM` the schedule keeps that lag for good.
+const LIVE_BEHIND_MAX: f64 = 90.0;
 /// No live run starts with the timeline further behind than this, and a schedule
 /// catching up gives live back at it. Below `LIVE_BEHIND_MAX` by more than a
 /// run's start, so that live does not come and go at one limit. The schedule
@@ -75,7 +77,7 @@ const LIVE_BEHIND_MAX: f64 = 60.0;
 /// clock): at 10 s for both (until 2026-11-18) a channel left 11 s behind by one
 /// slow piece put live on air for 1 s of every piece – its run's start alone
 /// crossed the limit – and the schedule for the rest, for good.
-const LIVE_BEHIND_START: f64 = 45.0;
+const LIVE_BEHIND_START: f64 = 75.0;
 /// A live run that lost this much more against the clock since it started (s)
 /// is slower than the clock (the source, not the timeline before it): stopped,
 /// and live is left alone for `SUPPRESS`.
@@ -1178,9 +1180,11 @@ mod tests {
         const { assert!(LIVE_BEHIND_MAX - LIVE_BEHIND_START >= 10.0) };
         // Slower than the clock: stopped by its own lag, long before the limit.
         assert_eq!(judge(true, false, 21.5, 11.0), Judged::TooSlow);
-        assert_eq!(judge(true, false, 61.0, 58.0), Judged::TooFarBehind);
+        assert_eq!(judge(true, false, 91.0, 88.0), Judged::TooFarBehind);
+        assert_eq!(judge(true, false, 64.0, 64.0), Judged::Go);
         // The schedule gives live back at the start limit, not at 0 s (it may go at the clock).
-        assert_eq!(judge(false, true, 50.0, 0.0), Judged::Go);
+        assert_eq!(judge(false, true, 80.0, 0.0), Judged::Go);
+        assert_eq!(judge(false, true, 64.0, 0.0), Judged::CaughtUp);
         assert_eq!(judge(false, true, LIVE_BEHIND_START, 0.0), Judged::CaughtUp);
         assert_eq!(judge(false, false, 50.0, 0.0), Judged::Go);
     }

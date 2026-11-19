@@ -4,6 +4,11 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.16 (2026-11-20)
+
+- **Live ingest po aktualizacji:** usługa `ingest` sama uruchamia się ponownie, gdy sidecar nowego wydania podmieni program w wolumenie `vizrs-client`. Dotąd działała starą wersją do ręcznego restartu (Portainer odtwarza tylko kontenery ze zmienionym obrazem) – po wydaniu 26.11.15 na S1 i S2 linki HLS były odrzucane („only rtmp:// and srt:// listeners”). DOKUMENTACJA §4.
+- **Live ingest: wyższe progi osi czasu** – przebieg live rusza przy osi czasu do 75 s za zegarem (było 45 s), kończy się powyżej 90 s (było 60 s). Kanał 1 na S1 po restarcie ErsatzTV został 64 s za zegarem i z `VIZRS_FFMPEG_SYNC_RAM` już tego nie nadrabiał – sygnał był, a na antenie cały czas ramówka. DOKUMENTACJA §1.
+
 ## 26.11.15 (2026-11-19)
 
 - **Poprawka: Audycje LIVE – emisja po ostatniej stałej godzinie harmonogramu** (np. 20:00 w harmonogramie, który ma już emisję 07:15) trafia za nią; dotąd lądowała przed nią, z kopią pozycji „wypełnij” pomiędzy. Godziny emisji na liście audycji są po kolei. Wydanie 26.11.14 nie powstało (bramka e2e panelu na prawdziwym legacy zatrzymała je na tej usterce) – jego zmiany są tutaj.

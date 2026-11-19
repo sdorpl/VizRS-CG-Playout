@@ -1788,7 +1788,10 @@ musi być nakładka (`/vizrs/vizrs-ffmpeg`, wyżej). Bez tokenu sidecar ma inges
 wyłączony, a odbiorniki nie startują (`VIZRS_INGEST_TOKEN is empty` w logu).
 Pierwszy start po aktualizacji może zastać w wolumenie starą nakładkę bez
 trybu `vizrs-ingest` – usługa restartuje się, aż `cg` ją podmieni (§4,
-Synchronizacja z ErsatzTV); tak samo przy pierwszym wejściu YouTube może
+Synchronizacja z ErsatzTV). Gdy `cg` nowego wydania podmieni nakładkę w
+wolumenie, usługa kończy się sama w ciągu ok. 5 s (log: `a new vizrs-ffmpeg in
+the volume … restarting`) i kontener startuje z nową wersją – trwający sygnał
+na chwilę się urywa i nadawca łączy się ponownie; tak samo przy pierwszym wejściu YouTube może
 brakować `/vizrs/yt-dlp` (log: `/vizrs/yt-dlp: No such file…`, ponawiane co
 30 s). Odbiornik tylko przepakowuje strumień (ułamek
 rdzenia); CPU kosztuje przebieg live w ErsatzTV: dekodowanie sygnału
@@ -2371,10 +2374,11 @@ materiał. Dwa progi (`src/takeover.rs`):
   stracił do zegara ponad 10 s (`LIVE_LAG_MAX`), źródło jest za wolne:
   przebieg jest kończony, a live wraca najwcześniej po 30 s (w logu `the live
   run lost … s against the clock (the source is slower than the clock)`);
-- **oś czasu daleko za zegarem** – powyżej 60 s (`LIVE_BEHIND_MAX`, połowa
-  z 2 min, po których ErsatzTV kasuje segmenty) przebieg live jest kończony
+- **oś czasu daleko za zegarem** – powyżej 90 s (`LIVE_BEHIND_MAX`, 30 s
+  przed 2 min, po których ErsatzTV kasuje segmenty) przebieg live jest kończony
   i leci harmonogram; nowy przebieg live nie rusza, dopóki oś czasu jest dalej
-  niż 45 s za zegarem (`LIVE_BEHIND_START`) – na starcie kawałka i po
+  niż 75 s za zegarem (`LIVE_BEHIND_START`; do 2026-11-19 progi 60 i 45 s –
+  kanał S1 po restarcie ErsatzTV 64 s za zegarem nie wracał na live) – na starcie kawałka i po
   nadgonieniu. Harmonogram nadgania tylko wtedy, gdy ErsatzTV robi kawałki
   szybciej niż w czasie rzeczywistym; z `VIZRS_FFMPEG_SYNC_RAM` idzie w tempie
   zegara i oś czasu zostaje tam, gdzie była.

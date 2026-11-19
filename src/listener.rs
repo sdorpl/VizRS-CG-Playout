@@ -842,6 +842,32 @@ fn fetch(settings: &Settings, listener: &Listener, running: &Running) {
     log(format_args!("channel {channel}: stopped reading {url}"));
 }
 
+/// This program's file: replaced (a new inode at its path) = a new release installed.
+struct Program {
+    path: Option<std::path::PathBuf>,
+    inode: Option<u64>,
+}
+
+impl Program {
+    fn now() -> Self {
+        let path = std::env::current_exe().ok();
+        let inode = path.as_deref().and_then(inode_of);
+        Program { path, inode }
+    }
+
+    fn replaced(&self) -> bool {
+        match (&self.path, self.inode) {
+            (Some(path), Some(was)) => inode_of(path).is_some_and(|now| now != was),
+            _ => false,
+        }
+    }
+}
+
+fn inode_of(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.ino())
+}
+
 /// The sidecar's list (`GET /ingest/listeners`); `None` = an older sidecar without it.
 fn sidecar_listeners(settings: &Settings) -> io::Result<Option<Vec<Listener>>> {
     let headers = format!("Authorization: Bearer {}\r\n", settings.token);
@@ -864,7 +890,16 @@ pub fn run(settings: Settings) -> i32 {
     let settings = Arc::new(settings);
     let mut running: Vec<(Listener, Arc<Running>)> = Vec::new();
     let mut last_error = String::new();
+    let program = Program::now();
     loop {
+        // The sidecar of a new release puts a new `vizrs-ffmpeg` in the volume: the
+        // container (restart: unless-stopped) starts again with it. Until 2026-11-19
+        // the service ran the old one until a restart by hand – Portainer recreates
+        // only containers whose image changed (S1, S2: links refused for an hour).
+        if program.replaced() {
+            log(format_args!("a new vizrs-ffmpeg in the volume (the sidecar updated it): restarting"));
+            return 0;
+        }
         let wanted = match sidecar_listeners(&settings) {
             Ok(Some(list)) => Some(list),
             Ok(None) => Some(settings.listeners.clone()),
@@ -903,6 +938,22 @@ pub fn run(settings: Settings) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::Program;
+
+    #[test]
+    fn a_program_replaced_by_rename_is_seen() {
+        let dir = std::env::temp_dir().join(format!("vizrs-program-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("vizrs-ffmpeg");
+        std::fs::write(&file, "old").unwrap();
+        let program = Program { path: Some(file.clone()), inode: super::inode_of(&file) };
+        assert!(!program.replaced());
+        std::fs::write(dir.join(".new"), "new").unwrap();
+        std::fs::rename(dir.join(".new"), &file).unwrap();
+        assert!(program.replaced());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     #[test]
