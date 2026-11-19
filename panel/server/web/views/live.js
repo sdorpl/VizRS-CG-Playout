@@ -565,7 +565,8 @@ function insertAiring(items, coll, min, name, extra = {}) {
     const before = fixed.filter(({ it }) => minutesOf(it.StartTime) < min);
     const anchor = (before.length ? before : fixed).reduce((a, b) => (minutesOf(b.it.StartTime) > minutesOf(a.it.StartTime) ? b : a));
     const nextFixed = fixed.find(({ i }) => i > anchor.i) || fixed[0];
-    at = nextFixed.i > anchor.i ? nextFixed.i : nextFixed.i === 0 ? items.length : nextFixed.i;
+    // brak stałej pozycji za kotwicą na liście: blok kotwicy biegnie do końca listy (i dalej od jej początku) – audycja na koniec
+    at = nextFixed.i > anchor.i ? nextFixed.i : items.length;
   }
   // `extra`: pola tej emisji (zachowanie godziny, tytuł w EPG, znaki wodne) i reszta dawnej pozycji przy zmianie godziny
   const live = {
@@ -828,7 +829,7 @@ function airCell(s, shows, times) {
   }
   const t = times?.get(s.collection_id);
   if (!s.next) when = shows.guide_known === false ? h('span', { class: 'dim' }, '–') : t ? pill('brak w EPG – przebuduj ramówkę', 'warn') : pill('nie ma w ramówce', 'warn');
-  return h('span', { class: 'air-cell' }, when, t ? h('small', { class: 'dim', 'data-air-times': '' }, 'emisje: ' + t.join(', ')) : null);
+  return h('span', { class: 'air-cell' }, when, t ? h('small', { class: 'dim', 'data-air-times': '' }, 'emisje: ' + [...t].sort().join(', ')) : null);
 }
 
 function statusCell(s, shows) {
