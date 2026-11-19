@@ -4,7 +4,11 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
-## 26.11.14 (2026-11-19)
+## 26.11.15 (2026-11-19)
+
+- **Poprawka: Audycje LIVE – emisja po ostatniej stałej godzinie harmonogramu** (np. 20:00 w harmonogramie, który ma już emisję 07:15) trafia za nią; dotąd lądowała przed nią, z kopią pozycji „wypełnij” pomiędzy. Godziny emisji na liście audycji są po kolei. Wydanie 26.11.14 nie powstało (bramka e2e panelu na prawdziwym legacy zatrzymała je na tej usterce) – jego zmiany są tutaj.
+
+## 26.11.14 (2026-11-19, niewydane – zob. 26.11.15)
 
 - **VizRS CG System 26.11.11** (`VIZRS_REF`, obraz `vizrs`): Trio i Artist mogą logować kontami panelu (przełącznik „Logowanie w pakiecie VizRS”, domyślnie wyłączony), w Trio pole serwera na ekranie logowania i przycisk ⎋ Wyloguj.
 
