@@ -17,23 +17,43 @@ use crate::net::{self, error};
 use crate::sync::{self, SyncOptions};
 
 /// Replaces the programs of `dir` one by one: a running ffmpeg keeps its file.
+/// Compared in pieces, not read whole: Deno alone is about 100 MB.
 pub fn install_clients(source: &Path, dir: &Path) -> io::Result<usize> {
     let mut changed = 0;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let file = entry.file_name();
-        let bytes = fs::read(entry.path())?;
         let target = dir.join(&file);
-        if fs::read(&target).is_ok_and(|old| old == bytes) {
+        if same_file(&entry.path(), &target).unwrap_or(false) {
             continue;
         }
         let temporary = dir.join(format!(".{}.tmp", file.to_string_lossy()));
-        fs::write(&temporary, &bytes)?;
+        fs::copy(entry.path(), &temporary)?;
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))?;
         fs::rename(&temporary, &target)?;
         changed += 1;
     }
     Ok(changed)
+}
+
+/// The same length and bytes.
+fn same_file(a: &Path, b: &Path) -> io::Result<bool> {
+    use std::io::Read;
+    if fs::metadata(a)?.len() != fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    let (mut a, mut b) = (io::BufReader::new(fs::File::open(a)?), io::BufReader::new(fs::File::open(b)?));
+    let (mut x, mut y) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+    loop {
+        let n = a.read(&mut x)?;
+        if n == 0 {
+            return Ok(true);
+        }
+        b.read_exact(&mut y[..n])?;
+        if x[..n] != y[..n] {
+            return Ok(false);
+        }
+    }
 }
 
 /// The URL of an element's text, as a list item of its `args`.
@@ -166,6 +186,13 @@ mod tests {
         assert_eq!(install_clients(&source, &dir).unwrap(), 1);
         assert_eq!(install_clients(&source, &dir).unwrap(), 0);
         assert_eq!(fs::metadata(dir.join("vizrs-ffmpeg")).unwrap().permissions().mode() & 0o777, 0o755);
+        fs::write(source.join("vizrs-ffmpeg"), "now").unwrap();
+        assert_eq!(install_clients(&source, &dir).unwrap(), 1, "the same length, other bytes");
+        let big: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        fs::write(source.join("deno"), &big).unwrap();
+        assert_eq!(install_clients(&source, &dir).unwrap(), 1);
+        assert_eq!(fs::read(dir.join("deno")).unwrap(), big);
+        assert_eq!(install_clients(&source, &dir).unwrap(), 0);
 
         let template = root.join("vizrs.yml");
         fs::write(&template, "name: VizRS 2\nargs:\n  - http://cg:7700/etv\n").unwrap();

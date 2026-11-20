@@ -16,6 +16,8 @@
 //     VIZRS_INGEST_LOG     a file the log lines also go to, with the time
 //                          (compose: <etv_config>/vizrs-live/logs/vizrs-ingest.log)
 //     VIZRS_YTDLP          yt-dlp for YouTube inputs (default /vizrs/yt-dlp)
+//     VIZRS_DENO           the JavaScript runtime yt-dlp solves YouTube's challenges with
+//                          (default /vizrs/deno; none there = yt-dlp without one)
 //     VIZRS_YTDLP_COOKIES  a cookies file for yt-dlp (a server YouTube asks to sign in);
 //                          empty: the one VizRS Live uploads (src/yt_cookies.rs), a copy of
 //     VIZRS_YTDLP_PANEL_COOKIES  (default /etv-config/vizrs-live/youtube-cookies.txt)
@@ -44,6 +46,8 @@ use crate::overlay::quote_plus;
 const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
 /// The sidecar installs it next to `vizrs-ffmpeg` (Dockerfile, DOKUMENTACJA §1, Live ingest).
 const DEFAULT_YTDLP: &str = "/vizrs/yt-dlp";
+/// Next to it (Dockerfile): with an account's cookies yt-dlp's web clients need it.
+const DEFAULT_DENO: &str = "/vizrs/deno";
 /// The cookies file VizRS Live uploads, as the ingest container sees the ErsatzTV config (compose).
 const PANEL_COOKIES: &str = "/etv-config/vizrs-live/youtube-cookies.txt";
 /// A yt-dlp lookup that takes longer is stopped.
@@ -374,6 +378,8 @@ pub struct Settings {
     pub listeners: Vec<Listener>,
     /// yt-dlp, which finds the stream of a YouTube input (`VIZRS_YTDLP`).
     pub ytdlp: OsString,
+    /// Deno for yt-dlp (`VIZRS_DENO`), used when the file is there (an older sidecar installs none).
+    pub deno: OsString,
     /// A cookies file for yt-dlp (`VIZRS_YTDLP_COOKIES`), for a server YouTube asks to sign in.
     pub cookies: Option<OsString>,
     /// Without it: the cookies file VizRS Live uploads (`VIZRS_YTDLP_PANEL_COOKIES`); yt-dlp gets a copy.
@@ -398,6 +404,7 @@ impl Settings {
             idle: Duration::from_millis(idle),
             listeners,
             ytdlp: std::env::var_os("VIZRS_YTDLP").filter(|v| !v.is_empty()).unwrap_or_else(|| DEFAULT_YTDLP.into()),
+            deno: std::env::var_os("VIZRS_DENO").filter(|v| !v.is_empty()).unwrap_or_else(|| DEFAULT_DENO.into()),
             cookies: std::env::var_os("VIZRS_YTDLP_COOKIES").filter(|v| !v.is_empty()),
             panel_cookies: std::env::var_os("VIZRS_YTDLP_PANEL_COOKIES")
                 .filter(|v| !v.is_empty())
@@ -591,7 +598,7 @@ fn listen(settings: &Settings, listener: &Listener, running: &Running) {
 }
 
 /// yt-dlp's arguments: the live status, then the stream URLs (video, audio), one a line.
-pub fn ytdlp_args(url: &str, cookies: Option<&std::ffi::OsStr>) -> Vec<OsString> {
+pub fn ytdlp_args(url: &str, cookies: Option<&std::ffi::OsStr>, deno: Option<&std::ffi::OsStr>) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--ignore-config",
         "--no-warnings",
@@ -611,6 +618,11 @@ pub fn ytdlp_args(url: &str, cookies: Option<&std::ffi::OsStr>) -> Vec<OsString>
     .collect();
     if let Some(file) = cookies {
         args.extend(["--cookies".into(), file.to_owned()]);
+    }
+    if let Some(deno) = deno {
+        let mut runtime = OsString::from("deno:");
+        runtime.push(deno);
+        args.extend(["--js-runtimes".into(), runtime]);
     }
     args.extend(["--".into(), url.into()]);
     args
@@ -764,7 +776,8 @@ fn wait_or_cookies(running: &Running, time: Duration, cookies: &Cookies) -> bool
 /// yt-dlp for a YouTube input, at most `RESOLVE_LIMIT`.
 fn resolve(settings: &Settings, url: &str, cookies: Option<&std::ffi::OsStr>, running: &Running) -> Result<Found, String> {
     let mut command = Command::new(&settings.ytdlp);
-    command.args(ytdlp_args(url, cookies)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let deno = std::path::Path::new(&settings.deno).is_file().then_some(settings.deno.as_os_str());
+    command.args(ytdlp_args(url, cookies, deno)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // SAFETY: only async-signal-safe calls in the forked child.
     unsafe {
         command.pre_exec(|| crate::sys::ffmpeg_child_setup(-1));
@@ -1154,10 +1167,16 @@ mod tests {
 
     #[test]
     fn youtube_stream() {
-        let args = ytdlp_args("https://youtu.be/a", None);
+        let args = ytdlp_args("https://youtu.be/a", None, None);
         let text: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(text[text.len() - 2..], ["--", "https://youtu.be/a"]);
         assert!(text.windows(2).any(|w| w == ["--print", "live_status"]));
+        assert!(!text.iter().any(|a| a == "--js-runtimes"), "no Deno, no runtime asked for");
+        let with = ytdlp_args("https://youtu.be/a", Some("/tmp/c.txt".as_ref()), Some("/vizrs/deno".as_ref()));
+        let with: Vec<String> = with.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(with.windows(2).any(|w| w == ["--js-runtimes", "deno:/vizrs/deno"]));
+        assert!(with.windows(2).any(|w| w == ["--cookies", "/tmp/c.txt"]));
+        assert_eq!(with[with.len() - 2..], ["--", "https://youtu.be/a"]);
         let live = parse_found("is_live\nhttps://v/1\nhttps://a/1\n").unwrap();
         assert_eq!(live, Found { live: true, urls: vec!["https://v/1".into(), "https://a/1".into()] });
         assert!(!parse_found("not_live\nhttps://av\n").unwrap().live);
@@ -1233,6 +1252,7 @@ mod tests {
             idle: Duration::from_secs(1),
             listeners: Vec::new(),
             ytdlp: "yt-dlp".into(),
+            deno: "deno".into(),
             cookies: cookies.map(OsString::from),
             panel_cookies: panel.clone(),
         };

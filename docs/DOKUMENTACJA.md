@@ -1130,7 +1130,15 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    i sum SHA-256, instalowana przez sidecara na wolumen `vizrs-client` obok
    `vizrs-ffmpeg`) znajduje adresy obrazu i dźwięku: H.264 do 1080p i AAC
    (VP9, AV1 i Opus nie przechodzą do MPEG-TS bez transkodowania), najwyżej
-   90 s na zapytanie. ffmpeg czyta je (`-reconnect`) i przepakowuje do
+   90 s na zapytanie. Zadania JavaScript YouTube („n challenge” – bez nich
+   klienci `web`/`web_embedded`, których yt-dlp używa z ciasteczkami konta,
+   nie dają adresów: „No video formats found!”) rozwiązuje **Deno**
+   (`VIZRS_DENO`, domyślnie `/vizrs/deno` – oficjalna binarka, przypięta
+   w `Dockerfile` do wersji i sum SHA-256 archiwów, ok. 96 MB, na tym samym
+   wolumenie; yt-dlp dostaje `--js-runtimes deno:/vizrs/deno`, gdy plik
+   jest – starszy sidecar go nie instaluje i yt-dlp idzie bez niego).
+   Sidecar porównuje pliki klienta kawałkami, nie wczytuje ich w całości.
+   ffmpeg czyta je (`-reconnect`) i przepakowuje do
    MPEG-TS jak strumień nadawcy – dalej wszystko jak przy RTMP/SRT (przejęcie,
    `hold`, `anytime`, grafika `on_live`). Rodzaje adresu:
    - **strona live kanału** (`…/@nazwa/live`, `…/channel/<ID>/live`) – stałe

@@ -43,6 +43,22 @@ RUN case "$TARGETARCH" in \
     && curl -fsSL --retry 3 -o /client/yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/download/$YTDLP_VERSION/$file" \
     && echo "$sum  /client/yt-dlp" | sha256sum -c - \
     && chmod 755 /client/yt-dlp
+# Deno: the JavaScript runtime yt-dlp solves YouTube's challenges with. With
+# an account's cookies (a server YouTube asks to sign in) yt-dlp takes the
+# web clients, whose stream addresses need it ("n challenge"); pinned
+# version and checksums of the release zips.
+ARG DENO_VERSION=v2.9.8
+ARG DENO_SHA256_AMD64=e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609
+ARG DENO_SHA256_ARM64=d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905
+RUN case "$TARGETARCH" in \
+      amd64) file=deno-x86_64-unknown-linux-gnu.zip; sum="$DENO_SHA256_AMD64" ;; \
+      arm64) file=deno-aarch64-unknown-linux-gnu.zip; sum="$DENO_SHA256_ARM64" ;; \
+    esac \
+    && curl -fsSL --retry 3 -o /tmp/deno.zip "https://github.com/denoland/deno/releases/download/$DENO_VERSION/$file" \
+    && echo "$sum  /tmp/deno.zip" | sha256sum -c - \
+    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/deno.zip').extract('deno', '/client')" \
+    && chmod 755 /client/deno \
+    && rm /tmp/deno.zip
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src src
