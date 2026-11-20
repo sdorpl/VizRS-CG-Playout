@@ -9,7 +9,8 @@
 // cg       <etv_config>/vizrs-live/logs/vizrs-cg.log      (src/log.rs): lines of the
 //          channel ("channel N", "kanał N", "(channel N)") and lines of no channel
 // ingest   <etv_config>/vizrs-live/logs/vizrs-ingest.log  (src/listener.rs): lines of the channel
-// takeover <etv_config>/logs/vizrs-takeover-<n>.log       (src/takeover.rs, ETV_CONFIG_FOLDER)
+// takeover <etv_config>/vizrs-live/logs/vizrs-takeover-<n>.log (src/takeover.rs, ETV_CONFIG_FOLDER);
+//          before 26.11.17 in <etv_config>/logs/ (read too, until the overlay moves them)
 //
 // Each with its rotated `.1`. Stream keys and passphrases in URLs are masked: the
 // log is for the operator's screen, and a key there is a key in a screenshot.
@@ -24,24 +25,29 @@ pub const SOURCES: &[&str] = &["cg", "ingest", "takeover"];
 /// channel's takeover trace is tens of thousands of lines.
 pub const MAX_ENTRIES: usize = 3000;
 
-/// The files of a source, the older (rotated) first.
+/// The files of a source, the older (rotated, then of an older version) first.
 pub fn files(etv_config: &str, source: &str, channel: &str) -> Vec<PathBuf> {
     if etv_config.is_empty() {
         return Vec::new();
     }
     let base = PathBuf::from(etv_config);
-    let file = match source {
-        "cg" => base.join("vizrs-live").join("logs").join("vizrs-cg.log"),
-        "ingest" => base.join("vizrs-live").join("logs").join("vizrs-ingest.log"),
+    let with_rotated = |file: PathBuf| {
+        let mut old = file.clone().into_os_string();
+        old.push(".1");
+        [PathBuf::from(old), file]
+    };
+    match source {
+        "cg" => with_rotated(base.join("vizrs-live").join("logs").join("vizrs-cg.log")).to_vec(),
+        "ingest" => with_rotated(base.join("vizrs-live").join("logs").join("vizrs-ingest.log")).to_vec(),
         "takeover" => {
             let name: String = channel.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-            base.join("logs").join(format!("vizrs-takeover-{name}.log"))
+            let file = format!("vizrs-takeover-{name}.log");
+            let mut files = with_rotated(base.join("logs").join(&file)).to_vec();
+            files.extend(with_rotated(crate::takeover::trace_folder(&base).join(&file)));
+            files
         }
-        _ => return Vec::new(),
-    };
-    let mut old = file.clone().into_os_string();
-    old.push(".1");
-    vec![PathBuf::from(old), file]
+        _ => Vec::new(),
+    }
 }
 
 /// The entries of a source for a channel on a day: (entries, more than `MAX_ENTRIES`).
@@ -248,6 +254,11 @@ mod tests {
         let (takeover, _) = read(&config, "takeover", "1", "2026-11-14");
         assert_eq!(text(&takeover[0]), "channel 1: live run ended after 44.0 s in 41.4 s (1.06x, exit 0) | seq 11664, listed 11");
         assert_eq!(level(&takeover[1]), "warn");
+        std::fs::write(logs.join("vizrs-takeover-1.log"), "2026-11-14T00:23:00.000Z pid 2 channel 1: live run of 4.3 s | seq 12\n")
+            .unwrap();
+        let (takeover, _) = read(&config, "takeover", "1", "2026-11-14");
+        assert_eq!(takeover.len(), 3, "an older version's trace (ErsatzTV's logs folder), then the one in vizrs-live/logs");
+        assert_eq!(text(&takeover[2]), "channel 1: live run of 4.3 s | seq 12");
         assert!(read(&config, "takeover", "2", "2026-11-14").0.is_empty());
         assert!(read(&config, "other", "1", "2026-11-14").0.is_empty());
         assert!(read("", "cg", "1", "2026-11-14").0.is_empty());

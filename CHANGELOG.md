@@ -5,6 +5,7 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 ## Niewydane
 
 - **Poprawka: znaki wodne ErsatzTV razem z grafiką VizRS.** Gdy na antenie była pozycja z elementem grafiki VizRS, znak wodny kanału (albo deco, pozycji, globalny) znikał – ErsatzTV Next rysuje go w tym samym płótnie grafiki, które nakładka `vizrs-ffmpeg` zastępuje klatkami sidecara. Teraz nakładka pyta most VizRS Bridge o znaki wodne pozycji (nowy `GET /vizrs-bridge/watermarks/{kanał}/{IdPozycji}` – wybór i położenie liczone przez legacy) i nakłada je sama w ffmpeg, zawsze na wierzchu – nad grafiką VizRS: skala, położenie, krycie i tryb przerywany jak w ErsatzTV. Wymaga ErsatzTV z mostem tego wydania (`vizrs-live-legacy`) i `VIZRS_BRIDGE_TOKEN` w kontenerze ErsatzTV (nakładka `docker-compose.live.yml` już go ustawia); starszy most albo brak tokenu = jak dotąd, bez znaków. DOKUMENTACJA §1 (Znaki wodne ErsatzTV), §10; API.md §3.
+- **Logi ErsatzTV legacy w panelu znów widać:** ekran Logi (źródło ErsatzTV legacy) pokazywał zero wpisów na S1 i S2. Legacy czyta „najnowszy” plik swojego folderu `logs/` wg nazwy, a nakładka zapisywała tam ślad przejęć `vizrs-takeover-<kanał>.log` – alfabetycznie po `ersatztv<data>.log`, bez wierszy w formacie legacy. Ślad przejęć leży teraz w `vizrs-live/logs/` (obok `vizrs-cg.log` i `vizrs-ingest.log`); nakładka przy pierwszym śladzie sama przenosi tam stare pliki, Dziennik emisji czyta oba miejsca. DOKUMENTACJA §1 i §6.
 
 ## 26.11.16 (2026-11-20)
 

@@ -1253,10 +1253,16 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    Ślad przebiegów: każdy kawałek, przejście na live, koniec przebiegu
    i zatrzymanie (`SIGINT`/`SIGTERM`/`SIGKILL`) trafia – poza stderr, którego
    ErsatzTV Next nie zachowuje – do pliku
-   `$ETV_CONFIG_FOLDER/logs/vizrs-takeover-<kanał>.log` (bez tej zmiennej obok
-   playlisty): czas UTC, PID nakładki, komunikat i stan playlisty (media
+   `$ETV_CONFIG_FOLDER/vizrs-live/logs/vizrs-takeover-<kanał>.log` (obok logów
+   sidecara i odbiorników; bez tej zmiennej obok playlisty): czas UTC, PID nakładki, komunikat i stan playlisty (media
    sequence, liczba segmentów, ostatni z `PROGRAM-DATE-TIME`, pliki `.ts`
    na dysku). Plik powyżej 2 MB przechodzi w `….1` (jeden stary zostaje).
+   Do 26.11.16 ślad leżał w folderze logów ErsatzTV (`logs/`) – a ekran logów
+   legacy (`GetRecentLogEntries`, panel: Logi) czyta „najnowszy” plik tego
+   folderu wg nazwy, czyli `vizrs-takeover-…` zamiast `ersatztv<data>.log`,
+   i pokazywał zero wpisów. Nakładka przy pierwszym śladzie przenosi stare
+   pliki `vizrs-takeover-*` z `logs/` do `vizrs-live/logs/` (dopisując do
+   istniejących); sidecar czyta oba miejsca.
    Koniec przebiegu live podaje też czas zegara i tempo (`live run ended after
    40.9 s in 47.0 s (0.87x, exit 255)`), a przebieg dłuższy niż 2 min co 2 min
    dopisuje `live run made … s in … s (…x)`. Tempo poniżej 1,00x oznacza, że
@@ -2347,7 +2353,9 @@ Obok leży `vizrs-ingest.log` odbiorników live ingest (usługa `ingest`,
 `VIZRS_INGEST_LOG`; ta sama rotacja): nadawcy przychodzący i odchodzący
 (`publisher on` / `publisher gone`) i błędy ich ffmpeg, z czasem. Na stderr
 odbiorniki piszą jak dotąd, bez czasu. Ślad przejęć kanału (przebiegi live,
-ich tempo) jest w `<etv_config>/logs/vizrs-takeover-<kanał>.log`.
+ich tempo) jest obok, w `vizrs-takeover-<kanał>.log` (do 26.11.16 w
+`<etv_config>/logs/`). Do folderu `<etv_config>/logs/` pisze tylko ErsatzTV:
+ekran logów legacy bierze z niego ostatni plik wg nazwy.
 
 Grafika nigdy nie zatrzymuje playoutu. Komendy idą w tle z limitem 2 s na
 połączenie i każdą odpowiedź; błędy i odpowiedzi `ERR` trafiają do logu.

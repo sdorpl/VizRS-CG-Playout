@@ -606,14 +606,55 @@ fn log(message: impl std::fmt::Display) {
 /// A trace file past this size is moved to `….1` (one old file kept).
 const TRACE_MAX: u64 = 2 * 1024 * 1024;
 
-/// Trace file of the channel: `$ETV_CONFIG_FOLDER/logs/vizrs-takeover-<channel>.log`
-/// (it outlives the session and the container), else beside the playlist.
+/// Trace file of the channel: `$ETV_CONFIG_FOLDER/vizrs-live/logs/vizrs-takeover-<channel>.log`
+/// next to the sidecar's logs (it outlives the session and the container), else beside the playlist.
 fn trace_path(job: &Job) -> Option<PathBuf> {
     let name: String = job.channel.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     let file = format!("vizrs-takeover-{name}.log");
     match std::env::var_os("ETV_CONFIG_FOLDER").filter(|v| !v.is_empty()) {
-        Some(config) => Some(Path::new(&config).join("logs").join(file)),
+        Some(config) => {
+            let config = Path::new(&config);
+            static MOVED: std::sync::Once = std::sync::Once::new();
+            MOVED.call_once(|| move_old_traces(&config.join("logs"), &trace_folder(config)));
+            let _ = std::fs::create_dir_all(trace_folder(config));
+            Some(trace_folder(config).join(file))
+        }
         None => Some(job.playlist.parent()?.join(file)),
+    }
+}
+
+/// Where the traces are: `<etv_config>/vizrs-live/logs` (src/logs.rs reads them there).
+pub fn trace_folder(etv_config: &Path) -> PathBuf {
+    etv_config.join("vizrs-live").join("logs")
+}
+
+/// Traces of older versions out of ErsatzTV's own `logs` folder: legacy's log
+/// screen (`GetRecentLogEntries`) reads the last file of that folder by name,
+/// and `vizrs-takeover-…` comes after `ersatztv<date>.log` – its log looked
+/// empty. Only this program (in the ErsatzTV container, as its user) may
+/// write there. A trace already in the new place gets the old one's lines.
+pub fn move_old_traces(old: &Path, new: &Path) {
+    let Ok(entries) = std::fs::read_dir(old) else { return };
+    let olds: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("vizrs-takeover-")) && p.is_file())
+        .collect();
+    if olds.is_empty() || std::fs::create_dir_all(new).is_err() {
+        return;
+    }
+    for path in olds {
+        let Some(name) = path.file_name() else { continue };
+        let target = new.join(name);
+        if !target.exists() && std::fs::rename(&path, &target).is_ok() {
+            continue;
+        }
+        // Another volume or a trace already there: copied (appended), then removed.
+        let copied = std::fs::read(&path)
+            .and_then(|bytes| std::fs::OpenOptions::new().create(true).append(true).open(&target).and_then(|mut f| f.write_all(&bytes)));
+        if copied.is_ok() {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -1096,6 +1137,30 @@ impl Write for Sink {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn old_traces_leave_the_ersatztv_logs_folder() {
+        let dir = std::env::temp_dir().join(format!("vizrs-traces-{}", std::process::id()));
+        let (old, new) = (dir.join("logs"), trace_folder(&dir));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("ersatztv20261120.log"), "2026-11-20 17:45:25.635 +01:00 [INF] Starting\n").unwrap();
+        std::fs::write(old.join("vizrs-takeover-1.log"), "a\n").unwrap();
+        std::fs::write(old.join("vizrs-takeover-1.log.1"), "b\n").unwrap();
+        std::fs::write(old.join("vizrs-takeover-_troubleshooting.log"), "c\n").unwrap();
+        std::fs::write(new.join("vizrs-takeover-1.log"), "new\n").unwrap();
+        move_old_traces(&old, &new);
+        let mut left: Vec<String> =
+            std::fs::read_dir(&old).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["ersatztv20261120.log"], "legacy's newest file by name is its own log again");
+        assert_eq!(std::fs::read_to_string(new.join("vizrs-takeover-1.log")).unwrap(), "new\na\n");
+        assert_eq!(std::fs::read_to_string(new.join("vizrs-takeover-1.log.1")).unwrap(), "b\n");
+        assert_eq!(std::fs::read_to_string(new.join("vizrs-takeover-_troubleshooting.log")).unwrap(), "c\n");
+        move_old_traces(&old, &new);
+        move_old_traces(&dir.join("none"), &new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn hung_run_is_terminated_then_killed() {
         use super::{KILL_GRACE, STOP_GRACE, Stop};
