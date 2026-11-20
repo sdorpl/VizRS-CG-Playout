@@ -249,6 +249,67 @@ async function editInputs(forChannel) {
   route(true);
 }
 
+// ---------- Ciasteczka YouTube (yt-dlp wejść YouTube) ----------
+// YouTube każe serwerom (adresy serwerowni) się zalogować („Sign in to confirm you're not a bot”) –
+// CG Playout podaje yt-dlp ciasteczka zalogowanego konta, wgrane tutaj. Wartości nie wracają do panelu.
+const COOKIES_MAX = 512 * 1024;
+const plDate = (iso) => new Date(iso).toLocaleString('pl-PL', { dateStyle: 'medium', timeStyle: 'short' });
+
+function cookiesState(st) {
+  if (!st.store) return h('div', { class: 'note warn' }, 'CG Playout nie ma etv_config – ciasteczek nie ma gdzie zapisać.');
+  if (!st.present) return h('div', { class: 'note', 'data-cookies-state': 'none' }, 'Brak ciasteczek – wejścia YouTube idą bez logowania (na serwerze YouTube zwykle je odrzuca).');
+  if (st.error) return h('div', { class: 'note err', 'data-cookies-state': 'bad' }, `Zapisany plik jest zły: ${st.error}`);
+  const days = st.expires ? (Date.parse(st.expires) - Date.now()) / 86400000 : null;
+  const cls = !st.signed_in || (days != null && days < 0) ? 'err' : days != null && days < 7 ? 'warn' : 'ok';
+  return h('div', { class: `note ${cls}`, 'data-cookies-state': cls },
+    `Wgrane ${st.saved_at ? plDate(st.saved_at) : ''}: ${st.youtube} z youtube.com (razem ${st.cookies}). `,
+    st.signed_in ? 'Konto zalogowane' : 'Brak ciasteczek zalogowanego konta (SID, LOGIN_INFO) – YouTube może dalej odmawiać',
+    st.signed_in ? (days == null ? ', ciasteczka sesji (bez daty ważności).' : days < 0 ? `, ważność minęła ${plDate(st.expires)} – wgraj nowe.` : `, ważne do ${plDate(st.expires)}.`) : '.');
+}
+
+async function editCookies() {
+  let st;
+  try { st = await cg('live/youtube-cookies'); } catch (e) { toast(e.message, 'bad'); return; }
+  const text = h('textarea', { rows: 6, class: 'mono', spellcheck: 'false', autocomplete: 'off', placeholder: '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\t…', 'aria-label': 'Treść pliku cookies' });
+  const file = h('input', { type: 'file', accept: '.txt,.json,text/plain,application/json', 'aria-label': 'Plik cookies' });
+  const info = h('span', { class: 'dim' });
+  file.addEventListener('change', async () => {
+    const f = file.files[0];
+    if (!f) return;
+    if (f.size > COOKIES_MAX) { info.textContent = `Plik za duży (${Math.round(f.size / 1024)} KB, najwyżej 512 KB) – wyeksportuj tylko youtube.com.`; return; }
+    text.value = await f.text();
+    info.textContent = `Wczytano ${f.name}.`;
+  });
+  const body = h('div', { class: 'cookies-edit', 'data-cookies': '' },
+    cookiesState(st),
+    h('p', { class: 'dim' }, 'YouTube każe serwerom w serwerowniach się zalogować („Sign in to confirm you’re not a bot”) – wtedy wejście YouTube czeka bez końca. ' +
+      'CG Playout poda pobieraniu ciasteczka zalogowanego konta Google. Jak je zdobyć:'),
+    h('ol', { class: 'dim' },
+      h('li', null, 'Najlepiej osobne konto Google (YouTube może je zablokować za pobieranie).'),
+      h('li', null, 'W przeglądarce otwórz okno prywatne, zaloguj się na youtube.com i otwórz dowolny film.'),
+      h('li', null, 'Rozszerzeniem do eksportu ciasteczek (format cookies.txt / Netscape albo JSON) zapisz ciasteczka youtube.com.'),
+      h('li', null, 'Zamknij okno prywatne bez wylogowania – inaczej YouTube unieważni te ciasteczka.'),
+      h('li', null, 'Wgraj plik albo wklej jego treść niżej i zapisz.')),
+    h('div', { class: 'bar' }, file, info),
+    text,
+    h('p', { class: 'dim' }, 'Zapis działa od następnego pytania YouTube (wejście w oczekiwaniu pyta od razu). Ciasteczka to logowanie do konta: leżą na serwerze tylko dla CG Playout, panel pokazuje jedynie liczbę i ważność.'));
+  const buttons = [['Anuluj', false]];
+  if (st.present) buttons.push(['Usuń ciasteczka', 'delete', 'danger']);
+  buttons.push(['Zapisz', 'save', 'acc']);
+  const choice = await dialog('Ciasteczka YouTube', body, buttons);
+  if (choice === 'delete') {
+    if (!await confirmDlg('Usunąć ciasteczka YouTube?', 'Wejścia YouTube pójdą bez logowania – na serwerze YouTube zwykle je odrzuca.', 'Usuń')) return;
+    try { await cg('live/youtube-cookies', 'DELETE'); toast('Ciasteczka YouTube usunięte'); } catch (e) { toast(e.message, 'bad'); }
+    return;
+  }
+  if (choice !== 'save') return;
+  if (!text.value.trim()) { toast('Wgraj plik cookies albo wklej jego treść', 'bad'); return; }
+  try {
+    const r = await cg('live/youtube-cookies', 'PUT', { text: text.value });
+    toast(r.signed_in ? `Ciasteczka YouTube zapisane (${r.youtube} z youtube.com, konto zalogowane)` : 'Ciasteczka zapisane, ale bez zalogowanego konta – YouTube może dalej odmawiać', r.signed_in ? undefined : 'bad');
+  } catch (e) { toast(e.message, 'bad'); }
+}
+
 // ---------- Sloty na żywo: karta kanału ----------
 // ZDEJMIJ jak w MCR: pierwsze kliknięcie uzbraja („POTWIERDŹ ZDJĘCIE” przez 3 s), drugie zdejmuje studio.
 let armed = null;
@@ -480,6 +541,7 @@ VIEWS.live = async () => {
       'Grafika VizRS zostaje na wierzchu. Koniec nadawania = powrót do ramówki. ZDEJMIJ (dwa kliknięcia) odcina studio mimo sygnału, aż do WPUŚĆ.'),
     root,
     panel('Wejścia studia', h('span', { class: 'bar' }, h('span', { class: 'dim' }, 'stan sygnału; klucze i hasła – „Jak nadawać na ten kanał” w karcie kanału'),
+      (state.features || []).includes('youtube_cookies') ? btn('Ciasteczka YouTube…', () => editCookies()) : null,
       btn('Ustaw wejścia…', () => editInputs())), view.inputs, cmdNote('CG Playout /api/live/state (inputs, source), /api/live/inputs')),
   ];
 };

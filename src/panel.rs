@@ -31,6 +31,11 @@
 //   PUT    /api/live/encoder              {"preset", "profile", "x264_params", "nvenc_preset",
 //                                         "qsv_preset", "bframes"} ("" or null = default):
 //                                         encoder.json, from the next ffmpeg (src/encoder.rs)
+//   GET    /api/live/youtube-cookies      the cookies file of YouTube inputs: whether there is
+//                                         one, when saved, how many, signed in, expiry (no values)
+//   PUT    /api/live/youtube-cookies      {"text": Netscape cookies.txt or a browser's JSON}:
+//                                         youtube-cookies.txt (0600), for yt-dlp (src/yt_cookies.rs)
+//   DELETE /api/live/youtube-cookies      remove it
 //
 // `features` of `/api/live/state` says what this build can do, so an older
 // sidecar never breaks a newer VizRS Live: it shows only what is listed.
@@ -721,6 +726,79 @@ impl Panel {
         reply(stream, 200, &self.inputs_json(ingest))
     }
 
+    /// `GET /api/live/youtube-cookies`: what the panel shows of the file – never the values.
+    fn cookies_json(&self) -> Value {
+        let store = !self.etv_config.is_empty();
+        let path = store.then(|| crate::yt_cookies::path(&live_shows::folder(&self.etv_config)));
+        let text = path.as_ref().and_then(|p| fs::read_to_string(p).ok());
+        let saved = path.as_ref().and_then(|p| fs::metadata(p).ok()?.modified().ok());
+        let saved_ms = saved.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64);
+        let iso = |ms: i64| Value::from(crate::time::iso_time(ms));
+        let mut members = vec![("store".to_owned(), Value::from(store)), ("present".to_owned(), Value::from(text.is_some()))];
+        if let Some(text) = text {
+            members.push(("saved_at".into(), saved_ms.map_or(Value::Null, iso)));
+            match crate::yt_cookies::parse(&text) {
+                Ok(cookies) => {
+                    let summary = crate::yt_cookies::summary(&cookies);
+                    members.push(("cookies".into(), (summary.cookies as u64).into()));
+                    members.push(("youtube".into(), (summary.youtube as u64).into()));
+                    members.push(("signed_in".into(), summary.signed_in.into()));
+                    members.push(("expires".into(), summary.expires.map_or(Value::Null, |s| iso(s.saturating_mul(1000)))));
+                }
+                Err(e) => members.push(("error".into(), e.into())),
+            }
+        }
+        Value::Object(members)
+    }
+
+    /// `PUT /api/live/youtube-cookies`: the cookies of a signed-in account for
+    /// yt-dlp; the ingest service takes them at its next YouTube lookup.
+    fn put_cookies(&self, body: &Value, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        let Some(text) = body.get("text").and_then(Value::as_str) else {
+            return fail(stream, 400, "text: treść pliku cookies (Netscape cookies.txt albo JSON z rozszerzenia przeglądarki)");
+        };
+        if text.len() > crate::yt_cookies::MAX_TEXT {
+            return fail(
+                stream,
+                400,
+                &format!("plik cookies za duży (najwyżej {} KB) – wyeksportuj tylko youtube.com", crate::yt_cookies::MAX_TEXT / 1024),
+            );
+        }
+        let cookies = match crate::yt_cookies::parse(text) {
+            Ok(cookies) => cookies,
+            Err(e) => return fail(stream, 400, &format!("ciasteczka YouTube: {e}")),
+        };
+        if self.etv_config.is_empty() {
+            return fail(stream, 409, "brak etv_config – ciasteczek nie ma gdzie zapisać");
+        }
+        let summary = crate::yt_cookies::summary(&cookies);
+        if let Err(e) = crate::yt_cookies::save(&live_shows::folder(&self.etv_config), &crate::yt_cookies::to_netscape(&cookies)) {
+            return fail(stream, 500, &format!("zapis ciasteczek YouTube: {e}"));
+        }
+        self.record(
+            ingest,
+            who,
+            "",
+            &format!(
+                "ciasteczka YouTube wgrane: {} z youtube.com, {}",
+                summary.youtube,
+                if summary.signed_in { "konto zalogowane" } else { "bez zalogowanego konta" }
+            ),
+        );
+        reply(stream, 200, &self.cookies_json())
+    }
+
+    fn delete_cookies(&self, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        if self.etv_config.is_empty() {
+            return reply(stream, 200, &self.cookies_json());
+        }
+        if let Err(e) = crate::yt_cookies::remove(&live_shows::folder(&self.etv_config)) {
+            return fail(stream, 500, &format!("usunięcie ciasteczek YouTube: {e}"));
+        }
+        self.record(ingest, who, "", "ciasteczka YouTube usunięte");
+        reply(stream, 200, &self.cookies_json())
+    }
+
     fn save_settings(&self, settings: &Settings) -> io::Result<()> {
         let Some(path) = self.control_path() else { return Ok(()) };
         fs::create_dir_all(live_shows::folder(&self.etv_config))?;
@@ -1041,6 +1119,9 @@ impl Panel {
             ("GET", ["encoder"]) => reply(&mut stream, 200, &self.encoder_json()),
             ("GET", ["thumbs", file]) => self.thumb(file.strip_suffix(".png").unwrap_or(""), &mut stream),
             ("PUT", ["encoder"]) => self.put_encoder(&body, &mut stream, ingest, &who),
+            ("GET", ["youtube-cookies"]) => reply(&mut stream, 200, &self.cookies_json()),
+            ("PUT", ["youtube-cookies"]) => self.put_cookies(&body, &mut stream, ingest, &who),
+            ("DELETE", ["youtube-cookies"]) => self.delete_cookies(&mut stream, ingest, &who),
             ("GET", ["shows"]) => reply(&mut stream, 200, &self.shows_state()),
             ("POST", ["shows", "scan"]) => self.scan(&mut stream, ingest, &who),
             ("POST", ["shows"]) => self.create(&body, &mut stream, ingest, &who),
@@ -1130,6 +1211,7 @@ impl Panel {
             Value::from("on_live"),
             Value::from("input_on_live"),
             Value::from("input_select"),
+            Value::from("youtube_cookies"),
         ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());

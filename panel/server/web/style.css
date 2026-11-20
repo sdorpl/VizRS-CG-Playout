@@ -413,6 +413,11 @@ img.mini { cursor: zoom-in; }
 .dialog:has(.inputs-edit) { width: min(860px, 94vw); }
 .inputs-edit .in-row { display: grid; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .inputs-edit .in-graphics { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding-left: 4px; }
+.dialog:has(.cookies-edit) { width: min(760px, 94vw); }
+.cookies-edit { display: grid; gap: 10px; }
+.cookies-edit p, .cookies-edit ol { margin: 0; }
+.cookies-edit ol { padding-left: 22px; display: grid; gap: 3px; }
+.cookies-edit textarea { width: 100%; box-sizing: border-box; font-size: 12px; }
 .inputs-edit .in-graphics > .dim { padding-top: 6px; }
 .inputs-edit .bar > select { width: auto; }
 .inputs-edit .bar > input.grow { flex: 1 1 260px; min-width: 0; width: auto; }

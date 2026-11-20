@@ -70,7 +70,7 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'input_select'],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'input_select', 'youtube_cookies'],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
           input: CG.input || null,
@@ -123,6 +123,15 @@ function check(cond, msg) {
         return send(200, { listeners: CG.inputs || [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/studio-klucz' }], from: CG.inputs ? 'panel' : 'env', store: true, ingest: true, ports: { rtmp: [1936, 1943], srt: [9000, 9007] } });
       }
       if (u === '/api/live/inputs' && q.method === 'PUT') { CG.inputs = body.listeners; return send(200, { listeners: CG.inputs, from: 'panel' }); }
+      // ciasteczka YouTube (CG Playout GET/PUT/DELETE /api/live/youtube-cookies): wartości nie wracają
+      if (u === '/api/live/youtube-cookies') {
+        if (q.method === 'PUT') {
+          if (!/youtube\.com/.test(body.text || '')) return send(400, { error: 'ciasteczka YouTube: w pliku nie ma ciasteczek youtube.com' });
+          CG.cookies = body.text;
+        }
+        if (q.method === 'DELETE') CG.cookies = null;
+        return send(200, CG.cookies ? { store: true, present: true, saved_at: '2026-11-20T17:00:00.000Z', cookies: 3, youtube: 2, signed_in: true, expires: '2027-12-01T00:00:00.000Z' } : { store: true, present: false });
+      }
       // koder nakładki (CG Playout GET/PUT /api/live/encoder): encoder.json wypełniony z .env = veryfast
       if (u === '/api/live/encoder') {
         const keys = ['preset', 'profile', 'x264_params', 'nvenc_preset', 'qsv_preset', 'bframes'];
@@ -1659,6 +1668,28 @@ function check(cond, msg) {
   check(await page.inputValue('#in-gr-2') === 'cmd' && /1001/.test(await page.textContent('[data-cmd-editor="in-gr-2"]')), 'wejścia: grafika wejścia wraca z CG Playout');
   await page.click('#dlg-buttons button:has-text("Anuluj")');
   await page.waitForSelector('#overlay', { state: 'hidden' });
+  // ciasteczka YouTube dla yt-dlp (CG Playout z „youtube_cookies” w features)
+  await page.click('button:has-text("Ciasteczka YouTube…")');
+  await page.waitForSelector('[data-cookies] [data-cookies-state="none"]');
+  check(!await page.$('#dlg-buttons button:has-text("Usuń ciasteczka")'), 'ciasteczka YouTube: bez pliku nie ma czego usuwać');
+  await page.fill('[data-cookies] textarea', '.google.com\tTRUE\t/\tTRUE\t0\tSID\tg');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForSelector('#toast:has-text("youtube.com")');
+  check(!CG.cookies, 'ciasteczka YouTube: plik bez youtube.com odrzucony, komunikat CG Playout');
+  await page.click('button:has-text("Ciasteczka YouTube…")');
+  await page.waitForSelector('[data-cookies]');
+  await page.setInputFiles('[data-cookies] input[type=file]', { name: 'cookies.txt', mimeType: 'text/plain', buffer: Buffer.from('# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\ttajne\n') });
+  await page.waitForSelector('[data-cookies]:has-text("Wczytano cookies.txt")');
+  await page.click('#dlg-buttons button:has-text("Zapisz")');
+  await page.waitForSelector('#toast:has-text("konto zalogowane")');
+  check(/\tSID\ttajne/.test(CG.cookies || ''), 'ciasteczka YouTube: plik wczytany i zapisany w CG Playout');
+  await page.click('button:has-text("Ciasteczka YouTube…")');
+  await page.waitForSelector('[data-cookies] [data-cookies-state="ok"]');
+  check(/2 z youtube\.com/.test(await page.textContent('[data-cookies-state]')) && !/tajne/.test(await page.textContent('[data-cookies]')), 'ciasteczka YouTube: stan bez wartości');
+  await page.click('#dlg-buttons button:has-text("Usuń ciasteczka")');
+  await page.click('#dlg-buttons button:has-text("Usuń")');
+  await page.waitForSelector('#toast:has-text("usunięte")');
+  check(CG.cookies === null, 'ciasteczka YouTube: usunięte po potwierdzeniu');
   // M9: logi ze źródłem – zdarzenia VizRS CG Playout
   await page.goto(`${BASE}/#logi`);
   await page.waitForSelector('main[data-view="logi"] #log-src');

@@ -5,7 +5,7 @@
 // VIZRS_LIVE_SHOWS.
 
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -329,7 +329,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select", "youtube_cookies"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -428,7 +428,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select", "youtube_cookies", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");
@@ -498,4 +498,46 @@ test("thumbnails of VizRS pages are drawn once per revision and kept", async (t)
   assert.equal(again.status, 200);
   assert.notEqual(again.headers.get("etag"), tag, "a new revision, a new tag");
   assert.deepEqual(runs(), ["1,2,3", "1"], "only the changed page is drawn again");
+});
+
+test("YouTube cookies for yt-dlp: uploaded, checked, kept for the owner only, never shown back", async (t) => {
+  const { folder, api } = await setup(t);
+  const file = path.join(folder, "vizrs-live", "youtube-cookies.txt");
+  assert.deepEqual((await api("GET", "youtube-cookies")).body, { store: true, present: false });
+  assert.ok((await api("GET", "state")).body.features.includes("youtube_cookies"));
+
+  const text = "# Netscape HTTP Cookie File\r\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-3PSID\ttajne\r\n.youtube.com\tTRUE\t/\tFALSE\t0\tPREF\tf6=1\r\n";
+  const put = await api("PUT", "youtube-cookies", { text });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.present, true);
+  assert.equal(put.body.cookies, 2);
+  assert.equal(put.body.youtube, 2);
+  assert.equal(put.body.signed_in, true);
+  assert.equal(put.body.expires, "2030-01-01T00:00:00.000Z");
+  assert.match(put.body.saved_at, /^\d{4}-\d\d-\d\dT/);
+  assert.ok(!JSON.stringify(put.body).includes("tajne"), "values never go back");
+  const saved = readFileSync(file, "utf8");
+  assert.match(saved, /^# Netscape HTTP Cookie File\n/);
+  assert.ok(saved.includes(".youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-3PSID\ttajne\n"));
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  const log = readFileSync(path.join(folder, "vizrs-live", "log.jsonl"), "utf8");
+  assert.match(log, /ciasteczka YouTube wgrane: 2 z youtube.com, konto zalogowane/);
+  assert.ok(!log.includes("tajne"));
+
+  const json = [{ domain: ".youtube.com", name: "SID", value: "s", path: "/", secure: true, hostOnly: false, expirationDate: 1893456000 }];
+  assert.equal((await api("PUT", "youtube-cookies", { text: JSON.stringify(json) })).body.cookies, 1, "a browser extension's JSON");
+
+  const bad = await api("PUT", "youtube-cookies", { text: ".google.com\tTRUE\t/\tTRUE\t0\tSID\tg\n" });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /youtube\.com/);
+  assert.equal((await api("PUT", "youtube-cookies", {})).status, 400);
+  assert.equal((await api("PUT", "youtube-cookies", { text: "x".repeat(600 * 1024) })).status, 400);
+  assert.equal((await api("GET", "youtube-cookies")).body.cookies, 1, "a refused file leaves the old one");
+  assert.equal((await api("DELETE", "youtube-cookies", undefined, { Origin: "http://evil.example" })).status, 403);
+
+  const gone = await api("DELETE", "youtube-cookies");
+  assert.equal(gone.status, 200);
+  assert.deepEqual(gone.body, { store: true, present: false });
+  assert.ok(!existsSync(file));
+  assert.equal((await api("DELETE", "youtube-cookies")).status, 200, "none is fine");
 });

@@ -304,6 +304,7 @@ if (process.env.MOCK_CG === '1') {
   const layers = { 24: [{ layer: 10, page: '101', name: 'belka 101', scene: 'belka', since: now - 300e3 }, { layer: 20, page: '4001', name: 'zegar', scene: 'zegar', since: now - 3600e3 }], 25: [{ layer: 10, page: '201', name: 'teraz gramy', since: now - 120e3 }], 26: [] };
   const asrun = [];
   // wejścia studia (zapis w pamięci): RTMP, YouTube i link; `inputs` kanału jak w CG Playout (listener::publisher)
+let ytCookies = true;
 let inputs = [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/x' }, { channel: '24', url: 'https://www.youtube.com/@kanal/live' }, { channel: '25', url: 'https://cdn.example.pl/live/index.m3u8' }];
 const chosen = {}; // wybrane wejście kanału (PUT /api/live/channels/<n> {"input"})
 const idOf = (l) => [...`${l.channel}=${l.url}`].reduce((h, ch) => ((h * 31 + ch.charCodeAt(0)) >>> 0), 7).toString(16).padStart(16, '0');
@@ -331,7 +332,7 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
       if (q.headers.authorization !== 'Bearer ' + CGT) return reply(r, 401, { error: 'zły token panelu' });
       if (u.pathname === '/health') return reply(r, 200, { sessions: 3, overlay: ['24'], ingest: { channels: ['24'] }, captures: [] });
       if (u.pathname === '/api/live/state') return reply(r, 200, {
-        ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live', 'input_on_live', 'input_select'], settings: { graphics_off: false },
+        ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live', 'input_on_live', 'input_select', 'youtube_cookies'], settings: { graphics_off: false },
         channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name, source: { live: c.Number === '24' }, inputs: inputsOf(c.Number), input: chosen[c.Number] || null, on_air: c.Number === '24', hold: false, takeover: c.Number === '24', anytime: c.Number === '24', layers: layers[c.Number] || [],
           next_live: c.Number === '25' ? { start: Date.now() + 3 * 60e3, title: 'Koncert w studiu' } : null })),
         events: [], guide: {},
@@ -346,6 +347,10 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
         const v = JSON.parse(b || '{}');
         if ('input' in v) { if (v.input) chosen[chm[1]] = v.input; else delete chosen[chm[1]]; log({ kind: 'input', channel: chm[1], detail: v.input ? 'wejście wybrane' : 'automatycznie' }); return reply(r, 200, { input: v.input }); }
         return reply(r, 200, { anytime: !!v.anytime });
+      }
+      if (u.pathname === '/api/live/youtube-cookies') {
+        if (q.method === 'PUT') ytCookies = true; else if (q.method === 'DELETE') ytCookies = false;
+        return reply(r, 200, ytCookies ? { store: true, present: true, saved_at: new Date(Date.now() - 3600e3).toISOString(), cookies: 24, youtube: 18, signed_in: true, expires: new Date(Date.now() + 200 * 86400e3).toISOString() } : { store: true, present: false });
       }
       if (u.pathname === '/api/live/inputs') {
         if (q.method === 'PUT') inputs = JSON.parse(b || '{}').listeners || [];

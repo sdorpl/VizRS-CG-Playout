@@ -16,7 +16,9 @@
 //     VIZRS_INGEST_LOG     a file the log lines also go to, with the time
 //                          (compose: <etv_config>/vizrs-live/logs/vizrs-ingest.log)
 //     VIZRS_YTDLP          yt-dlp for YouTube inputs (default /vizrs/yt-dlp)
-//     VIZRS_YTDLP_COOKIES  a cookies file for yt-dlp (a server YouTube asks to sign in)
+//     VIZRS_YTDLP_COOKIES  a cookies file for yt-dlp (a server YouTube asks to sign in);
+//                          empty: the one VizRS Live uploads (src/yt_cookies.rs), a copy of
+//     VIZRS_YTDLP_PANEL_COOKIES  (default /etv-config/vizrs-live/youtube-cookies.txt)
 //
 // A YouTube input (`1=https://www.youtube.com/…`) has no publisher: yt-dlp
 // finds its stream, ffmpeg reads it and the rest goes as from a publisher.
@@ -42,6 +44,8 @@ use crate::overlay::quote_plus;
 const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
 /// The sidecar installs it next to `vizrs-ffmpeg` (Dockerfile, DOKUMENTACJA §1, Live ingest).
 const DEFAULT_YTDLP: &str = "/vizrs/yt-dlp";
+/// The cookies file VizRS Live uploads, as the ingest container sees the ErsatzTV config (compose).
+const PANEL_COOKIES: &str = "/etv-config/vizrs-live/youtube-cookies.txt";
 /// A yt-dlp lookup that takes longer is stopped.
 const RESOLVE_LIMIT: Duration = Duration::from_secs(90);
 /// A YouTube input that is not on (a broadcast not started, a refused lookup) is asked again this often.
@@ -372,6 +376,8 @@ pub struct Settings {
     pub ytdlp: OsString,
     /// A cookies file for yt-dlp (`VIZRS_YTDLP_COOKIES`), for a server YouTube asks to sign in.
     pub cookies: Option<OsString>,
+    /// Without it: the cookies file VizRS Live uploads (`VIZRS_YTDLP_PANEL_COOKIES`); yt-dlp gets a copy.
+    pub panel_cookies: std::path::PathBuf,
 }
 
 impl Settings {
@@ -393,6 +399,10 @@ impl Settings {
             listeners,
             ytdlp: std::env::var_os("VIZRS_YTDLP").filter(|v| !v.is_empty()).unwrap_or_else(|| DEFAULT_YTDLP.into()),
             cookies: std::env::var_os("VIZRS_YTDLP_COOKIES").filter(|v| !v.is_empty()),
+            panel_cookies: std::env::var_os("VIZRS_YTDLP_PANEL_COOKIES")
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| PANEL_COOKIES.into())
+                .into(),
         };
         if settings.sidecar.is_empty() {
             return Err("VIZRS_CG_URL is empty".into());
@@ -667,10 +677,94 @@ fn wait(running: &Running, time: Duration) -> bool {
     running.stop.load(Ordering::Relaxed)
 }
 
+/// The cookies yt-dlp gets for a YouTube input: `VIZRS_YTDLP_COOKIES` as it
+/// is, else a private copy of the file VizRS Live uploads (yt-dlp writes the
+/// file it reads, and two inputs at once must not write the same one), made
+/// again whenever the panel's file changes.
+pub struct Cookies {
+    panel: Option<std::path::PathBuf>,
+    copy: std::path::PathBuf,
+    /// Length and time of the panel's file the copy was made of.
+    seen: Option<(u64, std::time::SystemTime)>,
+}
+
+/// What a cookies file is now: length and time of change; none = no file.
+fn signature(path: &std::path::Path) -> Option<(u64, std::time::SystemTime)> {
+    let meta = std::fs::metadata(path).ok().filter(std::fs::Metadata::is_file)?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+impl Cookies {
+    pub fn new(settings: &Settings, copy: std::path::PathBuf) -> Cookies {
+        Cookies { panel: settings.cookies.is_none().then(|| settings.panel_cookies.clone()), copy, seen: None }
+    }
+
+    /// The file for yt-dlp now, and a line for the log when that changed.
+    pub fn file(&mut self, settings: &Settings) -> (Option<OsString>, Option<String>) {
+        let Some(panel) = &self.panel else { return (settings.cookies.clone(), None) };
+        let now = signature(panel);
+        if now == self.seen {
+            return (now.map(|_| self.copy.clone().into_os_string()), None);
+        }
+        let was = self.seen.take();
+        let Some(now) = now else {
+            let _ = std::fs::remove_file(&self.copy);
+            return (None, was.map(|_| "YouTube cookies removed in VizRS Live".to_owned()));
+        };
+        // A copy with the panel file's mode (0600: it is a sign-in).
+        let _ = std::fs::remove_file(&self.copy);
+        match std::fs::copy(panel, &self.copy) {
+            Ok(_) => {
+                self.seen = Some(now);
+                (Some(self.copy.clone().into_os_string()), Some(format!("YouTube cookies from VizRS Live ({} bytes)", now.0)))
+            }
+            Err(e) => (None, Some(format!("YouTube cookies from VizRS Live: {e}"))),
+        }
+    }
+
+    /// The panel's file is not what the copy was made of (uploaded, replaced, removed).
+    pub fn changed(&self) -> bool {
+        self.panel.as_deref().is_some_and(|panel| signature(panel) != self.seen)
+    }
+}
+
+impl Drop for Cookies {
+    fn drop(&mut self) {
+        if self.panel.is_some() {
+            let _ = std::fs::remove_file(&self.copy);
+        }
+    }
+}
+
+/// YouTube's refusal of an address it takes for a bot, with what helps.
+pub fn sign_in_hint(error: &str, cookies: bool) -> &'static str {
+    if !error.contains("Sign in to confirm") && !error.contains("--cookies") {
+        ""
+    } else if cookies {
+        " (with the cookies: they may have expired or the account signed out – upload new ones in VizRS Live)"
+    } else {
+        " (upload the cookies of a signed-in account in VizRS Live: Sloty na żywo, Ciasteczka YouTube)"
+    }
+}
+
+/// Waits like `wait`, but ends early when the cookies change (asked again at once with them).
+fn wait_or_cookies(running: &Running, time: Duration, cookies: &Cookies) -> bool {
+    let end = Instant::now() + time;
+    while Instant::now() < end {
+        if wait(running, Duration::from_secs(1).min(end - Instant::now())) {
+            return true;
+        }
+        if cookies.changed() {
+            return false;
+        }
+    }
+    running.stop.load(Ordering::Relaxed)
+}
+
 /// yt-dlp for a YouTube input, at most `RESOLVE_LIMIT`.
-fn resolve(settings: &Settings, url: &str, running: &Running) -> Result<Found, String> {
+fn resolve(settings: &Settings, url: &str, cookies: Option<&std::ffi::OsStr>, running: &Running) -> Result<Found, String> {
     let mut command = Command::new(&settings.ytdlp);
-    command.args(ytdlp_args(url, settings.cookies.as_deref())).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(ytdlp_args(url, cookies)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // SAFETY: only async-signal-safe calls in the forked child.
     unsafe {
         command.pre_exec(|| crate::sys::ffmpeg_child_setup(-1));
@@ -750,14 +844,20 @@ fn pull(settings: &Settings, listener: &Listener, running: &Running) {
             last = message;
         }
     };
+    let mut cookies = Cookies::new(settings, std::env::temp_dir().join(format!("vizrs-ytdlp-cookies-{}.txt", input_id(listener))));
     while !running.stop.load(Ordering::Relaxed) {
-        let found = match resolve(settings, url, running) {
+        let (file, change) = cookies.file(settings);
+        if let Some(change) = change {
+            log(format_args!("channel {channel}: YouTube {url}: {change}"));
+        }
+        let found = match resolve(settings, url, file.as_deref(), running) {
             Ok(found) => found,
             Err(e) => {
                 if !running.stop.load(Ordering::Relaxed) {
-                    note(format!("channel {channel}: YouTube {url}: {e}; asking again every {} s", YOUTUBE_AGAIN.as_secs()));
+                    let hint = sign_in_hint(&e, file.is_some());
+                    note(format!("channel {channel}: YouTube {url}: {e}{hint}; asking again every {} s", YOUTUBE_AGAIN.as_secs()));
                 }
-                if wait(running, YOUTUBE_AGAIN) {
+                if wait_or_cookies(running, YOUTUBE_AGAIN, &cookies) {
                     break;
                 }
                 continue;
@@ -1117,5 +1217,59 @@ mod tests {
         assert_eq!(name("https://www.youtube.com/@sejm/live"), "YouTube youtube.com/@sejm/live");
         assert_eq!(name("https://u:p@cdn.pl/a/index.m3u8?token=x"), "Link HLS cdn.pl");
         assert_eq!(name("rtmp://studio.pl/live/klucz"), "Link RTMP studio.pl");
+    }
+
+    #[test]
+    fn cookies_from_the_panel_go_to_ytdlp_as_a_private_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("vizrs-ingest-cookies-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let panel = dir.join("youtube-cookies.txt");
+        let copy = dir.join("copy.txt");
+        let settings = |cookies: Option<&str>| Settings {
+            ffmpeg: "ffmpeg".into(),
+            sidecar: String::new(),
+            token: String::new(),
+            idle: Duration::from_secs(1),
+            listeners: Vec::new(),
+            ytdlp: "yt-dlp".into(),
+            cookies: cookies.map(OsString::from),
+            panel_cookies: panel.clone(),
+        };
+        let own = settings(Some("/own/cookies.txt"));
+        let mut cookies = Cookies::new(&own, copy.clone());
+        assert_eq!(cookies.file(&own), (Some("/own/cookies.txt".into()), None), "VIZRS_YTDLP_COOKIES as it is");
+        assert!(!cookies.changed());
+
+        let from_panel = settings(None);
+        let mut cookies = Cookies::new(&from_panel, copy.clone());
+        assert_eq!(cookies.file(&from_panel), (None, None), "no file, nothing said");
+        crate::yt_cookies::save(&dir, "one").unwrap();
+        assert!(cookies.changed(), "uploaded: asked again at once");
+        let (file, note) = cookies.file(&from_panel);
+        assert_eq!(file, Some(copy.clone().into_os_string()));
+        assert!(note.unwrap().contains("3 bytes"));
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "one");
+        assert_eq!(std::fs::metadata(&copy).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::write(&copy, "refreshed by yt-dlp").unwrap();
+        assert_eq!(cookies.file(&from_panel), (Some(copy.clone().into_os_string()), None), "yt-dlp's own changes stay");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "refreshed by yt-dlp");
+        crate::yt_cookies::save(&dir, "second").unwrap();
+        assert!(cookies.changed());
+        assert!(cookies.file(&from_panel).1.is_some());
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "second", "new ones from the panel win");
+        crate::yt_cookies::remove(&dir).unwrap();
+        assert_eq!(cookies.file(&from_panel), (None, Some("YouTube cookies removed in VizRS Live".into())));
+        assert!(!copy.exists());
+        crate::yt_cookies::save(&dir, "three").unwrap();
+        cookies.file(&from_panel);
+        drop(cookies);
+        assert!(!copy.exists(), "the copy goes with the input");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let refused = "Sign in to confirm you’re not a bot. This helps protect our community. Use --cookies-from-browser or --cookies";
+        assert!(sign_in_hint(refused, false).contains("upload the cookies"));
+        assert!(sign_in_hint(refused, true).contains("expired"));
+        assert_eq!(sign_in_hint("Video unavailable", false), "");
     }
 }

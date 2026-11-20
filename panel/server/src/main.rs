@@ -555,6 +555,11 @@ mod tests {
         );
         assert!(cg_path("GET", "live/channels/24/take").is_none());
         assert_eq!(
+            cg_path("DELETE", "live/youtube-cookies").as_deref(),
+            Some("/api/live/youtube-cookies")
+        );
+        assert!(cg_path("POST", "live/youtube-cookies").is_none());
+        assert_eq!(
             cg_path("GET", "live/asrun/24/2026-11-09").as_deref(),
             Some("/api/live/asrun?channel=24&day=2026-11-09")
         );

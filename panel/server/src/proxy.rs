@@ -237,6 +237,10 @@ pub fn cg_path(method: &str, rest: &str) -> Option<String> {
         ("GET" | "PUT", ["live", "inputs"]) => "/api/live/inputs".into(),
         // koder programowy nakładki ffmpeg (preset, opcje x264) – encoder.json CG Playout
         ("GET" | "PUT", ["live", "encoder"]) => "/api/live/encoder".into(),
+        // ciasteczka YouTube dla yt-dlp (wejścia YouTube na serwerze, od którego YouTube chce logowania)
+        ("GET" | "PUT" | "DELETE", ["live", "youtube-cookies"]) => {
+            "/api/live/youtube-cookies".into()
+        }
         ("GET", ["live", "shows"]) | ("POST", ["live", "shows"]) => "/api/live/shows".into(),
         ("POST", ["live", "shows", "scan"]) => "/api/live/shows/scan".into(),
         ("PUT" | "DELETE", ["live", "shows", id]) => format!("/api/live/shows/{id}"),
