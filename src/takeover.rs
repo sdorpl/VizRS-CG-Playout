@@ -260,6 +260,19 @@ pub struct Graphics<'a> {
 pub struct Source {
     pub url: String,
     pub audio: bool,
+    /// Its frame rate as the sidecar measured it (`fps` of `/ingest/state`); none = unknown.
+    pub fps: Option<f64>,
+}
+
+/// A source of about 60 frames a second on a channel of 25 or 50: most often
+/// 50 frames made 60 by repeating every 6th (a broadcaster of 50 Hz on
+/// YouTube). `decimate=cycle=6` drops the frame of each 6 most like the one
+/// before – that repeat – so 50 even frames go on to `fps`, and 25 takes every
+/// second: even motion instead of steps of 33 and 50 ms. A true 60 loses its
+/// stillest frame of 6, no worse than `fps` alone.
+pub fn decimate_sixth(source_fps: Option<f64>, channel_rate: &str) -> bool {
+    let channel = channel_rate.parse::<f64>().unwrap_or(0.0);
+    source_fps.is_some_and(|fps| (59.0..=61.0).contains(&fps)) && [25.0, 50.0].contains(&channel)
 }
 
 /// What a run of a live slot or takeover shows.
@@ -304,7 +317,8 @@ pub fn live_args(
 ) -> Vec<OsString> {
     let mut out = global_options(args);
     let (inputs, audio_input) = picture_inputs(&mut out, job, elapsed, picture, format);
-    filter_graph(&mut out, args, format, graphics, inputs, &audio_input);
+    let decimate = matches!(picture, Picture::Live(source) if decimate_sixth(source.fps, &format.rate));
+    filter_graph(&mut out, args, format, graphics, inputs, &audio_input, decimate);
     output_options(&mut out, args);
     job.timing(&mut out, elapsed);
     out
@@ -391,10 +405,13 @@ fn filter_graph(
     graphics: Option<&Graphics>,
     inputs: usize,
     audio_input: &str,
+    decimate: bool,
 ) {
     let (w, h) = (format.width, format.height);
+    // Before scaling: the dropped sixth is not scaled.
+    let even = if decimate { "decimate=cycle=6," } else { "" };
     let mut video = format!(
-        "[0:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color=black,setsar=1,fps={},format=yuv420p",
+        "[0:v:0]{even}scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color=black,setsar=1,fps={},format=yuv420p",
         format.rate
     );
     if let Some(graphics) = graphics {
@@ -539,13 +556,21 @@ pub struct State {
     pub anytime: bool,
     pub live: bool,
     pub audio: bool,
+    /// Frame rate of the source; an older sidecar: none.
+    pub fps: Option<f64>,
 }
 
 pub fn state(sidecar: &str, channel: &str) -> Option<State> {
     let body = net::get(&format!("{sidecar}/ingest/state?channel={}", quote_plus(channel)), "").ok()?;
     let value = json::parse(&body).ok()?;
     let flag = |key, default| value.get(key).and_then(json::Value::as_bool).unwrap_or(default);
-    Some(State { enabled: flag("enabled", false), anytime: flag("anytime", true), live: flag("live", false), audio: flag("audio", false) })
+    Some(State {
+        enabled: flag("enabled", false),
+        anytime: flag("anytime", true),
+        live: flag("live", false),
+        audio: flag("audio", false),
+        fps: value.get("fps").and_then(json::Value::as_f64).filter(|f| *f > 0.0),
+    })
 }
 
 /// Live state of the channel, asked every `POLL` in the background.
@@ -766,9 +791,11 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
         let source = live().then(|| Source {
             url: format!("{source_url}&take={:.3}", job.duration - elapsed),
             audio: poller.audio.load(Ordering::Relaxed),
+            fps: state(runner.sidecar, &job.channel).and_then(|s| s.fps),
         });
-        if source.is_some() {
-            trace(job, format_args!("channel {}: live from {elapsed:.1} s of the piece", job.channel));
+        if let Some(source) = &source {
+            let rate = source.fps.map_or(String::new(), |fps| format!(" (source {fps} fps)"));
+            trace(job, format_args!("channel {}: live from {elapsed:.1} s of the piece{rate}", job.channel));
         }
         let late_at_run = behind(produced(&job.playlist, &before));
         let mut child = match (runner.run)(elapsed, source.as_ref()) {
@@ -1139,6 +1166,28 @@ impl Write for Sink {
 mod tests {
 
     #[test]
+    fn a_60_fps_source_on_a_25_or_50_channel_drops_its_repeated_sixth() {
+        assert!(decimate_sixth(Some(60.0), "25"));
+        assert!(decimate_sixth(Some(59.94), "50"));
+        assert!(!decimate_sixth(Some(60.0), "30"), "30 takes every second frame of 60");
+        assert!(!decimate_sixth(Some(50.0), "25"));
+        assert!(!decimate_sixth(None, "25"), "unknown rate (older sidecar): as before");
+        let job = Job::of(&piece(), None).unwrap();
+        let format = Format { width: 1600, height: 900, rate: "25".into() };
+        let text = |fps| {
+            let source = Source { url: "http://cg/ingest?channel=1".into(), audio: true, fps };
+            live_args(&piece(), &job, 0.0, Picture::Live(&source), &format, None)
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(text(Some(60.0)).contains("[0:v:0]decimate=cycle=6,scale=1600:900"));
+        assert!(!text(Some(25.0)).contains("decimate"));
+        assert!(!text(None).contains("decimate"));
+    }
+
+    #[test]
     fn old_traces_leave_the_ersatztv_logs_folder() {
         let dir = std::env::temp_dir().join(format!("vizrs-traces-{}", std::process::id()));
         let (old, new) = (dir.join("logs"), trace_folder(&dir));
@@ -1394,7 +1443,7 @@ mod tests {
     fn live_run_takes_the_encoder_and_hls_of_the_piece() {
         let job = Job::of(&piece(), None).unwrap();
         let format = Format { width: 1280, height: 720, rate: "25".into() };
-        let source = Source { url: "http://cg:7700/ingest?channel=1".into(), audio: true };
+        let source = Source { url: "http://cg:7700/ingest?channel=1".into(), audio: true, fps: None };
         let live: Vec<String> = live_args(&piece(), &job, 4.0, Picture::Live(&source), &format, None)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1471,7 +1520,7 @@ mod tests {
         let piece = args(&list);
         let job = Job::of(&piece, Some("1")).unwrap();
         let format = Format { width: 1920, height: 1080, rate: "50".into() };
-        let source = Source { url: "http://cg/ingest?channel=1".into(), audio: false };
+        let source = Source { url: "http://cg/ingest?channel=1".into(), audio: false, fps: None };
         let area = [(Area { x: 0, y: 930, w: 1920, h: 140 }, 0)];
         let graphics = Graphics {
             input: args(&["-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "1920x140", "-framerate", "50", "-i", "pipe:5"]),

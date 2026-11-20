@@ -126,7 +126,7 @@ test("a live programme from the panel is a file, a scan and a smart collection i
 test("holding a channel keeps its studio off and survives a restart", async (t) => {
   const { cg, api, folder } = await setup(t, {}, { ingest_anytime: true });
   const ingestState = async (url, ch) => (await fetch(`${url}/ingest/state?channel=${ch}`)).json();
-  assert.deepEqual(await ingestState(cg.url, "4"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, seconds: null });
+  assert.deepEqual(await ingestState(cg.url, "4"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null });
 
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   assert.equal((await ingestState(cg.url, "4")).hold, true);

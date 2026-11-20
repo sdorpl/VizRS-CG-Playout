@@ -934,6 +934,23 @@ mieszanie. Pomiar 2026-10-26 (A1,
 20 s materiału 1080p60 → 1600×900@25, x264 `superfast`): 23,2 s CPU z `fps`,
 23,6 s z `framerate` (+2%).
 
+#### Sygnał 60 kl./s na kanale 25 albo 50 (`decimate`)
+
+Stacja nadająca w 50 Hz trafia na YouTube jako 60 kl./s przez powtórzenie co
+szóstej klatki (TVP Info, S1 2026-11-20: 91 kopii co 6 klatek na 10 s). Sam
+`fps=25` bierze wtedy klatki o fazach ruchu 0, 2, 4, 6, 9, 10… (kroki 2-2-2-3-1),
+a `fps=30` – kroki 2-2-1 z okazjonalną kopią: ruch nierówny. Przebieg live
+dostaje więc, gdy sidecar mierzy sygnał ok. 60 kl./s (59–61, pole `fps`
+w `/ingest/state`), a kanał ma 25 albo 50 kl./s, filtr `decimate=cycle=6`
+przed skalowaniem: z każdych 6 klatek odpada najbardziej podobna do
+poprzedniej – właśnie powtórzona – i do `fps` idzie równe 50 kl./s (25 =
+co druga, kroki stale 2). Prawdziwe 60 kl./s traci najspokojniejszą klatkę
+z sześciu – nie gorzej niż sam `fps`. Inne klatkaże i starszy sidecar (bez
+`fps`) – bez zmian. Ślad przejęć podaje klatkaż źródła („live from … (source
+60 fps)”). Koszt na A1: 10 s 1080p60 przez `decimate` z dekodowaniem ok. 2 s
+jednego wątku (dekodowanie przebieg live robi i tak). Dla takiego źródła
+lepiej więc zostawić kanał na 25 kl./s niż przestawiać go na 30.
+
 #### Preset kodera (`VIZRS_FFMPEG_PRESET`)
 
 Silnik strumieniowania next (`Channel.StreamingEngine = 1`, wymagany przez
@@ -1230,7 +1247,10 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    wywłaszczane). Bez `ingest_token` (`VIZRS_INGEST_TOKEN`)
    ingest jest wyłączony, a `POST /ingest` odpowiada 404.
    `GET /ingest/state?channel=N` → `{"enabled":true,"anytime":true,"hold":false,
-   "live":true,"audio":true,"video":"h264","seconds":12}`, `/health` → `ingest`
+   "live":true,"audio":true,"video":"h264","fps":60,"seconds":12}` (`fps` –
+   klatkaż sygnału z PTS ostatnich 64 obrazów: mediana kroku po posortowaniu,
+   więc klatki B nie przeszkadzają; `null` przed 16 obrazami i bez sygnału),
+   `/health` → `ingest`
    (lista kanałów z sygnałem, `null` przy wyłączonym ingest). Kanał wstrzymany
    w live API (niżej) ma `"hold":true` i `"live":false` mimo sygnału, a jego
    `GET /ingest` odpowiada jak bez sygnału (bieżący czytelnik kończy się

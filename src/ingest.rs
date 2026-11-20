@@ -147,6 +147,32 @@ fn starts_picture(data: &[u8], codec: &str) -> bool {
 pub struct Streams {
     pub video: Option<&'static str>,
     pub audio: bool,
+    /// Frames a second of the video, from the timestamps of its pictures.
+    pub fps: Option<f64>,
+}
+
+/// Timestamps of the latest pictures kept for the frame rate.
+const RATE_WINDOW: usize = 64;
+
+/// The frame rate of pictures with timestamps `pts` (presentation order, B
+/// frames out of order): the median step between them sorted, as frames a
+/// second rounded to 0.01; none for fewer than 16 or no steady step.
+pub fn frame_rate(pts: &VecDeque<u64>) -> Option<f64> {
+    let first = *pts.front()?;
+    if pts.len() < 16 {
+        return None;
+    }
+    let mut times: Vec<i64> = pts.iter().map(|&p| (pts_seconds(p, first) * PTS_HZ).round() as i64).collect();
+    times.sort_unstable();
+    times.dedup();
+    let mut steps: Vec<i64> = times.windows(2).map(|w| w[1] - w[0]).filter(|&d| d > 0).collect();
+    if steps.len() < 8 {
+        return None;
+    }
+    steps.sort_unstable();
+    let step = steps[steps.len() / 2] as f64;
+    let fps = PTS_HZ / step;
+    (1.0..=240.0).contains(&fps).then(|| (fps * 100.0).round() / 100.0)
 }
 
 /// Cuts MPEG-TS into runs that start at video keyframes and keeps the
@@ -159,6 +185,8 @@ pub struct Scanner {
     pub streams: Streams,
     pub pat: Vec<u8>,
     pub pmt: Vec<u8>,
+    /// Timestamps of the latest video pictures (`frame_rate`).
+    picture_pts: VecDeque<u64>,
 }
 
 /// A run of whole packets; `key` = it starts at a video keyframe, `pts` its timestamp.
@@ -227,6 +255,11 @@ impl Scanner {
                     streams.audio |= is_audio(stream_type);
                     entries = entries.get(5 + length..).unwrap_or(&[]);
                 }
+                if streams.video == self.streams.video && video_pid == self.video_pid {
+                    streams.fps = self.streams.fps;
+                } else {
+                    self.picture_pts.clear();
+                }
                 self.streams = streams;
                 self.video_pid = video_pid;
                 self.pmt = packet.to_vec();
@@ -235,6 +268,15 @@ impl Scanner {
         }
         if Some(pid) != self.video_pid || packet[1] & 0x40 == 0 {
             return None;
+        }
+        if let Some(pts) = pes_pts(payload(packet)) {
+            if self.picture_pts.len() == RATE_WINDOW {
+                self.picture_pts.pop_front();
+            }
+            self.picture_pts.push_back(pts);
+            if let Some(fps) = frame_rate(&self.picture_pts) {
+                self.streams.fps = Some(fps);
+            }
         }
         let random_access = packet[3] & 0x20 != 0 && packet[4] > 0 && packet[5] & 0x40 != 0;
         let key = random_access || self.streams.video.is_some_and(|codec| starts_picture(payload(packet), codec));
@@ -486,6 +528,7 @@ impl Feed {
             ("live", live.into()),
             ("audio", buffer.streams.audio.into()),
             ("video", buffer.streams.video.map_or(Value::Null, Value::from)),
+            ("fps", buffer.streams.fps.filter(|_| live).map_or(Value::Null, Value::from)),
             ("seconds", buffer.since.filter(|_| live).map_or(Value::Null, |t| (t.elapsed().as_secs_f64().floor()).into())),
         ])
     }
@@ -751,7 +794,13 @@ impl Ingest {
         let channel = request.param("channel").unwrap_or("");
         let mut state = match self.feed(channel) {
             Some(feed) => feed.state(),
-            None => json::object([("live", false.into()), ("audio", false.into()), ("video", Value::Null), ("seconds", Value::Null)]),
+            None => json::object([
+                ("live", false.into()),
+                ("audio", false.into()),
+                ("video", Value::Null),
+                ("fps", Value::Null),
+                ("seconds", Value::Null),
+            ]),
         };
         let hold = self.control(channel).hold;
         if let Value::Object(members) = &mut state {
@@ -923,6 +972,21 @@ pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn frame_rate_from_picture_timestamps() {
+        let at =
+            |steps: &[u64], n: usize, start: u64| -> VecDeque<u64> { (0..n as u64).map(|i| (start + i * steps[0]) % PTS_WRAP).collect() };
+        assert_eq!(frame_rate(&at(&[1500], 64, 0)), Some(60.0));
+        assert_eq!(frame_rate(&at(&[3600], 64, 0)), Some(25.0));
+        assert_eq!(frame_rate(&at(&[3003], 64, 0)), Some(29.97));
+        assert_eq!(frame_rate(&at(&[1500], 64, PTS_WRAP - 20 * 1500)), Some(60.0), "across the 33-bit wrap");
+        assert_eq!(frame_rate(&at(&[1500], 10, 0)), None, "too few pictures");
+        // B frames: presentation order I P B B P B B … – sorted, the steps are even again.
+        let order = [0u64, 3, 1, 2, 6, 4, 5, 9, 7, 8, 12, 10, 11, 15, 13, 14, 18, 16, 17, 21, 19, 20];
+        let pts: VecDeque<u64> = order.iter().map(|k| 90_000 + k * 1800).collect();
+        assert_eq!(frame_rate(&pts), Some(50.0));
+    }
     use super::*;
 
     /// A TS packet of `pid`: PUSI, an adaptation field with the random access flag when `key`.
@@ -976,7 +1040,7 @@ mod tests {
         // Split in the middle of a packet: the rest comes with the next call.
         let mut runs = scanner.push(&data[..500]);
         runs.extend(scanner.push(&data[500..]));
-        assert_eq!(scanner.streams, Streams { video: Some("h264"), audio: true });
+        assert_eq!(scanner.streams, Streams { video: Some("h264"), audio: true, fps: None }, "two pictures: no rate yet");
         // The first call ends inside the third packet: a run also ends with a call.
         assert_eq!(runs.iter().map(|r| (r.key, r.data.len() / PACKET)).collect::<Vec<_>>(), [(false, 2), (false, 1), (true, 2), (true, 1)]);
         assert_eq!(scanner.pat, pat(0x1000));
@@ -999,7 +1063,7 @@ mod tests {
         let mut scanner = Scanner::default();
         let data = [vec![1, 2, 3], pat(0x20), pmt(0x20, &[(0x24, 0x30)]), packet(0x30, true, true, &[])].concat();
         let runs = scanner.push(&data);
-        assert_eq!(scanner.streams, Streams { video: Some("hevc"), audio: false });
+        assert_eq!(scanner.streams, Streams { video: Some("hevc"), audio: false, fps: None });
         assert_eq!(runs.last().map(|r| r.key), Some(true));
     }
 
@@ -1165,7 +1229,11 @@ mod tests {
         // The standby second is MPEG-TS with H.264 and audio.
         let mut scanner = Scanner::default();
         let runs = scanner.push(STANDBY);
-        assert_eq!(scanner.streams, Streams { video: Some("h264"), audio: true });
+        assert_eq!(
+            scanner.streams,
+            Streams { video: Some("h264"), audio: true, fps: Some(25.0) },
+            "the standby second: 25 frames a second"
+        );
         assert!(runs.iter().any(|r| r.key));
         assert!(constant_eq(b"abc", b"abc") && !constant_eq(b"abc", b"abd") && !constant_eq(b"ab", b"abc"));
     }
