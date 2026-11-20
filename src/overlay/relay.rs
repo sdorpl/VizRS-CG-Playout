@@ -104,8 +104,9 @@ pub(crate) fn raw_input(frames: &Frames, fd: i32) -> Vec<OsString> {
     out
 }
 
-/// The command with the canvas input replaced by raw frames from `pipe:<fd>`.
-pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames) -> Vec<OsString> {
+/// The command with the canvas input replaced by raw frames from `pipe:<fd>`
+/// and ErsatzTV's watermarks of the item on top of them (`with_watermarks`).
+pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames, marks: &Watermarks) -> Vec<OsString> {
     let options = &args[canvas.start..canvas.index];
     let mut out: Vec<OsString> = args[..canvas.start].to_vec();
     let mut i = 0;
@@ -119,6 +120,8 @@ pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames
     }
     out.extend(raw_input(frames, fd));
     out.extend_from_slice(&args[canvas.index + 2..]);
+    // Before the areas: they find the graphics overlay by its label, which stays.
+    out = with_watermarks(out, input_number(args, canvas.index), marks, &frames.rate, &frames.matrix);
     // Frames of graphics areas: each overlaid at its place (checked by `with_position` beforehand).
     let at_origin = matches!(frames.areas.as_slice(), [(a, _)] if (a.x, a.y) == (0, 0));
     if !frames.areas.is_empty() && !at_origin {

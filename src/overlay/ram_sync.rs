@@ -110,7 +110,8 @@ pub(crate) fn graph_waiting_in_ram(graph: &str, graphics: usize) -> Option<Strin
             let (labels, body) = chain.split_at(leading_labels(chain));
             let input = labels.strip_prefix('[').and_then(|l| l.strip_suffix(']')).filter(|l| !l.contains('['));
             let stream = input.and_then(|l| l.split(':').next()).and_then(|n| n.parse::<usize>().ok());
-            stream.is_some_and(|n| n != graphics) && uploads(body)
+            // Watermarks (`[vz_kN]`, src/overlay/watermark.rs) are images, not the media.
+            stream.is_some_and(|n| n != graphics) && uploads(body) && !chain.contains("[vz_k")
         })
         .collect();
     let [media] = media.as_slice() else { return None };

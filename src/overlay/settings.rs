@@ -39,6 +39,9 @@ pub struct Settings {
     pub sync_ram: bool,
     /// Stream copies of HLS playlists keep frames flagged corrupt (VIZRS_FFMPEG_NO_DISCARDCORRUPT).
     pub no_discardcorrupt: bool,
+    /// Token of VizRS Bridge in ErsatzTV (VIZRS_BRIDGE_TOKEN): the watermarks of
+    /// a canvas taken over come from it; empty = no watermarks. Never logged.
+    pub bridge_token: String,
 }
 
 /// What of a command encoding with NVENC stays on the card (`VIZRS_FFMPEG_CUDA`).
@@ -88,6 +91,7 @@ impl Settings {
             no_shortest: var("VIZRS_FFMPEG_NO_SHORTEST").trim() == "1",
             sync_ram: var("VIZRS_FFMPEG_SYNC_RAM").trim() == "1",
             no_discardcorrupt: var("VIZRS_FFMPEG_NO_DISCARDCORRUPT").trim() == "1",
+            bridge_token: var("VIZRS_BRIDGE_TOKEN").trim().to_owned(),
         }
         .with_encoder_file(&std::env::var("VIZRS_FFMPEG_SETTINGS").unwrap_or_else(|_| encoder::DEFAULT_PATH.into()))
     }

@@ -265,6 +265,7 @@ pub(crate) fn with_graphics(
     (frames, socket, place): (Frames, FrameSocket, bool),
     drain: Drain,
     takeover: bool,
+    marks: &Watermarks,
 ) -> i32 {
     let watch = frames.zones_rev.filter(|_| place).map(|rev| ZoneWatch::start(&settings.sidecar, &frames.session, rev));
     let feed = Mutex::new(relayed(settings, frames, socket, place));
@@ -305,7 +306,7 @@ pub(crate) fn with_graphics(
         let command = match source {
             Some(source) => live_command(settings, args, job, elapsed, Some(source), Some((frames, fd))),
             None if job.slot => live_command(settings, args, job, elapsed, None, Some((frames, fd))),
-            None => adjusted(job.program(&overlay_args(args, canvas, fd, frames), elapsed), settings, frames.burst(elapsed)),
+            None => adjusted(job.program(&overlay_args(args, canvas, fd, frames, marks), elapsed), settings, frames.burst(elapsed)),
         };
         let child = spawn(settings, command, Some(fd))?;
         drop(reader);
@@ -380,7 +381,10 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
 
     let headers = parse_headers(&args[canvas.start..canvas.index]);
     let rate = headers.iter().find(|(name, _)| name == "x-etv-frame-rate").map_or("", |(_, v)| v.as_str()).to_owned();
-    let drain = Drain::start(args[canvas.index + 1].to_string_lossy().into_owned(), headers);
+    let canvas_url = args[canvas.index + 1].to_string_lossy().into_owned();
+    // The item's watermarks from the bridge, asked while the session is taken over.
+    let watermarks = (!settings.bridge_token.is_empty()).then(|| fetch_watermarks(&canvas_url, &canvas, &settings.bridge_token));
+    let drain = Drain::start(canvas_url, headers);
 
     let place = with_position(&args, input_number(&args, canvas.index), 2, 2).is_some();
     // Runs that can widen the zones: live, or the piece as runs (below).
@@ -394,14 +398,32 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
         }
     };
 
+    let marks = match watermarks.map(|answer| answer.recv_timeout(BRIDGE_WAIT)) {
+        Some(Ok(Ok(marks))) => {
+            if !marks.list.is_empty() {
+                log(format_args!("{} ErsatzTV watermark(s) on top of the graphics", marks.list.len()));
+            }
+            marks
+        }
+        Some(Ok(Err(e))) => {
+            log(format_args!("watermarks: {e}; none drawn"));
+            Watermarks::default()
+        }
+        Some(Err(_)) => {
+            log("watermarks: no answer from the bridge in time; none drawn");
+            Watermarks::default()
+        }
+        None => Watermarks::default(),
+    };
+
     if let Some((job, on, audio)) = live {
-        return with_graphics(settings, &args, &canvas, &job, (on, audio), (frames, socket, place), drain, true);
+        return with_graphics(settings, &args, &canvas, &job, (on, audio), (frames, socket, place), drain, true, &marks);
     }
     // Zones that may widen in the middle of the piece (S3b): the piece as runs
     // too, with live left alone (VIZRS_FFMPEG_INGEST allows the runs).
     if settings.ingest && frames.zones_rev.is_some() {
         if let Some(job) = Job::of(&args, Some(&canvas.channel)).filter(|job| !job.slot) {
-            return with_graphics(settings, &args, &canvas, &job, (false, false), (frames, socket, place), drain, false);
+            return with_graphics(settings, &args, &canvas, &job, (false, false), (frames, socket, place), drain, false, &marks);
         }
     }
     let (reader, writer) = match frame_channel() {
@@ -416,7 +438,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     // Forwarded to ffmpeg from here on; ffmpeg_child_setup unblocks them in the child.
     sys::block_signals(&FORWARDED);
     let mut command = Command::new(&settings.ffmpeg);
-    command.args(adjusted(overlay_args(&args, &canvas, fd, &frames), settings, frames.burst(0.0)));
+    command.args(adjusted(overlay_args(&args, &canvas, fd, &frames, &marks), settings, frames.burst(0.0)));
     // SAFETY: only async-signal-safe calls in the forked child.
     unsafe {
         command.pre_exec(move || sys::ffmpeg_child_setup(fd));
