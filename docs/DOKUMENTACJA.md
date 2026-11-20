@@ -758,7 +758,7 @@ Zmienne środowiskowe nakładki (w kontenerze ErsatzTV):
 |---|---|---|
 | `VIZRS_CG_URL` | – (compose: `http://cg:7700`) | adres sidecara; puste = nakładka tylko przekazuje wywołania do ffmpeg |
 | `VIZRS_FFMPEG` | `/usr/local/bin/ffmpeg` | prawdziwy ffmpeg |
-| `VIZRS_FFMPEG_FPS` | – | wymuszony klatkaż kanału, `50` albo `25` (także cel **Normalize Framerate**); puste = klatkaż materiałów |
+| `VIZRS_FFMPEG_FPS` | – (`docker-compose.ampere.yml`: `25`, gdy zmiennej nie ma) | wymuszony klatkaż wszystkich kanałów serwera, np. `25`, `30`, `50` (także cel **Normalize Framerate**); wygrywa z klatkażem profilu kodowania; puste = klatkaż z profilu kanału (VizRS Live: Profile kodowania → Klatkaż), a bez niego – materiałów. Na Ampere ustaw pustą wartość w stosie, żeby klatkaż z panelu działał (S1 od 2026-11-20: kanał retransmisji YouTube 60 kl./s na 30 kl./s – z 25 kl./s ruch szarpał, §1 „Płynna zmiana klatkażu”) |
 | `VIZRS_FFMPEG_PRESET` | – (compose A1: `veryfast`) | preset kodera programowego (libx264, libx265), np. `superfast`; puste = preset ErsatzTV. Tylko dopóki nie ma `encoder.json` – potem koder ustawia panel (niżej) |
 | `VIZRS_FFMPEG_X264_PARAMS` | – | opcje libx264 (`-x264-params:v`), np. `bframes=0:subme=0` (niżej, „Opcje x264”); puste = bez. Tylko dopóki nie ma `encoder.json` |
 | `VIZRS_FFMPEG_SETTINGS` | `/config/vizrs-live/encoder.json` | plik kodera z panelu (preset x264, profil H.264, opcje x264, presety NVENC i QSV, klatki B koderów sprzętowych; `PUT /api/live/encoder`) – każdy klucz pliku zastępuje odpowiednią zmienną; puste = tylko zmienne środowiskowe |
