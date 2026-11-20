@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.19 (2026-11-20)
+
 - **Ciasteczka YouTube nie wygasają po restarcie:** YouTube wymienia ciasteczka sesji, a odbiornik przy każdym wyborze wejścia i restarcie brał kopię pierwotnego pliku z panelu – YouTube widział stare ciasteczka i kończył sesję („cookies are no longer valid”, potem znów „Sign in to confirm you're not a bot”; S1 2026-11-20). Teraz ciasteczka odświeżone przez yt-dlp wracają do pliku z panelu (gdy w międzyczasie nikt nie wgrał nowych), log przy unieważnieniu mówi wprost, że trzeba wgrać nowe, a okno panelu radzi osobny eksport na każdy serwer. Plik zapisany przez yt-dlp (ciasteczka sesyjne bez daty) panel czyta poprawnie. DOKUMENTACJA §1, Live ingest.
 
 ## 26.11.18 (2026-11-20)
