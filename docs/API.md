@@ -156,6 +156,7 @@ Nagłówek `X-VizRS-Token` (token mostu). Wpięcie i konfiguracja mostu – [DOK
 | `POST /upload/{Logo\|Watermark}` | treść = bajty obrazu, `Content-Type` = typ obrazu → `SaveArtworkToDisk` → `{"ok":true,"result":"<nazwa pliku>"}` |
 | `GET /framerates` | klatkaż wyjściowy profili kodowania: `{"ok":true,"result":{"active","problem","rates":{"<IdProfilu>":"25"}}}` |
 | `POST /framerate/{IdProfilu}` | `{"rate":"25"}` (albo `N/D`, np. `30000/1001`) ustawia klatkaż profilu, `{"rate":null}` wraca do wyliczenia legacy → jak `GET /framerates`; 400 zły id albo klatkaż (poza 1–240 kl./s), 409 filtr nieaktywny |
+| `GET /watermarks/{kanał}/{IdPozycji}` | znaki wodne, które legacy rysuje w płótnie grafiki pozycji (dla nakładki `vizrs-ffmpeg`, [DOKUMENTACJA §1](DOKUMENTACJA.md#znaki-wodne-ersatztv)): `{"ok":true,"result":{"width","height","time_of_day","watermarks":[{"name","image","x","y","width","height","opacity","mode","frequency_seconds","duration_seconds","z_index"}]}}` – `width`/`height` kadr kanału, `time_of_day` sekundy od północy w legacy, prostokąt znaku w pikselach kadru (jak rysuje go legacy), `image` ścieżka pliku (albo adres) obrazu, `opacity` 0–1, `mode` `None`/`Permanent`/`Intermittent`/`OpacityExpression`; 400 zły kanał albo id, 404 pozycja nieznana, 500 legacy w innej postaci (most bez znaków wodnych tej wersji) |
 
 Wynik `POST /command`:
 

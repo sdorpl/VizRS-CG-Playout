@@ -10,9 +10,10 @@
 // 3. ffmpeg reads raw yuva420p frames from the sidecar instead of the canvas
 //    (`GET /ffmpeg/frames`), through a socket passed as `pipe:N`.
 //
-// ErsatzTV's own graphics elements of that item (text, image, watermarks in
-// the canvas) are not drawn then. Whenever the sidecar does not answer, the
-// original command runs: the item plays with ErsatzTV's graphics path.
+// ErsatzTV's own graphics elements of that item (text, image in the canvas)
+// are not drawn then; its watermarks are, by ffmpeg itself, as VizRS Bridge
+// says (watermark.rs). Whenever the sidecar does not answer, the original
+// command runs: the item plays with ErsatzTV's graphics path.
 //
 // With VIZRS_FFMPEG_FPS every transcode to HLS runs at that rate (ErsatzTV
 // takes the rate from the media): ErsatzTV's conversion of the media's rate
@@ -156,6 +157,7 @@ mod ram_sync;
 mod relay;
 mod run;
 mod settings;
+mod watermark;
 mod zones;
 
 pub use args::*;
@@ -166,6 +168,7 @@ pub use ram_sync::*;
 pub use relay::*;
 pub use run::*;
 pub use settings::*;
+pub use watermark::*;
 pub use zones::*;
 
 const DEFAULT_FFMPEG: &str = "/usr/local/bin/ffmpeg";
@@ -502,7 +505,7 @@ mod tests {
     #[test]
     fn frames_declare_their_colour_matrix() {
         let input = args(&["-i", "media", "-i", "http://localhost/internal/graphics/4/1", "-f", "hls", "o"]);
-        let canvas = Canvas { start: 2, index: 2, channel: "4".into() };
+        let canvas = Canvas { start: 2, index: 2, channel: "4".into(), item: "7".into() };
         let mut frames = Frames {
             width: 8,
             height: 4,
@@ -517,16 +520,16 @@ mod tests {
         let raw = ["-i", "media", "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25"];
         let tail = ["-i", "pipe:5", "-f", "hls", "o"];
         let declared = [&raw[..], &["-colorspace", "bt709", "-color_range", "tv"], &tail].concat();
-        assert_eq!(overlay_args(&input, &canvas, 5, &frames), args(&declared));
+        assert_eq!(overlay_args(&input, &canvas, 5, &frames, &Watermarks::default()), args(&declared));
         // An older sidecar names no matrix: nothing is declared.
         frames.matrix.clear();
-        assert_eq!(overlay_args(&input, &canvas, 5, &frames), args(&[&raw[..], &tail].concat()));
+        assert_eq!(overlay_args(&input, &canvas, 5, &frames, &Watermarks::default()), args(&[&raw[..], &tail].concat()));
     }
 
     #[test]
     fn canvas_input() {
         let list = args(&["-i", "/m/a.mp4", "-headers", "h", "-i", "http://x:1/internal/graphics/2%2E1/28750?exp=1", "-f", "null", "-"]);
-        assert_eq!(find_canvas(&list), Some(Canvas { start: 2, index: 4, channel: "2.1".into() }));
+        assert_eq!(find_canvas(&list), Some(Canvas { start: 2, index: 4, channel: "2.1".into(), item: "28750".into() }));
         assert_eq!(find_canvas(&args(&["-i", "http://x/internal/graphics/1/7?region=a"])), None);
         assert!(find_canvas(&args(&["-i", "http://x/internal/graphics/1/7?region="])).is_some());
         assert_eq!(find_canvas(&args(&["-i", "http://x/internal/graphics/1/a"])), None);

@@ -685,6 +685,72 @@ test("ffmpeg overlay at a forced rate, blending, preset and catch-up: the media 
   );
 });
 
+test("ffmpeg overlay with ErsatzTV's watermarks: VizRS Bridge says which and where, they go on top of the graphics as image inputs; no answer or a refusal = none", async (t) => {
+  const vizrs = await fakeVizrs();
+  t.after(vizrs.close);
+  const cg = await sidecar(t, { vizrs: { address: vizrs.address, token: "" }, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4 });
+  const asked = [];
+  const etv = http.createServer((request, response) => {
+    if (request.url.startsWith("/vizrs-bridge/")) {
+      asked.push(request.url);
+      if (request.headers["x-vizrs-token"] !== "wm-token-0123456789") {
+        response.writeHead(401, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: false, error: "zły token mostu" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, result: { width: 8, height: 4, time_of_day: 100, watermarks: [
+        { name: "logo", image: "/config/cache/artwork/watermarks/ab/logo.png", x: 6, y: 0, width: 2, height: 2, opacity: 0.5, mode: "Permanent", frequency_seconds: 900, duration_seconds: 30, z_index: 0 },
+      ] } }));
+      return;
+    }
+    const child = spawn(CLIENT, [`${cg.url}/etv?channel=1`]);
+    child.stdout.resume();
+    child.stdin.end(JSON.stringify(item("/m/News.mp4", "2026-10-24T20:00:00+02:00")));
+    response.writeHead(200);
+    response.flushHeaders();
+    response.on("close", () => child.kill());
+  });
+  const etvPort = await listen(etv);
+  t.after(() => etv.close());
+  const dir = mkdtempSync(path.join(os.tmpdir(), "virtrs-ffmpeg-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ffmpeg = path.join(dir, "ffmpeg");
+  writeFileSync(ffmpeg, FAKE_FFMPEG);
+  chmodSync(ffmpeg, 0o755);
+  const env = { VIZRS_FFMPEG: ffmpeg, VIZRS_CG_URL: cg.url, VIZRS_BRIDGE_TOKEN: "wm-token-0123456789", FRAME_BYTES: String(yuvaSize(8, 4)), FRAMES: "2", TMPDIR: dir };
+  const command = [
+    "-i", "/m/News.mp4", "-headers", "x-etv-frame-rate:25/1\r\n",
+    "-i", `http://127.0.0.1:${etvPort}/internal/graphics/1/7?exp=1&sig=x`,
+    "-filter_complex", "[0:0]scale=8:4[v_m0];[1:0]format=yuva420p[v_s0];[v_m0][v_s0]overlay=x=0:y=0[v_o0]",
+    "-map", "[v_o0]", "-f", "null", "-",
+  ];
+
+  const overlay = await runWrapper(command, env);
+  assert.deepEqual(asked, ["/vizrs-bridge/watermarks/1/7"]);
+  const pipe = overlay.args.find((arg) => arg.startsWith("pipe:"));
+  assert.deepEqual(overlay.args, [
+    "-i", "/m/News.mp4",
+    "-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "8x4", "-framerate", "25/1", "-colorspace", "smpte170m", "-color_range", "tv", "-i", pipe,
+    "-loop", "1", "-framerate", "25/1", "-i", "/config/cache/artwork/watermarks/ab/logo.png",
+    "-filter_complex", grid(
+      "[2:v]scale=2:2,format=rgba,colorchannelmixer=aa=0.500,scale=out_color_matrix=smpte170m:out_range=tv,format=yuva420p,format=yuva420p[vz_k0];" +
+      "[0:0]scale=8:4[v_m0];[1:0]format=yuva420p[v_s0];[v_m0][v_s0]overlay=x=0:y=0[vz_kg];[vz_kg][vz_k0]overlay=x=6:y=0[v_o0]", "25/1"),
+    "-map", "[v_o0]", "-f", "null", "-",
+  ]);
+  assert.equal(overlay.read, 2 * yuvaSize(8, 4));
+
+  // A wrong token (or no bridge): the graphics as before, no watermarks.
+  const refused = await runWrapper(command, { ...env, VIZRS_BRIDGE_TOKEN: "other-token-0123456789" });
+  assert.ok(!refused.args.includes("-loop"), refused.args.join(" "));
+  assert.ok(refused.args.some((arg) => arg.includes("[vz_grid][v_s0]overlay=x=0:y=0[v_o0]")), refused.args.join(" "));
+  // Without a token the bridge is not asked.
+  asked.length = 0;
+  const { VIZRS_BRIDGE_TOKEN: _, ...without } = env;
+  assert.ok(!(await runWrapper(command, without)).args.includes("-loop"));
+  assert.deepEqual(asked, []);
+});
+
 test("graphics area: frames of the area overlaid at its place; full frames when the graph cannot place them", async (t) => {
   const vizrs = await fakeVizrs();
   t.after(vizrs.close);

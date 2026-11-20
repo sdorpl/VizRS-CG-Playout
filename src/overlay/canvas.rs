@@ -11,13 +11,15 @@ pub struct Canvas {
     pub index: usize,
     /// ErsatzTV channel from the canvas path.
     pub channel: String,
+    /// ErsatzTV playout item from the canvas path (digits).
+    pub item: String,
 }
 
-/// `/internal/graphics/<channel>/<item>`: the channel, still percent-encoded.
-pub(crate) fn canvas_channel(path: &str) -> Option<&str> {
+/// `/internal/graphics/<channel>/<item>`: the channel (still percent-encoded) and the playout item.
+pub(crate) fn canvas_target(path: &str) -> Option<(&str, &str)> {
     let (channel, item) = path.strip_prefix("/internal/graphics/")?.split_once('/')?;
     let valid = !channel.is_empty() && !item.is_empty() && item.bytes().all(|b| b.is_ascii_digit());
-    valid.then_some(channel)
+    valid.then_some((channel, item))
 }
 
 /// `urllib.parse.unquote`: `%XX` only, `+` stays.
@@ -33,13 +35,13 @@ pub fn find_canvas(args: &[OsString]) -> Option<Canvas> {
             continue;
         }
         let url = args[i + 1].to_str().and_then(Url::split);
-        if let Some((url, channel)) = url.and_then(|u| canvas_channel(u.path).map(|c| (u, c))).filter(|(u, _)| u.scheme == "http") {
+        if let Some((url, (channel, item))) = url.and_then(|u| canvas_target(u.path).map(|t| (u, t))).filter(|(u, _)| u.scheme == "http") {
             // A region canvas only carries watermarks: no VizRS element on the item.
             let region = url.query.split('&').any(|p| p.split_once('=').is_some_and(|(k, v)| unquote(k) == "region" && !v.is_empty()));
             if region {
                 return None;
             }
-            return Some(Canvas { start, index: i, channel: unquote(channel) });
+            return Some(Canvas { start, index: i, channel: unquote(channel), item: item.to_owned() });
         }
         start = i + 2;
     }

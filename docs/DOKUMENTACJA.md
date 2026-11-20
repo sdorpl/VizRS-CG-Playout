@@ -679,7 +679,48 @@ Warunki i różnice:
   kanału ErsatzTV (bez niego klient sam go ustala, §4). Nakładka zna kanał tylko
   z adresu płótna.
 - Z nakładką ErsatzTV nie rysuje własnych elementów grafiki tej pozycji
-  (tekst, obraz, watermarki z płótna). Logo i napisy daj do VizRS.
+  (tekst, obraz z płótna). Logo i napisy daj do VizRS. **Znaki wodne** rysuje
+  za to sama nakładka – niżej.
+
+#### Znaki wodne ErsatzTV
+
+ErsatzTV Next wkłada znaki wodne pozycji z elementem grafiki do tego samego
+płótna co element, więc po zastąpieniu płótna klatkami sidecara znikały
+z anteny, gdy tylko pozycja miała grafikę VizRS (pozycja bez elementów
+grafiki ma znaki jako zwykłe warstwy obrazu Next – nakładka ich nie dotyka).
+Teraz nakładka, przejmując płótno, pyta most VizRS Bridge w tym samym
+ErsatzTV (host i port z adresu płótna, `GET /vizrs-bridge/watermarks/<kanał>/<pozycja>`,
+§10) o znaki wodne pozycji – te same, które ErsatzTV narysowałby w płótnie,
+z jego położeniem i rozmiarem – i dokłada je do komendy:
+
+- każdy znak to wejście obrazu po ostatnim wejściu komendy (`-loop 1
+  -framerate <klatkaż> -i <obraz>`, GIF: `-ignore_loop 0`, animowany GIF się
+  zapętla; animowany PNG – pierwsza klatka), więc numery dotychczasowych
+  wejść się nie zmieniają;
+- w grafie: skalowanie do rozmiaru z mostu, krycie (stałe – `colorchannelmixer`;
+  przerywane – krzywa ErsatzTV: 1 s pojawiania, czas pokazu, 1 s znikania, co
+  N minut wg godziny ErsatzTV – `geq`), konwersja do `yuva420p` w macierzy
+  klatek grafiki, potem to samo przygotowanie co grafiki (`format`,
+  `hwupload`…) i nałożenie tym samym filtrem co grafika (`overlay`,
+  `overlay_cuda`, `overlay_vaapi`…) w miejscu z mostu – **zaraz po grafice
+  VizRS, zawsze na wierzchu**: znak przykrywa grafikę, także pełnoekranową
+  (dalsze filtry ErsatzTV po nałożeniu grafiki, np. `format=nv12|vaapi,hwupload`,
+  idą po ostatnim znaku);
+- obszary grafiki (§1, Obszar grafiki), synchronizacja w RAM
+  (`VIZRS_FFMPEG_SYNC_RAM`) i tryby `VIZRS_FFMPEG_CUDA` działają bez zmian
+  (filtry znaków przechodzą na CPU razem z resztą grafu).
+
+Warunki: ErsatzTV z mostem (obraz `vizrs-live-legacy`, nakładka
+`docker-compose.live.yml`) i `VIZRS_BRIDGE_TOKEN` w środowisku ErsatzTV (ta
+sama zmienna, z której korzysta most; nakładka dziedziczy ją jako proces
+potomny). Most pyta się równolegle z przejęciem sesji, najwyżej 1,5 s. Bez
+tokenu, bez mostu (sam `docker-compose.yml`, starszy most), z odmową albo bez
+odpowiedzi w czasie – pozycja idzie jak dotąd, bez znaków wodnych (wpis
+`vizrs-ffmpeg: watermarks: …` w logu ErsatzTV). Różnice wobec płótna ErsatzTV:
+znak zawsze nad grafiką VizRS (bez względu na `ZIndex` – w płótnie ErsatzTV
+warstwy szły wg `ZIndex`, a element VizRS ma 100); tryb „wyrażenie
+krycia” ma stałe krycie znaku; przebiegi live (przejęcie kanału przez live
+ingest, audycje LIVE) – bez znaków wodnych.
 - Kolory: klatki są w BT.709 (od 720 linii) albo BT.601, w zakresie
   ograniczonym, z alfą prostą (nie premultiplikowaną). Ścieżka ErsatzTV
   konwertowała zawsze w BT.601, więc w HD kolory grafiki są teraz wierniejsze.
@@ -2788,6 +2829,10 @@ Zasady zgodności i opis pakietu VizRS (trzy aplikacje: VizRS CG System, VizRS C
 - `ASPNETCORE_HOSTINGSTARTUPASSEMBLIES=VizRS.Bridge` – ASP.NET Core ładuje `BridgeHostingStartup`, który dokłada oprogramowanie pośrednie na początek potoku legacy (`IStartupFilter`).
 - `DOTNET_gcServer=0` – workstation GC zamiast server GC z runtimeconfig legacy (ok. połowa RAM, [§7](#testy-panelu)). Obraz **nie** ustawia limitu sterty (`DOTNET_GCHeapHardLimit`): po jego przekroczeniu legacy pada, a z nim emisja wszystkich kanałów; limit i `DOTNET_EnableWriteXorExecute=0` daje tylko nakładka Ampere A1 VizRS CG Playout (`docker-compose.ampere.yml`). Segmenty HLS (`/transcode`) – tmpfs w `docker-compose.yml` i `docker-compose.live.yml`.
 - Most kompiluje się tylko przeciw ASP.NET Core i `MediatR.dll` **z obrazu legacy** (wersja zawsze zgodna). Komendy legacy wyszukuje w czasie działania (refleksja po `ErsatzTV.Application`), więc nie wiąże się z ich wersją przy kompilacji.
+
+### Znaki wodne płótna grafiki
+
+`GET /vizrs-bridge/watermarks/{kanał}/{IdPozycji}` ([API.md §3](API.md#3-api-mostu-vizrs-bridge)) podaje nakładce `vizrs-ffmpeg` znaki wodne pozycji z elementem VizRS (§1, „Znaki wodne ErsatzTV”). Most liczy je tak jak legacy przy płótnie grafiki: tę samą pozycję i kanał (`GetGraphicsCanvasStreamHandler.LoadCanvasItem`, także kanał-lustro), ten sam wybór (`IWatermarkSelector.SelectWatermarks`: deco szablonu i playoutu, znaki pozycji, kanału i globalny, wyłączenie na czas wypełniaczy) i to samo położenie (`ImageElementBase.CalculateBounds` z rozmiarem obrazu i kadrem treści). Wszystko przez refleksję, bez kopiowania kodu legacy i bez zapisów; legacy w innej postaci (zmieniona nazwa albo sygnatura) = 500 z opisem, a nakładka zostaje bez znaków wodnych, jak dawniej. Obraz, którego nie da się odczytać, most pomija (wpis w logu legacy).
 
 ### API mostu
 
