@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.18 (2026-11-20)
+
 - **Wejście YouTube z ciasteczkami konta:** po wgraniu ciasteczek na S1 YouTube już nie odmawiał, ale yt-dlp kończył się „No video formats found!” – klienci YouTube dla zalogowanego konta wymagają rozwiązania zadania JavaScript („n challenge”), a w kontenerze nie było środowiska JS. Obraz `vizrs-cg` zawiera teraz Deno 2.9.8 (przypięte sumami SHA-256), instalowane przez sidecara na wolumen `vizrs-client` obok yt-dlp; odbiornik podaje je yt-dlp (`--js-runtimes`, `VIZRS_DENO`). Sidecar porównuje pliki klienta kawałkami (Deno ma ok. 96 MB). DOKUMENTACJA §1, Live ingest; THIRD-PARTY.
 
 ## 26.11.17 (2026-11-20)

@@ -11,7 +11,7 @@
 #   webkit2gtk (tylko Linux, już zależność Tauri: pisownia polska); tauri-build przy budowie.
 [package]
 name = "vizrs-live-desktop"
-version = "26.11.17"
+version = "26.11.18"
 license = "MIT"
 edition = "2021"
 description = "VizRS Live – aplikacja panelu kanału (Tauri 2)"
