@@ -692,7 +692,11 @@ fn wait(running: &Running, time: Duration) -> bool {
 /// The cookies yt-dlp gets for a YouTube input: `VIZRS_YTDLP_COOKIES` as it
 /// is, else a private copy of the file VizRS Live uploads (yt-dlp writes the
 /// file it reads, and two inputs at once must not write the same one), made
-/// again whenever the panel's file changes.
+/// again whenever the panel's file changes. YouTube rotates a session's
+/// cookies and takes the old ones, used again, for stolen – the session ends
+/// ("cookies are no longer valid"): what yt-dlp refreshed in the copy goes
+/// back to the panel's file (`keep_refreshed`), so that a new copy (the input
+/// chosen again, a restart, another input) starts from the newest.
 pub struct Cookies {
     panel: Option<std::path::PathBuf>,
     copy: std::path::PathBuf,
@@ -738,6 +742,50 @@ impl Cookies {
     pub fn changed(&self) -> bool {
         self.panel.as_deref().is_some_and(|panel| signature(panel) != self.seen)
     }
+
+    /// After yt-dlp: cookies it refreshed in the copy replace the panel's
+    /// file – only while that file is still the one the copy was made of (a
+    /// new upload wins). Written beside it and renamed, mode 0600, owned like
+    /// its folder (the sidecar's user reads it). A line for the log when kept.
+    pub fn keep_refreshed(&mut self) -> Option<String> {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let panel = self.panel.as_deref()?;
+        if self.seen.is_none() || signature(panel) != self.seen {
+            return None;
+        }
+        let refreshed = std::fs::read(&self.copy).ok()?;
+        if refreshed.is_empty() || std::fs::read(panel).ok()? == refreshed {
+            return None;
+        }
+        let folder = panel.parent()?;
+        let temporary = folder.join(format!(".youtube-cookies.{}.tmp", std::process::id()));
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)
+            .and_then(|mut file| file.write_all(&refreshed))
+            .and_then(|()| {
+                let owner = std::fs::metadata(folder)?;
+                // Only root may give a file away; as the folder's owner it is already its.
+                match std::os::unix::fs::chown(&temporary, Some(owner.uid()), Some(owner.gid())) {
+                    Err(e) if e.kind() != io::ErrorKind::PermissionDenied => Err(e),
+                    _ => Ok(()),
+                }
+            })
+            .and_then(|()| std::fs::rename(&temporary, panel));
+        match written {
+            Ok(()) => {
+                self.seen = signature(panel);
+                Some("YouTube refreshed the cookies; kept for VizRS Live's file".to_owned())
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temporary);
+                Some(format!("YouTube refreshed the cookies; VizRS Live's file not updated: {e}"))
+            }
+        }
+    }
 }
 
 impl Drop for Cookies {
@@ -745,6 +793,15 @@ impl Drop for Cookies {
         if self.panel.is_some() {
             let _ = std::fs::remove_file(&self.copy);
         }
+    }
+}
+
+/// yt-dlp's warning that YouTube ended the session of the cookies.
+fn rotated_note(stderr: &str) -> &'static str {
+    if stderr.contains("cookies are no longer valid") {
+        "the cookies are no longer valid (YouTube ended the session: rotated, signed out or used elsewhere) – upload new ones in VizRS Live; "
+    } else {
+        ""
     }
 }
 
@@ -817,7 +874,7 @@ fn resolve(settings: &Settings, url: &str, cookies: Option<&std::ffi::OsStr>, ru
     match status {
         None if running.stop.load(Ordering::Relaxed) => Err("stopped".into()),
         None => Err(format!("yt-dlp gave no answer in {} s", RESOLVE_LIMIT.as_secs())),
-        Some(status) if !status.success() => Err(ytdlp_error(&stderr)),
+        Some(status) if !status.success() => Err(format!("{}{}", rotated_note(&stderr), ytdlp_error(&stderr))),
         Some(_) => parse_found(&stdout),
     }
 }
@@ -863,7 +920,11 @@ fn pull(settings: &Settings, listener: &Listener, running: &Running) {
         if let Some(change) = change {
             log(format_args!("channel {channel}: YouTube {url}: {change}"));
         }
-        let found = match resolve(settings, url, file.as_deref(), running) {
+        let resolved = resolve(settings, url, file.as_deref(), running);
+        if let Some(kept) = cookies.keep_refreshed() {
+            log(format_args!("channel {channel}: YouTube {url}: {kept}"));
+        }
+        let found = match resolved {
             Ok(found) => found,
             Err(e) => {
                 if !running.stop.load(Ordering::Relaxed) {
@@ -1271,9 +1332,23 @@ mod tests {
         assert!(note.unwrap().contains("3 bytes"));
         assert_eq!(std::fs::read_to_string(&copy).unwrap(), "one");
         assert_eq!(std::fs::metadata(&copy).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(cookies.keep_refreshed(), None, "nothing refreshed, nothing written");
         std::fs::write(&copy, "refreshed by yt-dlp").unwrap();
+        assert!(cookies.keep_refreshed().unwrap().contains("kept"));
+        assert_eq!(std::fs::read_to_string(&panel).unwrap(), "refreshed by yt-dlp", "the next copy starts from the newest");
+        assert_eq!(std::fs::metadata(&panel).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(!cookies.changed(), "its own write is not an upload");
+        assert_eq!(cookies.keep_refreshed(), None);
         assert_eq!(cookies.file(&from_panel), (Some(copy.clone().into_os_string()), None), "yt-dlp's own changes stay");
         assert_eq!(std::fs::read_to_string(&copy).unwrap(), "refreshed by yt-dlp");
+        let mut other = Cookies::new(&from_panel, dir.join("other.txt"));
+        other.file(&from_panel);
+        assert_eq!(std::fs::read_to_string(dir.join("other.txt")).unwrap(), "refreshed by yt-dlp", "another input too");
+        std::fs::write(dir.join("other.txt"), "stale").unwrap();
+        crate::yt_cookies::save(&dir, "uploaded meanwhile").unwrap();
+        assert_eq!(other.keep_refreshed(), None, "a new upload is not overwritten");
+        assert_eq!(std::fs::read_to_string(&panel).unwrap(), "uploaded meanwhile");
+        drop(other);
         crate::yt_cookies::save(&dir, "second").unwrap();
         assert!(cookies.changed());
         assert!(cookies.file(&from_panel).1.is_some());

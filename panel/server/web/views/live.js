@@ -289,10 +289,11 @@ async function editCookies() {
       h('li', null, 'W przeglądarce otwórz okno prywatne, zaloguj się na youtube.com i otwórz dowolny film.'),
       h('li', null, 'Rozszerzeniem do eksportu ciasteczek (format cookies.txt / Netscape albo JSON) zapisz ciasteczka youtube.com.'),
       h('li', null, 'Zamknij okno prywatne bez wylogowania – inaczej YouTube unieważni te ciasteczka.'),
+      h('li', null, 'Każdy serwer dostaje własny eksport (osobne logowanie): te same ciasteczka użyte z dwóch serwerów YouTube unieważnia.'),
       h('li', null, 'Wgraj plik albo wklej jego treść niżej i zapisz.')),
     h('div', { class: 'bar' }, file, info),
     text,
-    h('p', { class: 'dim' }, 'Zapis działa od następnego pytania YouTube (wejście w oczekiwaniu pyta od razu). Ciasteczka to logowanie do konta: leżą na serwerze tylko dla CG Playout, panel pokazuje jedynie liczbę i ważność.'));
+    h('p', { class: 'dim' }, 'Zapis działa od następnego pytania YouTube (wejście w oczekiwaniu pyta od razu); ciasteczka odświeżane przez YouTube CG Playout zapisuje sam (data „Wgrane” to wtedy ostatnie odświeżenie). Ciasteczka to logowanie do konta: leżą na serwerze tylko dla CG Playout, panel pokazuje jedynie liczbę i ważność.'));
   const buttons = [['Anuluj', false]];
   if (st.present) buttons.push(['Usuń ciasteczka', 'delete', 'danger']);
   buttons.push(['Zapisz', 'save', 'acc']);

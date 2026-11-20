@@ -1172,6 +1172,18 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    yt-dlp zapisuje odświeżone ciasteczka do pliku, który czyta, a dwa wejścia
    naraz nie mogą pisać do jednego); kopię robi od nowa, gdy plik z panelu
    się zmieni, i wtedy wejście czekające na ponowienie pyta od razu, bez 30 s.
+   YouTube co jakiś czas wymienia ciasteczka sesji, a stare użyte ponownie
+   bierze za wykradzione i kończy sesję (yt-dlp: „The provided YouTube account
+   cookies are no longer valid”). Dlatego po każdym pytaniu odbiornik zapisuje
+   ciasteczka odświeżone przez yt-dlp z powrotem do pliku z panelu (obok
+   i zmiana nazwy, 0600, właściciel jak katalogu – sidecar dalej go czyta),
+   o ile plik nie zmienił się od zrobienia kopii (nowe wgranie wygrywa);
+   następna kopia (ponowny wybór wejścia, restart, inne wejście) zaczyna od
+   najnowszych. Te same ciasteczka na dwóch serwerach – jeden wymienia,
+   drugi używa starych – też kończą sesję: każdy serwer potrzebuje własnego
+   eksportu. Log przy unieważnieniu: „the cookies are no longer valid … –
+   upload new ones”. yt-dlp zapisuje ciasteczka sesyjne bez daty – sidecar
+   je przyjmuje (data 0).
    Usunięcie w panelu = wejścia bez ciasteczek. `VIZRS_YTDLP_COOKIES`
    (własny plik, zapisywalny) wygrywa z plikiem z panelu. Ciasteczka wygasają
    albo YouTube je unieważnia (wylogowanie, eksport z otwartej dalej

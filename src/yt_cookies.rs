@@ -91,9 +91,13 @@ fn flag(field: &str, line: usize) -> Result<bool, String> {
     }
 }
 
-/// Seconds of an expiry (an integer, or a fraction some exporters write); negative = a session cookie.
+/// Seconds of an expiry (an integer, or a fraction some exporters write);
+/// empty (yt-dlp's own file) or negative = a session cookie.
 fn seconds(text: &str) -> Option<i64> {
     let text = text.trim();
+    if text.is_empty() {
+        return Some(0);
+    }
     text.parse::<i64>().ok().or_else(|| text.parse::<f64>().ok().filter(|s| s.is_finite()).map(|s| s as i64)).map(|s| s.max(0))
 }
 
@@ -274,6 +278,15 @@ mod tests {
         assert_eq!(cookies[0].line(), "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tv");
         assert_eq!(cookies[1].line(), "www.youtube.com\tFALSE\t/\tFALSE\t0\tVISITOR\tw");
         assert!(parse(r#"{"cookies":[{"domain":".youtube.com","name":"a","value":"b"}]}"#).is_ok());
+    }
+
+    #[test]
+    fn the_file_ytdlp_writes_back() {
+        // Python's MozillaCookieJar: no expiry for a session cookie.
+        let text = "# Netscape HTTP Cookie File\n# http://curl.haxx.se/rfc/cookie_spec.html\n# This is a generated file!  Do not edit.\n\n.youtube.com\tTRUE\t/\tTRUE\t\tYSC\tx\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\ts\n";
+        let cookies = parse(text).unwrap();
+        assert_eq!(cookies[0].expires, 0);
+        assert_eq!(summary(&cookies).expires, Some(1_893_456_000));
     }
 
     #[test]
