@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.21 (2026-11-21)
+
 - **Zakończona sesja YouTube widoczna w panelu:** gdy YouTube kończy sesję konta, kasuje ciasteczka logowania; odbiornik zapisywał wtedy okrojony plik w miejsce wgranego, a panel dalej pokazywał „Konto zalogowane” (S1 2026-11-20: live z YouTube stanął po 5 h). Teraz plik z panelu zostaje, panel pokazuje na czerwono „YouTube zakończył sesję … – wgraj nowe ciasteczka” (`ended_at` w `/api/live/youtube-cookies`), a „zalogowane” liczy się jak w yt-dlp (`LOGIN_INFO` + `SAPISID`/`__Secure-*PAPISID`). DOKUMENTACJA §1, API.md.
 
 ## 26.11.20 (2026-11-21)
