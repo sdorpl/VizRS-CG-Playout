@@ -3,9 +3,15 @@
 //   POST /etv?channel=1[&render=720p][&area=1920x140+0+940]
 //                         body: ErsatzTV template data (JSON from the script
 //                         element's stdin); reply: endless ETV packet stream
+//   POST /etv?channel=1&live=1
+//                         a session of the overlay itself for the live runs of
+//                         a piece whose item has no VizRS element: only the
+//                         channel's graphics (the `on_live` of the takeover),
+//                         no schedule rules (no on_clip, no end of item, no ad);
+//                         taken over only with `/ffmpeg?…&live=1`
 //   GET  /etv/pages       pages of the VizRS show, for the page elements of
 //                         ErsatzTV (`vizrs-etv-client`, src/sync.rs)
-//   GET  /ffmpeg?channel=1[&wait=2000][&area=1]
+//   GET  /ffmpeg?channel=1[&wait=2000][&area=1][&live=1]
 //                         the ffmpeg overlay (vizrs-ffmpeg) takes over
 //                         a script session of the channel: its packets
 //                         stop, the reply gives the session, size, rate and
@@ -153,7 +159,13 @@ struct Script {
     frames: AtomicBool,
     hold: Mutex<Option<Timer>>,
     claim_timer: Mutex<Option<Timer>>,
+    /// The overlay's own session for live runs (`POST /etv?…&live=1`): only
+    /// an overlay asking for one (`/ffmpeg?…&live=1`) takes it, and only it.
+    live: bool,
 }
+
+/// Keys of the overlay's own live sessions (`carriers`): each its own, never a piece of ErsatzTV.
+static LIVE_SESSIONS: AtomicU64 = AtomicU64::new(0);
 
 fn cancel(slot: &Mutex<Option<Timer>>) {
     if let Some(timer) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -162,7 +174,8 @@ fn cancel(slot: &Mutex<Option<Timer>>) {
 }
 
 /// A `/ffmpeg` request waiting for a script session of its channel.
-type Waiter = (u64, Sender<Arc<Script>>);
+/// An overlay waiting for a session of a channel: its id, whether it wants a live session, where it goes.
+type Waiter = (u64, bool, Sender<Arc<Script>>);
 
 #[derive(Default)]
 struct Sessions {
@@ -856,7 +869,12 @@ impl Server {
             }
             ("GET", "/ingest/listeners") => self.panel.listeners_request(&request, stream, &self.ingest),
             ("POST", "/ingest/listeners/done") => self.panel.listener_done(&request, stream, &self.ingest),
-            ("GET", "/ingest/state") => self.ingest.state_request(&request, stream),
+            ("GET", "/ingest/state") => {
+                // The overlay draws these ErsatzTV watermarks over a takeover (the input's own, else the channel's).
+                let channel = request.param("channel").unwrap_or("");
+                let marks = self.panel.live_watermark(channel, self.ingest.input_of(channel).as_deref());
+                self.ingest.state_request(&request, stream, &marks)
+            }
             ("GET", "/ingest") => self.ingest.read_request(&request, stream),
             ("POST", "/ingest") => self.ingest.source_request(&request, stream),
             ("POST", "/etv") => {
@@ -886,8 +904,12 @@ impl Server {
         }
     }
 
-    fn free(sessions: &Sessions, channel: &str) -> Option<Arc<Script>> {
-        sessions.scripts.values().find(|s| s.channel == channel && !s.claimed.load(Ordering::Relaxed) && s.capture.is_some()).cloned()
+    fn free(sessions: &Sessions, channel: &str, live: bool) -> Option<Arc<Script>> {
+        sessions
+            .scripts
+            .values()
+            .find(|s| s.channel == channel && s.live == live && !s.claimed.load(Ordering::Relaxed) && s.capture.is_some())
+            .cloned()
     }
 
     /// The overlay takes the session: ErsatzTV gets no more packets from it.
@@ -907,17 +929,17 @@ impl Server {
         *script.claim_timer.lock().unwrap_or_else(|e| e.into_inner()) = Some(timer);
     }
 
-    fn wait_for_script(&self, channel: &str, wait: Duration) -> Option<Arc<Script>> {
+    fn wait_for_script(&self, channel: &str, wait: Duration, live: bool) -> Option<Arc<Script>> {
         let (id, receiver) = {
             let mut sessions = lock(&self.sessions);
-            if let Some(script) = Self::free(&sessions, channel) {
+            if let Some(script) = Self::free(&sessions, channel, live) {
                 Self::claim(&mut sessions, &script);
                 return Some(script);
             }
             let (sender, receiver) = mpsc::channel();
             sessions.next_waiter += 1;
             let id = sessions.next_waiter;
-            sessions.waiters.entry(channel.to_owned()).or_default().push((id, sender));
+            sessions.waiters.entry(channel.to_owned()).or_default().push((id, live, sender));
             (id, receiver)
         };
         if let Ok(script) = receiver.recv_timeout(wait) {
@@ -925,7 +947,7 @@ impl Server {
         }
         let mut sessions = lock(&self.sessions);
         if let Some(list) = sessions.waiters.get_mut(channel) {
-            list.retain(|(w, _)| *w != id);
+            list.retain(|(w, _, _)| *w != id);
         }
         // A session may have been handed over just as the wait ran out.
         receiver.try_recv().ok()
@@ -939,8 +961,11 @@ impl Server {
         if script.capture.is_none() {
             return;
         }
-        let waiter = sessions.waiters.get_mut(&script.channel).filter(|list| !list.is_empty()).map(|list| list.remove(0));
-        if let Some((_, waiter)) = waiter {
+        let waiter = sessions
+            .waiters
+            .get_mut(&script.channel)
+            .and_then(|list| list.iter().position(|(_, live, _)| *live == script.live).map(|at| list.remove(at)));
+        if let Some((_, _, waiter)) = waiter {
             Self::claim(&mut sessions, script);
             let _ = waiter.send(Arc::clone(script));
         }
@@ -950,7 +975,8 @@ impl Server {
         let channel = request.param("channel").unwrap_or("1").to_owned();
         let wait = js_number(request.param("wait").unwrap_or("2000"));
         let wait = if wait.is_nan() { 0.0 } else { wait.clamp(0.0, MAX_WAIT_MS) };
-        let Some(script) = self.wait_for_script(&channel, Duration::from_secs_f64(wait / 1000.0)) else {
+        let live = request.param("live") == Some("1");
+        let Some(script) = self.wait_for_script(&channel, Duration::from_secs_f64(wait / 1000.0), live) else {
             return http::respond(&mut stream, 404, None, b"");
         };
 
@@ -1175,6 +1201,8 @@ impl Server {
             ctx.seek
         );
 
+        // The overlay's own session for live runs: the graphics of the channel only.
+        let live = request.param("live") == Some("1");
         // Commands go out in the background; frames start at once.
         let custom_commands = if let Some(cmd) = request.param("cmd").or_else(|| request.param("command")) {
             Some(vec![cmd.to_owned()])
@@ -1190,11 +1218,13 @@ impl Server {
         for warning in warnings {
             crate::warn!("channel {channel}: {warning}");
         }
-        events.session(&ctx, custom_commands.as_deref(), timing);
-        if custom_commands.is_none() {
+        if !live {
+            events.session(&ctx, custom_commands.as_deref(), timing);
+        }
+        if custom_commands.is_none() && !live {
             lock(&self.sessions).general.insert(channel.clone());
         }
-        if let Some(commands) = &custom_commands {
+        if let Some(commands) = custom_commands.as_ref().filter(|_| !live) {
             let now = crate::time::now_ms() as u64;
             let mut sessions = lock(&self.sessions);
             let pages = sessions.element_pages.entry(channel.clone()).or_default();
@@ -1202,7 +1232,11 @@ impl Server {
             pages.extend(vizrs::taken_pages(commands).into_iter().map(|page| (page, now)));
         }
 
-        let piece = format!("{channel}|{}|{}", ctx.start, ctx.seek);
+        let piece = if live {
+            format!("{channel}|live|{}", LIVE_SESSIONS.fetch_add(1, Ordering::Relaxed))
+        } else {
+            format!("{channel}|{}|{}", ctx.start, ctx.seek)
+        };
         let carrier = lock(&self.sessions).carriers.insert(piece.clone());
         let spec = request.param("render").unwrap_or(&self.config.render_size).to_owned();
         let area = request.param("area").unwrap_or(&self.config.area).to_owned();
@@ -1245,6 +1279,7 @@ impl Server {
                     frames: AtomicBool::new(false),
                     hold: Mutex::new(None),
                     claim_timer: Mutex::new(None),
+                    live,
                 })
             };
             if held {
@@ -1281,7 +1316,9 @@ impl Server {
         if carrier {
             lock(&self.sessions).carriers.remove(&piece);
         }
-        events.ended(&ctx);
+        if !live {
+            events.ended(&ctx);
+        }
     }
 }
 

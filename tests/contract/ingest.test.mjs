@@ -106,7 +106,7 @@ async function state(cg, channel) {
 
 test("ingest API: token, live from the first keyframe, readers join there, one source per channel", async (t) => {
   const cg = await sidecar(t, { ingest_token: TOKEN });
-  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null });
+  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null, live_watermark: "" });
 
   const refused = await postSource(cg, "1", "wrong");
   assert.equal(refused.status, 401);
@@ -121,7 +121,7 @@ test("ingest API: token, live from the first keyframe, readers join there, one s
 
   source.socket.write(Buffer.concat([video(true, 2), video(false, 3)]));
   for (let i = 0; i < 40 && !(await state(cg, "1")).live; i++) await sleep(50);
-  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, hold: false, live: true, audio: true, video: "h264", fps: null, seconds: 0 }, "fps: too few pictures to tell");
+  assert.deepEqual(await state(cg, "1"), { enabled: true, anytime: true, hold: false, live: true, audio: true, video: "h264", fps: null, seconds: 0, live_watermark: "" }, "fps: too few pictures to tell");
   assert.equal((await cg.health()).ingest[0].channel, "1");
 
   const second = await postSource(cg, "1", TOKEN);
@@ -193,13 +193,23 @@ test("live takes a piece over: RTMP listener, overlay with graphics, live graphi
 
   // The sidecar lists the listeners for the listener service (GET /ingest/listeners): the same VIZRS_INGEST.
   const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  // The takeover's ErsatzTV watermark (live_watermark "3") from a stand-in of VizRS Bridge.
+  const mark = path.join(dir, "mark.png");
+  execFileSync(FFMPEG, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=40x40", "-frames:v", "1", mark]);
+  const bridge = http.createServer((request, response) => {
+    const ok = request.url === "/vizrs-bridge/watermarks/1?ids=3";
+    response.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(ok ? { ok: true, result: { width: 320, height: 180, time_of_day: 0, watermarks: [{ image: mark, x: 200, y: 100, width: 40, height: 40, opacity: 1 }] } } : { ok: false }));
+  });
+  const bridgePort = await listen(bridge);
+  t.after(() => bridge.close());
   const vizrs = await fakeVizrs([{ layer: "main", page: { number: 4001 } }]);
   t.after(vizrs.close);
   const cg = await sidecar(
     t,
     {
       ingest_token: TOKEN, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1,
-      vizrs: { address: vizrs.address, token: "" }, panel_token: "panel-test", on_clip: "TAKE 4001", channels: { 1: { on_live: "TAKE 7510" } },
+      vizrs: { address: vizrs.address, token: "" }, panel_token: "panel-test", on_clip: "TAKE 4001", channels: { 1: { on_live: "TAKE 7510", live_watermark: "3" } },
     },
     { VIZRS_INGEST: `1=${rtmp}` },
   );
@@ -241,7 +251,13 @@ test("live takes a piece over: RTMP listener, overlay with graphics, live graphi
     "-f", "hls", "-hls_time", "2", "-hls_list_size", "0", "-hls_segment_filename", path.join(out, "live%06d.ts"), "-hls_segment_type", "mpegts",
     "-hls_flags", "program_date_time+omit_endlist+append_list+independent_segments", "-hls_segment_options", "mpegts_flags=+initial_discontinuity",
     path.join(out, "live.m3u8"),
-  ], { env: { PATH: process.env.PATH, VIZRS_FFMPEG: FFMPEG, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_INGEST: "1" }, stdio: ["ignore", "ignore", "pipe"] });
+  ], {
+    env: {
+      PATH: process.env.PATH, VIZRS_FFMPEG: FFMPEG, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_INGEST: "1",
+      VIZRS_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, VIZRS_BRIDGE_TOKEN: "bridge-test-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
   const pieceLog = [];
   piece.stderr.on("data", (chunk) => pieceLog.push(chunk));
   const pieceExit = new Promise((resolve) => piece.once("exit", resolve));
@@ -301,6 +317,9 @@ test("live takes a piece over: RTMP listener, overlay with graphics, live graphi
   const last = grey.lastIndexOf(true);
   assert.ok(first > 0 && last < grey.length - 1, `live in the middle: ${JSON.stringify(colours)}\n${log}\n${Buffer.concat(listenerLog)}\n${playlist}\n${cg.logs()}`);
   assert.ok(grey.slice(first, last + 1).every(Boolean), "one live stretch");
+  // The takeover's watermark over the studio and its graphics, not over the schedule.
+  const red = lengths.map(([name]) => { const [r, g, b] = pixel(path.join(out, name), 220, 120); return r > 180 && g < 70 && b < 70; });
+  assert.ok(red.every((r, i) => r === grey[i]), `the watermark with the studio only: ${JSON.stringify({ red, grey })}\n${log}`);
 
   // The studio gone: the logo out and the schedule's page back.
   let back = false;
@@ -310,6 +329,108 @@ test("live takes a piece over: RTMP listener, overlay with graphics, live graphi
   }
   assert.ok(back, `the schedule's graphics back after the takeover: ${JSON.stringify(vizrs.received)}`);
   assert.equal(vizrs.received.slice(logo + 1).filter((l) => l === "TAKE 4001").length, 1, "no schedule TAKE during the takeover");
+});
+
+test("live takes over a piece without a VizRS element: the overlay's own live session, on_live and the ErsatzTV watermark on air, no schedule rules", { skip: !FFMPEG && "no ffmpeg" }, async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "vizrs-ingest-plain-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const media = path.join(dir, "show.mp4");
+  execFileSync(FFMPEG, [
+    "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25", "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000",
+    "-t", "30", "-c:v", "libx264", "-preset", "ultrafast", "-g", "25", "-c:a", "aac", "-shortest", media,
+  ]);
+  const out = path.join(dir, "transcode", "1");
+  mkdirSync(out, { recursive: true });
+  const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  // The takeover's ErsatzTV watermark (live_watermark "3"): VizRS Bridge in ErsatzTV says where and which image.
+  const mark = path.join(dir, "mark.png");
+  execFileSync(FFMPEG, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=40x40", "-frames:v", "1", mark]);
+  const bridgeAsked = [];
+  const bridge = http.createServer((request, response) => {
+    bridgeAsked.push(`${request.url} ${request.headers["x-vizrs-token"]}`);
+    const ok = request.url === "/vizrs-bridge/watermarks/1?ids=3" && request.headers["x-vizrs-token"] === "bridge-test-token";
+    response.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(ok
+      ? { ok: true, result: { width: 320, height: 180, time_of_day: 0, watermarks: [{ name: "LIVE", image: mark, x: 200, y: 100, width: 40, height: 40, opacity: 1, mode: "Permanent" }] } }
+      : { ok: false, error: "?" }));
+  });
+  const bridgePort = await listen(bridge);
+  t.after(() => bridge.close());
+  const vizrs = await fakeVizrs([{ layer: "main", page: { number: 4001 } }]);
+  t.after(vizrs.close);
+  const cg = await sidecar(
+    t,
+    {
+      ingest_token: TOKEN, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1,
+      vizrs: { address: vizrs.address, token: "" }, on_clip: "TAKE 4001", channels: { 1: { on_live: "TAKE 7510", live_watermark: "3" } },
+    },
+    { VIZRS_INGEST: `1=${rtmp}` },
+  );
+  const listener = spawn(WRAPPER, ["vizrs-ingest"], {
+    env: { PATH: process.env.PATH, VIZRS_CG_URL: cg.url, VIZRS_INGEST_TOKEN: TOKEN, VIZRS_FFMPEG: FFMPEG, VIZRS_INGEST: `1=${rtmp}` },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  t.after(() => listener.kill("SIGKILL"));
+
+  // An item with no graphics element: ErsatzTV's command has no canvas input.
+  const piece = spawn(WRAPPER, [
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-readrate", "1.0", "-i", media,
+    "-filter_complex", "[0:0]fps=25,setsar=1[v_o0]",
+    "-map", "[v_o0]", "-map", "0:1", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-ac", "2", "-t", "12000ms", "-g", "50",
+    "-f", "hls", "-hls_time", "2", "-hls_list_size", "0", "-hls_segment_filename", path.join(out, "live%06d.ts"), "-hls_segment_type", "mpegts",
+    "-hls_flags", "program_date_time+omit_endlist+append_list+independent_segments", "-hls_segment_options", "mpegts_flags=+initial_discontinuity",
+    path.join(out, "live.m3u8"),
+  ], {
+    env: {
+      PATH: process.env.PATH, VIZRS_FFMPEG: FFMPEG, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_INGEST: "1",
+      VIZRS_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, VIZRS_BRIDGE_TOKEN: "bridge-test-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  const pieceLog = [];
+  piece.stderr.on("data", (chunk) => pieceLog.push(chunk));
+  const pieceExit = new Promise((resolve) => piece.once("exit", resolve));
+  // The sidecar takes over pieces of the schedule only with `anytime`.
+  const before = await state(cg, "1");
+  assert.equal(before.anytime, true);
+  assert.equal(before.live_watermark, "3", "the overlay learns the takeover's watermarks from the state");
+
+  await sleep(2500);
+  const publisher = spawn(FFMPEG, [
+    "-v", "error", "-re", "-f", "lavfi", "-i", "smptebars=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=880:sample_rate=44100",
+    "-t", "4", "-c:v", "libx264", "-preset", "ultrafast", "-g", "15", "-c:a", "aac", "-f", "flv", rtmp,
+  ], { stdio: "ignore" });
+  t.after(() => publisher.kill("SIGKILL"));
+  let logo = -1;
+  for (let i = 0; i < 100 && logo < 0; i++) {
+    logo = vizrs.received.indexOf("TAKE 7510");
+    await sleep(100);
+  }
+  const code = await pieceExit;
+  const log = Buffer.concat(pieceLog).toString();
+  assert.equal(code, 0, log);
+  assert.match(log, /live graphics of channel 1 on the live runs \(no VizRS element on the item\)/, `${log}\n${cg.logs()}`);
+  assert.match(log, /channel 1: live from \d+\.\d s of the piece/);
+  assert.ok(logo >= 0, `on_live on air with the studio: ${JSON.stringify(vizrs.received)}\n${cg.logs()}`);
+  assert.match(cg.logs(), /ffmpeg overlay took over the graphics of live ingest/);
+  // No on_clip from the overlay's session: before the takeover only what the fake VizRS had on air (main = 4001).
+  assert.ok(!vizrs.received.slice(0, logo).includes("TAKE 4001"), `the overlay's live session runs no schedule rules: ${JSON.stringify(vizrs.received)}`);
+  const segments = playlistSegments(out);
+  const grey = segments.map(({ colour: [r, g, b] }) => Math.abs(r - 191) < 12 && Math.abs(g - 191) < 12 && Math.abs(b - 191) < 12);
+  assert.ok(grey.includes(true) && !grey[0], `the studio in the piece: ${JSON.stringify(segments)}`);
+  // The watermark over the studio, not over the schedule.
+  assert.match(log, /1 ErsatzTV watermark\(s\) of the live takeover \(3\)/, `${log}\n${JSON.stringify(bridgeAsked)}`);
+  const red = segments.map(({ name }) => { const [r, g, b] = pixel(path.join(out, name), 220, 120); return r > 180 && g < 70 && b < 70; });
+  assert.ok(red.every((r, i) => r === grey[i]), `the watermark on the studio's segments only: ${JSON.stringify({ red, grey })}`);
+  assert.ok(red.some(Boolean), `the watermark on air with the studio: ${JSON.stringify({ red, grey })}`);
+  let gone = false;
+  for (let i = 0; i < 100 && !gone; i++) {
+    gone = vizrs.received.slice(logo).includes("OUT 7510");
+    await sleep(100);
+  }
+  assert.ok(gone, `the live logo out after the takeover: ${JSON.stringify(vizrs.received)}`);
+  const after = vizrs.received.slice(vizrs.received.indexOf("OUT 7510"));
+  assert.ok(after.filter((l) => l === "TAKE 4001").length <= 1, `only the page held by the takeover comes back: ${JSON.stringify(vizrs.received)}`);
 });
 
 /** Segments of a playlist: names, lengths and the colour at 10,10 of their first frame. */
@@ -328,11 +449,16 @@ test("live programme in the schedule: Remote Stream definition, standby without 
   const etvConfig = path.join(dir, "etv-config");
   mkdirSync(etvConfig);
   const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  // The channel's live graphics are for a takeover only: a live programme keeps its own (none here).
+  const vizrs = await fakeVizrs([]);
+  t.after(vizrs.close);
   const cg = await sidecar(
     t,
     {
       ingest_token: TOKEN,
       ingest_anytime: false,
+      vizrs: { address: vizrs.address, token: "" },
+      channels: { 1: { on_live: "TAKE 7510" } },
       etv_config: etvConfig,
       live_shows: [{ channel: "1", title: "Wiadomości na żywo", duration: "00:30:00", plot: "Ze studia" }],
     },
@@ -398,6 +524,8 @@ test("live programme in the schedule: Remote Stream definition, standby without 
   const [done, schedule] = await Promise.all([live, piece]);
   assert.equal(done.code, 0, done.log);
   assert.match(done.log, /channel 1: live from \d+\.\d s of the piece/);
+  assert.ok(!vizrs.received.includes("TAKE 7510"), `a live programme is no takeover: ${JSON.stringify(vizrs.received)}\n${cg.logs()}`);
+  assert.doesNotMatch(cg.logs(), /live takeover: schedule graphics held/);
   assert.equal(schedule.code, 0, schedule.log);
   assert.doesNotMatch(schedule.log, /live from/, "ingest_anytime off: the schedule's piece plays on");
 

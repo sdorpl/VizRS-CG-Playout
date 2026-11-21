@@ -8,17 +8,19 @@
 //                              until the connection closes
 //   GET  /ingest?channel=1     the live source: PAT, PMT and the stream from
 //                              its last keyframe on; ends with the source
-//   GET  /ingest?channel=1&take=44.000
+//   GET  /ingest?channel=1&take=44.000[&programme=1]
 //                              the same for a live run of the overlay that is
 //                              to produce `take` seconds: from the keyframe
-//                              nearest to where the run before stopped
+//                              nearest to where the run before stopped; it takes
+//                              the channel's graphics over (`on_live`), except
+//                              with `programme=1` – a live programme of the schedule
 //   GET  /ingest?channel=1&slot=1
 //                              the live slot of a scheduled live programme
 //                              (src/live_shows.rs): the source while live, else
 //                              a second of black and silence without a length,
 //                              so that ErsatzTV's ffprobe of the item works
 //   GET  /ingest/state?channel=1
-//                              {"enabled":…,"anytime":…,"hold":…,"live":…,"audio":…,"video":…}
+//                              {"enabled":…,"anytime":…,"hold":…,"live":…,"audio":…,"video":…,"live_watermark":"3,5"}
 //
 // Readers of the overlay's live runs (`take=<seconds>`, src/takeover.rs) go on
 // from where the run before stopped: the sidecar keeps the last `HISTORY` of
@@ -790,7 +792,8 @@ impl Ingest {
         )
     }
 
-    pub fn state_request(&self, request: &Request, mut stream: TcpStream) -> io::Result<()> {
+    /// `GET /ingest/state`; `live_watermark` – the ErsatzTV watermarks (ids) of a takeover of the channel now.
+    pub fn state_request(&self, request: &Request, mut stream: TcpStream, live_watermark: &str) -> io::Result<()> {
         let channel = request.param("channel").unwrap_or("");
         let mut state = match self.feed(channel) {
             Some(feed) => feed.state(),
@@ -815,6 +818,7 @@ impl Ingest {
             members.insert(0, ("enabled".into(), self.enabled().into()));
             members.insert(1, ("anytime".into(), self.anytime_of(channel).into()));
             members.insert(2, ("hold".into(), hold.into()));
+            members.push(("live_watermark".into(), live_watermark.into()));
         }
         http::respond(&mut stream, 200, Some("application/json"), state.to_string().as_bytes())
     }
@@ -935,7 +939,10 @@ impl Ingest {
         // A live run of the overlay (`take`) goes on from where the one before stopped.
         let take = request.param("take").and_then(|t| t.parse::<f64>().ok()).filter(|t| t.is_finite() && *t > 0.0);
         // Counted while it reads: the channel is taken over (its graphics, src/server.rs).
-        let _reader = take.map(|_| TakeReader::new(&self.takes, channel));
+        // Not the live run of a live programme of the schedule (`programme=1`): no
+        // takeover, the programme's own graphics (its item's) stay on air.
+        let programme = request.param("programme") == Some("1");
+        let _reader = take.filter(|_| !programme).map(|_| TakeReader::new(&self.takes, channel));
         let mut from = match take {
             Some(take) => {
                 let (from, behind, dropped) = feed.follow(take);

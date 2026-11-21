@@ -437,3 +437,6 @@ img.mini { cursor: zoom-in; }
   .tw.stack td.act { display: flex; justify-content: flex-end; width: auto; padding-top: 6px; }
   .tw.stack td.act button { padding: 4px 12px; }
 }
+/* znak wodny ErsatzTV na przejęcie przez live ingest (views/znaki.js watermarkPicker): pod grafiką reguły kanału i wejścia */
+.rule-card > .wm-picker { padding: 0 12px 8px; }
+.inputs-edit .in-graphics > .wm-picker { grid-column: 1 / -1; }

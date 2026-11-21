@@ -14,6 +14,7 @@
 //   GET  /vizrs-bridge/framerates        klatkaż wyjściowy profili kodowania -> {"ok":true,"result":{"active":…,"problem":…,"rates":{"<IdProfilu>":"25"}}}
 //   POST /vizrs-bridge/framerate/{IdProfilu}  {"rate":"25"|"30000/1001"|null} – ustawienie albo powrót do wyliczenia legacy
 //   GET  /vizrs-bridge/watermarks/{Kanał}/{IdPozycji}  znaki wodne, które legacy rysuje w płótnie grafiki pozycji (dla vizrs-ffmpeg)
+//   GET  /vizrs-bridge/watermarks/{Kanał}?ids=3,5  wybrane znaki wodne (ID) w kadrze kanału – na przejęcie przez live ingest (dla vizrs-ffmpeg)
 //
 // Biała lista: plik VIZRS_BRIDGE_COMMANDS (domyślnie commands.txt obok DLL). Komendy spoza listy -> 403.
 
@@ -83,7 +84,7 @@ namespace VizRS.Bridge
         private const int MaxBody = 1 << 20;
         private const int MaxUpload = 10 << 20;
         private static readonly string[] UploadKinds = ["Logo", "Watermark"];
-        public const string Version = "26.11.25";
+        public const string Version = "26.11.26";
 
         private readonly RequestDelegate _next;
         private readonly byte[]? _token;
@@ -453,6 +454,37 @@ namespace VizRS.Bridge
         private static async Task ItemWatermarks(HttpContext ctx, string rest)
         {
             string[] parts = rest.Split('/');
+            if (parts.Length == 1 && ctx.Request.Query.TryGetValue("ids", out var idsText))
+            {
+                var ids = new List<int>();
+                foreach (string id in idsText.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    if (!int.TryParse(id, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int n) || ids.Count >= 8)
+                    {
+                        await Json(ctx, 400, new { ok = false, error = "ids: numery znaków wodnych, np. 3,5 (do 8)" });
+                        return;
+                    }
+
+                    ids.Add(n);
+                }
+
+                if (parts[0].Length is 0 or > 20 || !parts[0].All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_'))
+                {
+                    await Json(ctx, 400, new { ok = false, error = "zły kanał" });
+                    return;
+                }
+
+                object? chosen = await Watermarks.ForIds(ctx.RequestServices, parts[0], ids, ctx.RequestAborted);
+                if (chosen is null)
+                {
+                    await Json(ctx, 404, new { ok = false, error = $"kanał {parts[0]} nieznany" });
+                    return;
+                }
+
+                await Json(ctx, 200, new { ok = true, result = chosen });
+                return;
+            }
+
             if (parts.Length != 2 || parts[0].Length is 0 or > 20 || !parts[0].All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_') ||
                 !int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int item))
             {
@@ -822,8 +854,112 @@ namespace VizRS.Bridge
             return new { width, height, time_of_day = now.TimeOfDay.TotalSeconds, watermarks = list };
         }
 
+        /// <summary>
+        /// Wybrane znaki wodne (ID) w kadrze kanału – na czas przejęcia przez live ingest (obraz studia wypełnia kadr,
+        /// więc „wewnątrz treści” = cały kadr); obraz jak przy znaku pozycji (GetWatermarkOptions). null – kanał nieznany.
+        /// Znak nieznany albo bez obrazu jest pomijany.
+        /// </summary>
+        public static async Task<object?> ForIds(IServiceProvider services, string channel, IReadOnlyList<int> ids, CancellationToken ct)
+        {
+            Type tv = Find("ErsatzTV.Infrastructure.Data.TvContext", "ErsatzTV.Infrastructure");
+            Type channelType = Find("ErsatzTV.Core.Domain.Channel", "ErsatzTV.Core");
+            Type watermarkType = Find("ErsatzTV.Core.Domain.ChannelWatermark", "ErsatzTV.Core");
+            Type selectorType = Find("ErsatzTV.Core.Interfaces.FFmpeg.IWatermarkSelector", "ErsatzTV.Core");
+            Type factoryType = Find("Microsoft.EntityFrameworkCore.IDbContextFactory`1", "Microsoft.EntityFrameworkCore").MakeGenericType(tv);
+            Type efx = Find("Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions", "Microsoft.EntityFrameworkCore");
+            Type optionType = Find("LanguageExt.Option`1", "LanguageExt.Core").MakeGenericType(watermarkType);
+
+            // Encje przez DbContext.Set<T>() z Include po nazwie (jak LoadCanvasItem: profil z rozdzielczością, grafika kanału).
+            MethodInfo includeByName = efx.GetMethods(Any).First(m =>
+                m.Name == "Include" && m.GetParameters() is [_, { ParameterType: var p }] && p == typeof(string));
+            MethodInfo noTracking = efx.GetMethods(Any).First(m => m.Name == "AsNoTracking" && m.GetParameters().Length == 1);
+            MethodInfo set = tv.GetMethods().First(m => m.Name == "Set" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
+
+            object factory = services.GetRequiredService(factoryType);
+            object db = factoryType.GetMethod("CreateDbContext", Type.EmptyTypes)!.Invoke(factory, null)!;
+            object? channelObj;
+            var watermarks = new List<object>();
+            try
+            {
+                object channels = noTracking.MakeGenericMethod(channelType).Invoke(null, [set.MakeGenericMethod(channelType).Invoke(db, null)])!;
+                foreach (string path in new[] { "FFmpegProfile.Resolution", "Artwork" })
+                {
+                    channels = includeByName.MakeGenericMethod(channelType).Invoke(null, [channels, path])!;
+                }
+
+                channelObj = ((System.Collections.IEnumerable)channels).Cast<object>().FirstOrDefault(c => Get(c, "Number") as string == channel);
+                if (channelObj is not null && ids.Count > 0)
+                {
+                    object all = noTracking.MakeGenericMethod(watermarkType).Invoke(null, [set.MakeGenericMethod(watermarkType).Invoke(db, null)])!;
+                    var byId = ((System.Collections.IEnumerable)all).Cast<object>().ToDictionary(w => (int)Get(w, "Id")!);
+                    watermarks.AddRange(ids.Where(byId.ContainsKey).Select(id => byId[id]));
+                }
+            }
+            finally
+            {
+                if (db is IAsyncDisposable d)
+                {
+                    await d.DisposeAsync();
+                }
+            }
+
+            if (channelObj is null)
+            {
+                return null;
+            }
+
+            object profile = Get(channelObj, "FFmpegProfile") ?? throw new InvalidOperationException("legacy: kanał bez profilu");
+            object frame = Get(profile, "Resolution") ?? throw new InvalidOperationException("legacy: profil bez rozdzielczości");
+            int width = (int)Get(frame, "Width")!, height = (int)Get(frame, "Height")!;
+            object selector = services.GetRequiredService(selectorType);
+            MethodInfo options = selectorType.GetMethod("GetWatermarkOptions") ?? throw new InvalidOperationException("legacy bez GetWatermarkOptions");
+            MethodInfo some = optionType.GetMethods(BindingFlags.Public | BindingFlags.Static).First(m => m.Name == "Some" && m.GetParameters().Length == 1);
+            object none = optionType.GetField("None", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+                          ?? optionType.GetProperty("None", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+                          ?? Activator.CreateInstance(optionType)!;
+
+            var list = new List<object>();
+            foreach (object watermark in watermarks)
+            {
+                object? chosen = Case(options.Invoke(selector, [channelObj, some.Invoke(null, [watermark]), none, false]));
+                string? image = Get(chosen, "ImagePath") as string;
+                if (string.IsNullOrWhiteSpace(image))
+                {
+                    Console.WriteLine($"[vizrs-bridge] znak wodny {Get(watermark, "Name")}: brak obrazu – pominięty");
+                    continue;
+                }
+
+                object? bounds = Bounds(profile, frame, null, watermark, image);
+                if (bounds is null)
+                {
+                    Console.WriteLine($"[vizrs-bridge] znak wodny {Get(watermark, "Name")}: brak obrazu {image} – pominięty");
+                    continue;
+                }
+
+                list.Add(Entry(watermark, image, bounds));
+            }
+
+            return new { width, height, time_of_day = DateTimeOffset.Now.TimeOfDay.TotalSeconds, watermarks = list };
+        }
+
+        /// <summary>Znak wodny w odpowiedzi mostu (vizrs-ffmpeg, src/overlay/watermark.rs).</summary>
+        private static object Entry(object watermark, string image, object bounds) => new
+        {
+            name = Get(watermark, "Name") as string,
+            image,
+            x = (int)Get(bounds, "Left")!,
+            y = (int)Get(bounds, "Top")!,
+            width = (int)Get(bounds, "Width")!,
+            height = (int)Get(bounds, "Height")!,
+            opacity = Convert.ToDouble(Get(watermark, "Opacity"), System.Globalization.CultureInfo.InvariantCulture) / 100.0,
+            mode = Get(watermark, "Mode")?.ToString(),
+            frequency_seconds = Convert.ToDouble(Get(watermark, "FrequencyMinutes"), System.Globalization.CultureInfo.InvariantCulture) * 60,
+            duration_seconds = Convert.ToDouble(Get(watermark, "DurationSeconds"), System.Globalization.CultureInfo.InvariantCulture),
+            z_index = Get(watermark, "ZIndex"),
+        };
+
         /// <summary>Prostokąt znaku wodnego w kadrze kanału (SKRectI), jak w WatermarkElement; null – obraz nieczytelny.</summary>
-        private static object? Bounds(object profile, object frame, object playoutItem, object watermark, string image)
+        private static object? Bounds(object profile, object frame, object? playoutItem, object watermark, string image)
         {
             Type region = Find("ErsatzTV.Infrastructure.Streaming.Graphics.CanvasRegionCalculator", "ErsatzTV.Infrastructure");
             Type element = Find("ErsatzTV.Infrastructure.Streaming.Graphics.ImageElementBase", "ErsatzTV.Infrastructure");

@@ -248,6 +248,16 @@ pub struct Format {
     pub rate: String,
 }
 
+/// Images over the picture and the graphics of a live run – ErsatzTV's
+/// watermarks of a live programme's item (src/overlay/watermark.rs): their
+/// inputs (options and `-i`, in order) and, for each, the filters preparing it
+/// (from its input to yuva420p) and its place in the channel.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Marks {
+    pub inputs: Vec<OsString>,
+    pub images: Vec<(String, u32, u32)>,
+}
+
 /// Graphics frames of the overlay for the live run: their input (options and
 /// `-i pipe:N`) and areas (stacked; empty = the whole channel).
 pub struct Graphics<'a> {
@@ -262,6 +272,8 @@ pub struct Source {
     pub audio: bool,
     /// Its frame rate as the sidecar measured it (`fps` of `/ingest/state`); none = unknown.
     pub fps: Option<f64>,
+    /// ErsatzTV watermarks of the takeover (`live_watermark` of `/ingest/state`): ids, empty = none.
+    pub live_watermark: String,
 }
 
 /// A source of about 60 frames a second on a channel of 25 or 50: most often
@@ -314,11 +326,12 @@ pub fn live_args(
     picture: Picture,
     format: &Format,
     graphics: Option<&Graphics>,
+    marks: Option<&Marks>,
 ) -> Vec<OsString> {
     let mut out = global_options(args);
     let (inputs, audio_input) = picture_inputs(&mut out, job, elapsed, picture, format);
     let decimate = matches!(picture, Picture::Live(source) if decimate_sixth(source.fps, &format.rate));
-    filter_graph(&mut out, args, format, graphics, inputs, &audio_input, decimate);
+    filter_graph(&mut out, args, format, (graphics, marks.filter(|m| !m.images.is_empty())), inputs, &audio_input, decimate);
     output_options(&mut out, args);
     job.timing(&mut out, elapsed);
     out
@@ -402,7 +415,7 @@ fn filter_graph(
     out: &mut Vec<OsString>,
     args: &[OsString],
     format: &Format,
-    graphics: Option<&Graphics>,
+    (graphics, marks): (Option<&Graphics>, Option<&Marks>),
     inputs: usize,
     audio_input: &str,
     decimate: bool,
@@ -424,6 +437,19 @@ fn filter_graph(
         video =
             if graphics.areas.is_empty() || at_origin { base.clone() } else { placed_areas(&base, number, graphics.areas).unwrap_or(base) };
         video.push_str(";[vz_ov]null");
+    }
+    if let Some(marks) = marks {
+        // The watermarks on top of everything, as ErsatzTV draws them; the last one goes on with the chain.
+        out.extend(marks.inputs.iter().cloned());
+        let first = inputs + usize::from(graphics.is_some());
+        video.push_str("[vz_pm]");
+        for (i, (prepare, x, y)) in marks.images.iter().enumerate() {
+            let main = if i == 0 { "vz_pm".to_owned() } else { format!("vz_mo{}", i - 1) };
+            video.push_str(&format!(";[{}:v]{prepare}[vz_mk{i}];[{main}][vz_mk{i}]overlay=x={x}:y={y}:format=auto:shortest=1", first + i));
+            if i + 1 < marks.images.len() {
+                video.push_str(&format!("[vz_mo{i}]"));
+            }
+        }
     }
     let codec = encoder(args);
     if codec.ends_with("_vaapi") || codec.ends_with("_vulkan") {
@@ -549,7 +575,7 @@ pub fn channel_format(
 }
 
 /// `GET /ingest/state` of a channel.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct State {
     pub enabled: bool,
     /// Takeover of any piece; false = only live programmes. An older sidecar: true.
@@ -558,6 +584,8 @@ pub struct State {
     pub audio: bool,
     /// Frame rate of the source; an older sidecar: none.
     pub fps: Option<f64>,
+    /// ErsatzTV watermarks (ids, `3,5`) of a takeover now; empty = none (an older sidecar too).
+    pub live_watermark: String,
 }
 
 pub fn state(sidecar: &str, channel: &str) -> Option<State> {
@@ -570,6 +598,7 @@ pub fn state(sidecar: &str, channel: &str) -> Option<State> {
         live: flag("live", false),
         audio: flag("audio", false),
         fps: value.get("fps").and_then(json::Value::as_f64).filter(|f| *f > 0.0),
+        live_watermark: value.get("live_watermark").and_then(json::Value::as_str).unwrap_or_default().to_owned(),
     })
 }
 
@@ -788,10 +817,15 @@ pub fn sequence(runner: &Runner, job: &Job, live_now: bool, audio_now: bool) -> 
             return 0;
         }
         // `take`: the sidecar goes on from where the live run before stopped (src/ingest.rs).
-        let source = live().then(|| Source {
-            url: format!("{source_url}&take={:.3}", job.duration - elapsed),
-            audio: poller.audio.load(Ordering::Relaxed),
-            fps: state(runner.sidecar, &job.channel).and_then(|s| s.fps),
+        let source = live().then(|| {
+            let now = state(runner.sidecar, &job.channel);
+            Source {
+                // A live programme of the schedule is no takeover: its own graphics stay (src/ingest.rs).
+                url: format!("{source_url}&take={:.3}{}", job.duration - elapsed, if job.slot { "&programme=1" } else { "" }),
+                audio: poller.audio.load(Ordering::Relaxed),
+                fps: now.as_ref().and_then(|s| s.fps),
+                live_watermark: now.map(|s| s.live_watermark).unwrap_or_default(),
+            }
         });
         if let Some(source) = &source {
             let rate = source.fps.map_or(String::new(), |fps| format!(" (source {fps} fps)"));
@@ -1175,8 +1209,8 @@ mod tests {
         let job = Job::of(&piece(), None).unwrap();
         let format = Format { width: 1600, height: 900, rate: "25".into() };
         let text = |fps| {
-            let source = Source { url: "http://cg/ingest?channel=1".into(), audio: true, fps };
-            live_args(&piece(), &job, 0.0, Picture::Live(&source), &format, None)
+            let source = Source { url: "http://cg/ingest?channel=1".into(), audio: true, fps, live_watermark: String::new() };
+            live_args(&piece(), &job, 0.0, Picture::Live(&source), &format, None, None)
                 .iter()
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
@@ -1443,8 +1477,8 @@ mod tests {
     fn live_run_takes_the_encoder_and_hls_of_the_piece() {
         let job = Job::of(&piece(), None).unwrap();
         let format = Format { width: 1280, height: 720, rate: "25".into() };
-        let source = Source { url: "http://cg:7700/ingest?channel=1".into(), audio: true, fps: None };
-        let live: Vec<String> = live_args(&piece(), &job, 4.0, Picture::Live(&source), &format, None)
+        let source = Source { url: "http://cg:7700/ingest?channel=1".into(), audio: true, fps: None, live_watermark: String::new() };
+        let live: Vec<String> = live_args(&piece(), &job, 4.0, Picture::Live(&source), &format, None, None)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -1520,13 +1554,13 @@ mod tests {
         let piece = args(&list);
         let job = Job::of(&piece, Some("1")).unwrap();
         let format = Format { width: 1920, height: 1080, rate: "50".into() };
-        let source = Source { url: "http://cg/ingest?channel=1".into(), audio: false, fps: None };
+        let source = Source { url: "http://cg/ingest?channel=1".into(), audio: false, fps: None, live_watermark: String::new() };
         let area = [(Area { x: 0, y: 930, w: 1920, h: 140 }, 0)];
         let graphics = Graphics {
             input: args(&["-f", "rawvideo", "-pix_fmt", "yuva420p", "-video_size", "1920x140", "-framerate", "50", "-i", "pipe:5"]),
             areas: &area,
         };
-        let live: Vec<String> = live_args(&piece, &job, 0.0, Picture::Live(&source), &format, Some(&graphics))
+        let live: Vec<String> = live_args(&piece, &job, 0.0, Picture::Live(&source), &format, Some(&graphics), None)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -1549,6 +1583,56 @@ mod tests {
     }
 
     #[test]
+    fn a_live_programme_keeps_its_watermarks_on_top() {
+        let mut list = vec!["-reconnect", "1", "-i", "http://cg:7700/ingest?channel=2&slot=1", "-c:v", "libx264", "-t", "1800000ms"];
+        list.extend(&HLS[..15]);
+        let slot = args(&list);
+        let job = Job::of(&slot, None).unwrap();
+        let format = Format { width: 1280, height: 720, rate: "25".into() };
+        let marks = Marks {
+            inputs: ["-loop", "1", "-i", "/logo.png", "-loop", "1", "-i", "/age.png"].map(OsString::from).to_vec(),
+            images: vec![
+                ("scale=100:50,format=rgba,format=yuva420p".into(), 1160, 20),
+                ("scale=40:40,format=rgba,format=yuva420p".into(), 20, 20),
+            ],
+        };
+        let out: Vec<String> = live_args(&slot, &job, 0.0, Picture::Standby(None), &format, None, Some(&marks))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // Standby: black (input 0) and silence (1), then the images.
+        assert!(
+            out.windows(4).any(|w| w == ["-loop", "1", "-i", "/logo.png"]) && out.windows(4).any(|w| w == ["-loop", "1", "-i", "/age.png"])
+        );
+        let filter = &out[out.iter().position(|a| a == "-filter_complex").unwrap() + 1];
+        assert!(
+            filter.contains(
+                "format=yuv420p[vz_pm];[2:v]scale=100:50,format=rgba,format=yuva420p[vz_mk0];[vz_pm][vz_mk0]overlay=x=1160:y=20:format=auto:shortest=1[vz_mo0];[3:v]scale=40:40,format=rgba,format=yuva420p[vz_mk1];[vz_mo0][vz_mk1]overlay=x=20:y=20:format=auto:shortest=1[vz_v]"
+            ),
+            "{filter}"
+        );
+        // With graphics (input 2 after the live picture and silence… here a live source with audio: picture 0, graphics 1), the images after them.
+        let source =
+            Source { url: "http://cg:7700/ingest?channel=2&take=10".into(), audio: true, fps: None, live_watermark: String::new() };
+        let graphics = Graphics { input: ["-f", "rawvideo", "-i", "pipe:5"].map(OsString::from).to_vec(), areas: &[] };
+        let out: Vec<String> = live_args(&slot, &job, 0.0, Picture::Live(&source), &format, Some(&graphics), Some(&marks))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let filter = &out[out.iter().position(|a| a == "-filter_complex").unwrap() + 1];
+        assert!(filter.contains("[vz_ov]null[vz_pm];[2:v]scale=100:50"), "{filter}");
+        assert!(filter.contains("[vz_mo0][vz_mk1]overlay=x=20:y=20:format=auto:shortest=1[vz_v]"), "{filter}");
+        let at = |name: &str| out.iter().position(|a| a == name).unwrap();
+        assert!(at("pipe:5") < at("/logo.png") && at("/logo.png") < at("-filter_complex"), "graphics, then the images, before the graph");
+        // No images: the graph as before.
+        let plain: Vec<String> = live_args(&slot, &job, 0.0, Picture::Standby(None), &format, None, Some(&Marks::default()))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!plain.iter().any(|a| a.contains("vz_pm")));
+    }
+
+    #[test]
     fn live_slot_and_standby() {
         let mut list = vec!["-reconnect", "1", "-i", "http://cg:7700/ingest?channel=2&slot=1", "-c:v", "libx264", "-t", "1800000ms"];
         list.extend(&HLS[..15]);
@@ -1560,8 +1644,10 @@ mod tests {
         assert_eq!(slot_channel(&piece()), None);
 
         let format = Format { width: 1280, height: 720, rate: "25".into() };
-        let black: Vec<String> =
-            live_args(&slot, &job, 60.0, Picture::Standby(None), &format, None).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        let black: Vec<String> = live_args(&slot, &job, 60.0, Picture::Standby(None), &format, None, None)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             &black[..10],
             [
@@ -1580,7 +1666,7 @@ mod tests {
         assert!(black.iter().any(|a| a.contains("[1:a]aresample")), "{black:?}");
         assert!(!black.iter().any(|a| a == "-reconnect"), "options of the slot input are not kept");
         assert!(black.windows(2).any(|w| w == ["-t", "1740000ms"]));
-        let image: Vec<String> = live_args(&slot, &job, 0.0, Picture::Standby(Some("/media/slate.png")), &format, None)
+        let image: Vec<String> = live_args(&slot, &job, 0.0, Picture::Standby(Some("/media/slate.png")), &format, None, None)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();

@@ -48,6 +48,28 @@ pub fn find_canvas(args: &[OsString]) -> Option<Canvas> {
     None
 }
 
+/// The region canvas of `args` (ErsatzTV draws only the item's watermarks on
+/// it: an item with no VizRS element), as a canvas: the channel and item to ask
+/// the bridge for the watermarks of (a live programme's own, src/overlay/run.rs);
+/// its URL.
+pub fn find_region_canvas(args: &[OsString]) -> Option<(Canvas, String)> {
+    let mut start = 0;
+    for i in 0..args.len().saturating_sub(1) {
+        if args[i] != "-i" {
+            continue;
+        }
+        let text = args[i + 1].to_str().unwrap_or("");
+        if let Some((url, (channel, item))) = Url::split(text).and_then(|u| canvas_target(u.path).map(|t| (u, t))) {
+            let region = url.query.split('&').any(|p| p.split_once('=').is_some_and(|(k, v)| unquote(k) == "region" && !v.is_empty()));
+            if url.scheme == "http" && region {
+                return Some((Canvas { start, index: i, channel: unquote(channel), item: item.to_owned() }, text.to_owned()));
+            }
+        }
+        start = i + 2;
+    }
+    None
+}
+
 /// Headers of the `-headers` options (`name: value` lines).
 pub fn parse_headers(options: &[OsString]) -> Vec<(String, String)> {
     let mut headers: Vec<(String, String)> = Vec::new();

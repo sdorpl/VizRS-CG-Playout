@@ -126,7 +126,7 @@ test("a live programme from the panel is a file, a scan and a smart collection i
 test("holding a channel keeps its studio off and survives a restart", async (t) => {
   const { cg, api, folder } = await setup(t, {}, { ingest_anytime: true });
   const ingestState = async (url, ch) => (await fetch(`${url}/ingest/state?channel=${ch}`)).json();
-  assert.deepEqual(await ingestState(cg.url, "4"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null });
+  assert.deepEqual(await ingestState(cg.url, "4"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null, live_watermark: "" });
 
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   assert.equal((await ingestState(cg.url, "4")).hold, true);
@@ -224,18 +224,21 @@ test("the panel tells publishers where to send: RTMP server and key, SRT address
 test("an input may have its own graphics for a takeover from it, kept in inputs.json", async (t) => {
   const { folder, api } = await setup(t);
   const listeners = [
-    { channel: "1", url: "https://www.youtube.com/@kanal/live", on_live: "TAKE 7510" },
-    { channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", on_live: null },
+    { channel: "1", url: "https://www.youtube.com/@kanal/live", on_live: "TAKE 7510", live_watermark: "3,5" },
+    { channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", on_live: null, live_watermark: null },
   ];
   const put = await api("PUT", "inputs", { listeners });
   assert.equal(put.status, 200);
   assert.deepEqual(put.body.listeners, listeners);
   const file = JSON.parse(readFileSync(path.join(folder, "vizrs-live", "inputs.json"), "utf8"));
   assert.deepEqual(file.on_live, { "1=https://www.youtube.com/@kanal/live": "TAKE 7510" });
+  assert.deepEqual(file.live_watermark, { "1=https://www.youtube.com/@kanal/live": "3,5" }, "ErsatzTV watermarks of an input too");
   assert.equal(file.listeners, "1=https://www.youtube.com/@kanal/live; 1=rtmp://0.0.0.0:1936/live/studio", "an older reader sees the same list");
   assert.deepEqual((await api("GET", "inputs")).body.listeners, listeners);
   const bad = await api("PUT", "inputs", { listeners: [{ channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", on_live: 7510 }] });
   assert.equal(bad.status, 400, "graphics of an input are text");
+  const badMark = await api("PUT", "inputs", { listeners: [{ channel: "1", url: "rtmp://0.0.0.0:1936/live/studio", live_watermark: "logo" }] });
+  assert.equal(badMark.status, 400, "watermarks of an input are ids");
 });
 
 test("the operator chooses the input a channel takes; YouTube and links not chosen do not read", async (t) => {
@@ -329,7 +332,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select", "youtube_cookies"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -428,7 +431,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "input_select", "youtube_cookies", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

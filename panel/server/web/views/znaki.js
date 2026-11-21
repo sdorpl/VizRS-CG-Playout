@@ -178,6 +178,18 @@ VIEWS.znaki = crudView({
 });
 
 /** Opcje wyboru znaków wodnych z miniaturą (form.js, kind 'multi'): obraz własny albo napis „logo” (logo kanału). */
+/**
+ * Wybór znaków wodnych legacy zapisywany jako numery „3,5” (CG Playout: `live_watermark` kanału i wejścia – znak
+ * ErsatzTV na czas przejęcia przez live ingest). Zwraca { el, read() → '3,5' albo '' }.
+ */
+export function watermarkPicker(id, label, ids, list) {
+  const chosen = String(ids || '').split(',').map((x) => Number(x.trim())).filter((n) => Number.isInteger(n) && n > 0);
+  const f = form('', [{ key: 'ids', label, kind: 'multi', options: watermarkChoices(list), empty: 'brak znaków wodnych w legacy' }],
+    { ids: chosen }, { idPrefix: `${id}-` });
+  f.el.classList.add('wm-picker');
+  return { el: f.el, read: () => (f.read().ids || []).join(',') };
+}
+
 export const watermarkChoices = (list) => (list || []).map((w) => {
   const src = w.ImageSource === 'Custom' ? watermarkSrc(w.Image) : null;
   return [w.Id, w.Name, src ? { src } : { badge: w.ImageSource === 'ChannelLogo' ? 'logo' : 'znak' }];

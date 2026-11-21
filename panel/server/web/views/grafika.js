@@ -3,6 +3,7 @@
 
 import { VIEWS, S, h, head, panel, pill, btn, table, toast, api, cmd, cmdNote, confirmDlg, dialog, has, route, dateTime, vizrsPreview, onChannel } from '../core.js';
 import { cmdEditor, describe, fieldsUsed } from '../cmdedit.js';
+import { watermarkPicker } from './znaki.js';
 
 /** Zapytanie do CG Playout przez serwer panelu; zwraca `result` albo rzuca ApiError. */
 export async function cg(path, method = 'GET', body) {
@@ -19,11 +20,12 @@ const sec = (s) => (s == null ? '—' : `${Math.floor(s / 60)}:${String(Math.flo
 
 // ---------- Grafika kanału ----------
 VIEWS.grafika = async () => {
-  const [elements, health, live, graphics] = await Promise.all([
+  const [elements, health, live, graphics, watermarks] = await Promise.all([
     has('GetAllGraphicsElements') ? cmd('GetAllGraphicsElements') : [],
     S.status.cg ? cg('health').catch((e) => e) : null,
     S.status.cg ? cg('live/state').catch(() => null) : null,
     S.status.cg ? cg('live/graphics').catch((e) => e) : null,
+    has('GetAllWatermarks') ? cmd('GetAllWatermarks').catch(() => []) : [],
   ]);
   const rules = graphics && !(graphics instanceof Error) ? graphics.rules || {} : null;
   const channels = live?.channels || [];
@@ -66,7 +68,8 @@ VIEWS.grafika = async () => {
   return [
     head('Grafika kanału', 'Kiedy jaka strona VizRS wchodzi na antenę (reguły CG Playout), stan VizRS CG Playout, strony VizRS, podgląd anteny i elementy graficzne legacy.', refresh),
     whenPanel,
-    S.status.cg && !(health instanceof Error) ? rulesPanel(graphics, pages, channels, (live?.features || []).includes('on_live')) : null,
+    S.status.cg && !(health instanceof Error) ? rulesPanel(graphics, pages, channels, (live?.features || []).includes('on_live'),
+      (live?.features || []).includes('live_watermark') ? watermarks || [] : null) : null,
     h('div', { class: 'split wide' },
       h('div', { class: 'cols' }, cgPanel,
         panel('Elementy graficzne legacy', null,
@@ -255,7 +258,8 @@ const KEYS = [['on_clip', 'Na start pozycji'], ['on_end', 'Przed końcem audycji
 // Tylko w regule kanału, gdy CG Playout to umie (`features`: on_live): grafika na czas przejęcia kanału przez live ingest.
 const LIVE_KEY = ['on_live', 'Na przejęcie przez live ingest'];
 
-function rulesPanel(doc, pages, cgChannels, onLive) {
+/** `watermarks` – znaki wodne legacy do wyboru na przejęcie (CG Playout z `live_watermark` w features), null – bez wyboru. */
+function rulesPanel(doc, pages, cgChannels, onLive, watermarks) {
   if (doc instanceof Error || !doc) {
     const e = doc || new Error('brak odpowiedzi');
     return panel('Reguły grafiki', null, h('div', { class: 'pad' },
@@ -297,7 +301,10 @@ function rulesPanel(doc, pages, cgChannels, onLive) {
     const title = h('span', { class: 'rc-title' });
     const sync = () => { title.textContent = kind === 'shows' ? (key.value ? `audycja ~ ${key.value}` : 'nowa reguła audycji') : key.value ? `kanał ${key.value}` : 'nowa reguła kanału'; };
     key.addEventListener('input', sync); key.addEventListener('change', sync); sync();
-    const entry = { x, eds, key, end, el: null };
+    // znak wodny ErsatzTV na czas przejęcia (obok grafiki VizRS z on_live)
+    const wm = kind === 'channels' && onLive && watermarks
+      ? watermarkPicker(`gr-c${i}-live_watermark`, 'Znak wodny ErsatzTV na przejęcie', x.live_watermark, watermarks) : null;
+    const entry = { x, eds, key, end, wm, el: null };
     const rm = h('button', { type: 'button', class: 'danger', 'aria-label': `Usuń regułę ${kind === 'shows' ? 'audycji' : 'kanału'} ${i + 1}`,
       onclick: (e) => { e.preventDefault(); entry.removed = true; entry.el.remove(); } }, 'Usuń');
     entry.el = h('details', { class: 'rule-card', open: open || undefined },
@@ -306,7 +313,8 @@ function rulesPanel(doc, pages, cgChannels, onLive) {
         h('label', null, kind === 'shows' ? 'Tytuł audycji (regex)' : 'Kanał'), key,
         keys.flatMap(([k, l]) => [h('label', { for: `gr-${p}${i}-${k}` }, l), eds[k].el]),
         h('label', null, 'Sekund przed końcem'), end),
-      keys.includes(LIVE_KEY) ? h('div', { class: 'hint pad' }, 'Przejęcie przez live ingest: grafika ramówki schodzi i nie wchodzi do końca przejęcia, zamiast niej wchodzi ta (np. logo NA ŻYWO). Po przejęciu wraca grafika ramówki.') : null);
+      wm ? wm.el : null,
+      keys.includes(LIVE_KEY) ? h('div', { class: 'hint pad' }, 'Przejęcie przez live ingest: grafika ramówki i znaki wodne pozycji schodzą i nie wchodzą do końca przejęcia, zamiast nich wchodzi ta grafika (np. logo NA ŻYWO) i wybrany znak wodny ErsatzTV. Po przejęciu wraca ramówka. Wejście studia może mieć własne (Sloty na żywo → Ustaw wejścia…).') : null);
     cards[kind].push(entry);
     return entry.el;
   };
@@ -323,6 +331,8 @@ function rulesPanel(doc, pages, cgChannels, onLive) {
         const o = {};
         for (const k of Object.keys(c.eds)) { const v = c.eds[k].read(); if (v != null && !(k === 'on_live' && v === '')) o[k] = v; }
         if (!c.eds.on_live && c.x.on_live) o.on_live = c.x.on_live; // CG Playout bez on_live w features – bez zmian
+        const mark = c.wm ? c.wm.read() : c.x.live_watermark || ''; // bez wyboru (starszy CG, brak komendy) – bez zmian
+        if (mark) o.live_watermark = mark;
         const e = numField(c.end.value);
         if (e != null && !Number.isNaN(e)) o.end_seconds = e;
         if (c.x.shows) o.shows = c.x.shows; // reguły audycji w regule kanału – tylko z config.json, bez zmian

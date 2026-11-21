@@ -5,6 +5,7 @@
 import { VIEWS, S, h, head, panel, pill, btn, table, toast, cmd, cmdNote, confirmDlg, dialog, has, route, pad2, hm, pl, operatorName, onChannel } from '../core.js';
 import { cg, allPages, graphicsChoices } from './grafika.js';
 import { cmdEditor } from '../cmdedit.js';
+import { watermarkPicker } from './znaki.js';
 import { fromLegacy, toReplace } from './harmonogramy.js';
 import { minutesOf, hhmm, span } from '../parts.js';
 
@@ -134,6 +135,7 @@ const randomKey = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (
 function parseInput(l) {
   const r = parseAddress(l);
   r.on_live = l.on_live || '';
+  r.live_watermark = l.live_watermark || '';
   return r;
 }
 
@@ -165,6 +167,9 @@ async function editInputs(forChannel) {
   // Grafika wejścia (CG Playout z `input_on_live` w features): na czas przejęcia z tego wejścia zamiast grafiki live kanału.
   const ownGraphics = (view?.state.features || []).includes('input_on_live');
   const pages = ownGraphics ? await allPages(view?.state.channels || []) : new Map();
+  // Znak wodny ErsatzTV wejścia (CG Playout z `live_watermark` w features): na czas przejęcia z tego wejścia zamiast znaku kanału.
+  const ownMark = (view?.state.features || []).includes('live_watermark') && has('GetAllWatermarks');
+  const watermarks = ownMark ? await cmd('GetAllWatermarks').catch(() => []) : [];
   const ports = data.ports || { rtmp: [1936, 1943], srt: [9000, 9007] };
   const range = (k) => { const [a, b] = ports[k]; return Array.from({ length: b - a + 1 }, (_, i) => a + i); };
   const rows = (data.listeners || []).map(parseInput);
@@ -180,7 +185,8 @@ async function editInputs(forChannel) {
     if (!r.ed) {
       r.ed = cmdEditor({ id: `in-gr-${n}`, label: `Grafika wejścia ${n + 1}`, value: r.on_live || null, pages, scoped: true, noOff: true, inheritText: 'grafika live kanału' });
     }
-    return h('div', { class: 'in-graphics' }, h('span', { class: 'dim' }, 'Na antenie z tego wejścia:'), r.ed.el);
+    if (ownMark && !r.wm) r.wm = watermarkPicker(`in-wm-${n}`, `Znak wodny ErsatzTV wejścia ${n + 1} (puste = znak kanału)`, r.live_watermark, watermarks);
+    return h('div', { class: 'in-graphics' }, h('span', { class: 'dim' }, 'Na antenie z tego wejścia:'), r.ed.el, r.wm ? r.wm.el : null);
   };
   const row = (r, n, ...parts) => h('div', { class: 'in-row' }, h('div', { class: 'bar' }, ...parts), graphicsOf(r, n));
   function draw() {
@@ -227,7 +233,8 @@ async function editInputs(forChannel) {
       'Tak samo wejście „Link”: CG Playout sam pobiera strumień spod adresu (HLS .m3u8, RTMP, SRT, RTSP; obraz H.264 i dźwięk AAC).'),
     data.from === 'env' ? h('p', { class: 'dim' }, 'Teraz obowiązuje VIZRS_INGEST z konfiguracji CG Playout; po zapisie – lista z panelu.') : null,
     data.ingest ? null : h('div', { class: 'note warn' }, 'Odbiór sygnałów w CG Playout jest wyłączony (brak VIZRS_INGEST_TOKEN) – wejścia zapiszą się, ale nie zadziałają.'),
-    ownGraphics ? h('p', { class: 'dim' }, 'Grafika wejścia (np. logo z dopiskiem NA ŻYWO) wchodzi, gdy kanał przejmuje sygnał z tego wejścia – zamiast grafiki live kanału z ekranu Grafika kanału; po zejściu sygnału wraca grafika ramówki.') : null,
+    ownGraphics ? h('p', { class: 'dim' }, 'Grafika wejścia (np. logo z dopiskiem NA ŻYWO) wchodzi, gdy kanał przejmuje sygnał z tego wejścia – zamiast grafiki live kanału z ekranu Grafika kanału; po zejściu sygnału wraca grafika ramówki.' +
+      (ownMark ? ' Tak samo znak wodny ErsatzTV wejścia – zamiast znaku na przejęcie z reguły kanału; znaki wodne pozycji ramówki schodzą na czas przejęcia.' : '')) : null,
     list);
   if (!await dialog('Wejścia studia', body, [['Anuluj', false], ['Zapisz', true, 'acc']])) return;
   const bad = rows.find((r) => r.kind === 'youtube' && !YOUTUBE.test(r.url || ''));
@@ -239,6 +246,7 @@ async function editInputs(forChannel) {
     listeners = rows.map((r) => {
       const item = { channel: r.channel, url: inputUrl(r) };
       if (ownGraphics) item.on_live = r.ed ? r.ed.read() : r.on_live || null;
+      if (ownMark) item.live_watermark = (r.wm ? r.wm.read() : r.live_watermark) || null;
       return item;
     });
   } catch (e) { toast(e.message, 'bad'); return; }

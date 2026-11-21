@@ -105,13 +105,15 @@ pub(crate) fn take_over(
     header_rate: &str,
     place: bool,
     follow: bool,
+    live: bool,
 ) -> io::Result<(Frames, FrameSocket)> {
     let area = match (place, follow) {
         (true, true) => "&area=1&follow=1",
         (true, false) => "&area=1",
         _ => "",
     };
-    let path = format!("/ffmpeg?channel={}&wait={CLAIM_WAIT_MS}{area}", quote_plus(channel));
+    let own = if live { "&live=1" } else { "" };
+    let path = format!("/ffmpeg?channel={}&wait={CLAIM_WAIT_MS}{area}{own}", quote_plus(channel));
     let (status, body) = sidecar_get(&settings.sidecar, &path)?;
     if status != "200" {
         return Err(error(format!("no VizRS session on channel {channel} ({status})")));
@@ -183,7 +185,8 @@ pub(crate) fn spawn(settings: &Settings, args: Vec<OsString>, fd: Option<i32>) -
 }
 
 /// The live run of the piece (src/takeover.rs), adjusted as every command;
-/// without a source the standby picture of a live programme.
+/// without a source the standby picture of a live programme; `marks` – the
+/// watermarks of a live programme's item on top.
 pub(crate) fn live_command(
     settings: &Settings,
     args: &[OsString],
@@ -191,6 +194,7 @@ pub(crate) fn live_command(
     elapsed: f64,
     source: Option<&takeover::Source>,
     graphics: Option<(&Frames, i32)>,
+    marks: Option<&takeover::Marks>,
 ) -> Vec<OsString> {
     let full = graphics.filter(|(f, _)| f.areas.is_empty()).map(|(f, _)| (f.width, f.height));
     let rate = graphics.map_or("", |(f, _)| f.rate.as_str());
@@ -200,7 +204,7 @@ pub(crate) fn live_command(
         Some(source) => takeover::Picture::Live(source),
         None => takeover::Picture::Standby(standby_image(settings)),
     };
-    adjusted(takeover::live_args(args, job, elapsed, picture, &format, input.as_ref()), settings, None)
+    adjusted(takeover::live_args(args, job, elapsed, picture, &format, input.as_ref(), marks), settings, None)
 }
 
 /// `VIZRS_FFMPEG_STANDBY` when the file is there; else black.
@@ -268,6 +272,9 @@ pub(crate) fn with_graphics(
     marks: &Watermarks,
 ) -> i32 {
     let watch = frames.zones_rev.filter(|_| place).map(|rev| ZoneWatch::start(&settings.sidecar, &frames.session, rev));
+    // A live programme of the schedule keeps its item's watermarks on air; a takeover has its own (`live_watermark`).
+    let programme_marks = job.slot.then(|| live_marks(marks, &frames.rate, &frames.matrix));
+    let takeover_marks = TakeoverMarks::new(&frames.rate, &frames.matrix);
     let feed = Mutex::new(relayed(settings, frames, socket, place));
     let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
         let mut current = feed.lock().unwrap_or_else(|e| e.into_inner());
@@ -304,8 +311,11 @@ pub(crate) fn with_graphics(
         let (reader, writer) = frame_channel()?;
         let fd = reader.as_raw_fd();
         let command = match source {
-            Some(source) => live_command(settings, args, job, elapsed, Some(source), Some((frames, fd))),
-            None if job.slot => live_command(settings, args, job, elapsed, None, Some((frames, fd))),
+            Some(source) => {
+                let own = if job.slot { programme_marks.clone() } else { takeover_marks.of(settings, &job.channel, source) };
+                live_command(settings, args, job, elapsed, Some(source), Some((frames, fd)), own.as_ref())
+            }
+            None if job.slot => live_command(settings, args, job, elapsed, None, Some((frames, fd)), programme_marks.as_ref()),
             None => adjusted(job.program(&overlay_args(args, canvas, fd, frames, marks), elapsed), settings, frames.burst(elapsed)),
         };
         let child = spawn(settings, command, Some(fd))?;
@@ -327,6 +337,287 @@ pub(crate) fn with_graphics(
     std::thread::sleep(SCRIPT_END);
     drain.close();
     code
+}
+
+/// The graphics of the live runs of a piece whose item has no VizRS element:
+/// a session of the overlay's own in the sidecar (`POST /etv?…&live=1`), only
+/// the channel's graphics – the `on_live` of the takeover (a LIVE logo) – and
+/// its frames relayed to each live run.
+pub(crate) struct LiveGraphics {
+    feed: Feed,
+    session: TcpStream,
+}
+
+impl LiveGraphics {
+    /// The session and its frames, `format` the channel's.
+    pub(crate) fn start(settings: &Settings, channel: &str, format: &takeover::Format) -> io::Result<LiveGraphics> {
+        let session = open_live_session(&settings.sidecar, channel, format)?;
+        let (frames, socket) = match take_over(settings, channel, &format.rate, true, false, true) {
+            Ok(taken) => taken,
+            Err(e) => {
+                let _ = session.shutdown(Shutdown::Both);
+                return Err(e);
+            }
+        };
+        Ok(LiveGraphics { feed: relayed(settings, frames, socket, true), session })
+    }
+
+    /// The frames end, then the session (the sidecar ends it with its reader).
+    pub(crate) fn close(&self) {
+        self.feed.control.close();
+        let _ = self.session.shutdown(Shutdown::Both);
+    }
+}
+
+/// `POST /etv?channel=N&live=1` with the channel's size and rate as template
+/// data; its packets are read and thrown away (nobody draws them) until the
+/// socket is shut down. The socket for that.
+pub(crate) fn open_live_session(sidecar: &str, channel: &str, format: &takeover::Format) -> io::Result<TcpStream> {
+    let url = Url::split(sidecar).ok_or_else(|| error(format!("bad sidecar URL {sidecar}")))?;
+    let mut stream = connect(&url)?;
+    let body = json::object([
+        ("MediaItem_Title", "live ingest".into()),
+        ("Resolution", json::object([("Width", u64::from(format.width).into()), ("Height", u64::from(format.height).into())])),
+        ("FrameRate", Value::Number(rate_number(&format.rate))),
+    ])
+    .to_string();
+    let head = format!(
+        "POST /etv?channel={}&live=1 HTTP/1.0\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        quote_plus(channel),
+        url.netloc,
+        body.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body.as_bytes())?;
+    let head = read_head_text(&mut stream, "live graphics session")?;
+    let line = head.lines().next().unwrap_or("");
+    if status_of(line) != "200" {
+        return Err(error(format!("live graphics session: {line}")));
+    }
+    stream.set_read_timeout(None)?;
+    let mut packets = stream.try_clone()?;
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 16 * 1024];
+        while matches!(packets.read(&mut buffer), Ok(n) if n > 0) {}
+    });
+    Ok(stream)
+}
+
+/// A rate of ffmpeg (`25`, `30000/1001`) as a number; 25 when it is none.
+pub(crate) fn rate_number(rate: &str) -> f64 {
+    let value = match rate.split_once('/') {
+        Some((n, d)) => n.trim().parse::<f64>().ok().zip(d.trim().parse::<f64>().ok()).map(|(n, d)| n / d),
+        None => rate.trim().parse::<f64>().ok(),
+    };
+    value.filter(|v| v.is_finite() && *v > 0.0).unwrap_or(25.0)
+}
+
+/// A piece whose item has no VizRS element, which live ingest can take over:
+/// the schedule as ErsatzTV made it (its watermarks too), the live runs with
+/// the channel's live graphics (`LiveGraphics`) – the LIVE logo goes on air
+/// with the studio whatever the item. They are set up in the background at the
+/// first live run, which never waits for them: it starts without graphics and
+/// is restarted with them once they are there (as for widened zones). Not to
+/// be had (no sidecar session, an error): the live runs without graphics.
+fn without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio): (bool, bool)) -> i32 {
+    if job.slot {
+        return programme_without_element(settings, args, job, (on, audio));
+    }
+    let graphics = PieceGraphics::default();
+    let marks_of = OnceLock::new();
+    let takeover_marks = |source: &takeover::Source| {
+        marks_of
+            .get_or_init(|| {
+                let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, None, "");
+                TakeoverMarks::new(&format.rate, crate::yuva::ffmpeg_matrix(format.height))
+            })
+            .of(settings, &job.channel, source)
+    };
+    let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
+        let Some(source) = source else {
+            graphics.bare.store(false, Ordering::Relaxed);
+            return spawn(settings, adjusted(job.program(args, elapsed), settings, None), None);
+        };
+        let marks = takeover_marks(source);
+        let ready = graphics.ready(settings, args, job);
+        let Some(live) = ready.as_ref() else {
+            graphics.bare.store(true, Ordering::Relaxed);
+            return spawn(settings, live_command(settings, args, job, elapsed, Some(source), None, marks.as_ref()), None);
+        };
+        graphics.bare.store(false, Ordering::Relaxed);
+        let (reader, writer) = frame_channel()?;
+        let fd = reader.as_raw_fd();
+        let child = spawn(
+            settings,
+            live_command(settings, args, job, elapsed, Some(source), Some((&live.feed.frames, fd)), marks.as_ref()),
+            Some(fd),
+        )?;
+        drop(reader);
+        live.feed.control.attach(writer);
+        Ok(child)
+    };
+    // The studio already on air (a live going on from the piece before): the
+    // graphics set up first, a short while at most, so that the piece's first
+    // live run has them – not a restart (a blink of the logo) every piece.
+    if on {
+        let until = std::time::Instant::now() + LIVE_GRAPHICS_WAIT;
+        while graphics.ready(settings, args, job).is_none() && graphics.setting_up() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    // A live run without graphics stops for the graphics that came meanwhile.
+    let restart = || graphics.bare.load(Ordering::Relaxed) && graphics.ready(settings, args, job).is_some();
+    let code = sequence(settings, job, on, audio, true, &run, &restart);
+    graphics.close();
+    code
+}
+
+/// A live programme of the schedule whose item has no VizRS element: no
+/// takeover (its graphics are the item's – here none), the studio or the
+/// standby picture with the item's watermarks on top, as ErsatzTV would draw
+/// them (from the bridge, by the item of ErsatzTV's region canvas).
+fn programme_without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio): (bool, bool)) -> i32 {
+    let marks = programme_watermarks(settings, args, job);
+    let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
+        spawn(settings, live_command(settings, args, job, elapsed, source, None, marks.as_ref()), None)
+    };
+    sequence(settings, job, on, audio, true, &run, &|| false)
+}
+
+/// The watermarks of a live programme's item with no VizRS element, as images
+/// for its live runs; none without a region canvas, a bridge token or an answer in time.
+fn programme_watermarks(settings: &Settings, args: &[OsString], job: &Job) -> Option<takeover::Marks> {
+    let (canvas, url) = find_region_canvas(args)?;
+    if settings.bridge_token.is_empty() {
+        return None;
+    }
+    let marks = match fetch_watermarks(&url, &canvas, &settings.bridge_token).recv_timeout(BRIDGE_WAIT) {
+        Ok(Ok(marks)) => marks,
+        Ok(Err(e)) => {
+            log(format_args!("watermarks of the live programme: {e}; none drawn"));
+            return None;
+        }
+        Err(_) => {
+            log("watermarks of the live programme: no answer from the bridge in time; none drawn");
+            return None;
+        }
+    };
+    if marks.list.is_empty() {
+        return None;
+    }
+    log(format_args!("{} ErsatzTV watermark(s) of the live programme on its live runs", marks.list.len()));
+    let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, None, "");
+    Some(live_marks(&marks, &format.rate, crate::yuva::ffmpeg_matrix(format.height)))
+}
+
+/// The ErsatzTV watermarks of a live takeover (`live_watermark` of the
+/// channel or of its input, from the sidecar's state at each live run), from
+/// VizRS Bridge – asked again only when the ids change (another input).
+/// No token, no answer in time or an error: none, the takeover goes on without them.
+struct TakeoverMarks {
+    rate: String,
+    matrix: String,
+    last: Mutex<Option<(String, Option<takeover::Marks>)>>,
+}
+
+impl TakeoverMarks {
+    fn new(rate: &str, matrix: &str) -> TakeoverMarks {
+        TakeoverMarks { rate: rate.to_owned(), matrix: matrix.to_owned(), last: Mutex::new(None) }
+    }
+
+    fn of(&self, settings: &Settings, channel: &str, source: &takeover::Source) -> Option<takeover::Marks> {
+        let ids = source.live_watermark.as_str();
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, marks)) = last.as_ref().filter(|(seen, _)| seen == ids) {
+            return marks.clone();
+        }
+        let marks = if ids.is_empty() || settings.bridge_token.is_empty() {
+            None
+        } else {
+            match watermarks_by_id(&settings.bridge_url, channel, ids, &settings.bridge_token) {
+                Ok(marks) if !marks.list.is_empty() => {
+                    log(format_args!("{} ErsatzTV watermark(s) of the live takeover ({ids})", marks.list.len()));
+                    Some(live_marks(&marks, &self.rate, &self.matrix))
+                }
+                Ok(_) => {
+                    log(format_args!("watermarks of the live takeover ({ids}): none of them has an image; none drawn"));
+                    None
+                }
+                Err(e) => {
+                    log(format_args!("watermarks of the live takeover ({ids}): {e}; none drawn"));
+                    None
+                }
+            }
+        };
+        *last = Some((ids.to_owned(), marks.clone()));
+        marks
+    }
+}
+
+/// How long a piece starting with the studio on air waits for its live graphics.
+const LIVE_GRAPHICS_WAIT: Duration = Duration::from_millis(1500);
+
+/// The live graphics of one piece (`without_element`): asked for once, in the background.
+#[derive(Default)]
+struct PieceGraphics {
+    /// The setup under way.
+    pending: Mutex<Option<mpsc::Receiver<io::Result<LiveGraphics>>>>,
+    /// Set up (`Some`), or given up for this piece (`asked` and none pending).
+    graphics: Mutex<Option<LiveGraphics>>,
+    asked: AtomicBool,
+    /// The run of the moment is a live run without them.
+    bare: AtomicBool,
+}
+
+impl PieceGraphics {
+    /// The graphics when they are there; the first call starts setting them up.
+    fn ready(&self, settings: &Settings, args: &[OsString], job: &Job) -> std::sync::MutexGuard<'_, Option<LiveGraphics>> {
+        if !self.asked.swap(true, Ordering::Relaxed) {
+            let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, None, "");
+            let (sender, receiver) = mpsc::channel();
+            let (settings, format, channel) = (settings.clone(), format, job.channel.clone());
+            std::thread::spawn(move || {
+                let _ = sender.send(LiveGraphics::start(&settings, &channel, &format));
+            });
+            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(receiver);
+        }
+        let mut graphics = self.graphics.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let answer = pending.as_ref().map(mpsc::Receiver::try_recv);
+        match answer {
+            Some(Ok(Ok(live))) => {
+                log(format_args!("live graphics of channel {} on the live runs (no VizRS element on the item)", job.channel));
+                *graphics = Some(live);
+                *pending = None;
+            }
+            Some(Ok(Err(e))) => {
+                log(format_args!("live graphics of channel {}: {e}; the live runs without graphics", job.channel));
+                *pending = None;
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => *pending = None,
+            Some(Err(mpsc::TryRecvError::Empty)) | None => {}
+        }
+        graphics
+    }
+
+    /// The graphics are still being set up.
+    fn setting_up(&self) -> bool {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    /// The piece is over: its graphics end; graphics still being set up end when they come.
+    fn close(&self) {
+        if let Some(live) = self.graphics.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            live.close();
+        }
+        if let Some(pending) = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            std::thread::spawn(move || {
+                if let Ok(Ok(live)) = pending.recv() {
+                    live.close();
+                }
+            });
+        }
+    }
 }
 
 /// `socket` (a frame stream of `frames`) relayed to the runs, reconnected
@@ -366,15 +657,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     // Not a canvas transcode: plain ffmpeg, at the forced rate, preset and catch-up rate when set.
     let Some(canvas) = canvas else {
         return match live {
-            Some((job, on, audio)) => {
-                let program = |elapsed: f64| adjusted(job.program(&args, elapsed), settings, None);
-                let run = |elapsed: f64, source: Option<&takeover::Source>| match source {
-                    Some(source) => spawn(settings, live_command(settings, &args, &job, elapsed, Some(source), None), None),
-                    None if job.slot => spawn(settings, live_command(settings, &args, &job, elapsed, None, None), None),
-                    None => spawn(settings, program(elapsed), None),
-                };
-                sequence(settings, &job, on, audio, true, &run, &|| false)
-            }
+            Some((job, on, audio)) => without_element(settings, &args, &job, (on, audio)),
             None => plain(settings, args),
         };
     };
@@ -389,7 +672,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     let place = with_position(&args, input_number(&args, canvas.index), 2, 2).is_some();
     // Runs that can widen the zones: live, or the piece as runs (below).
     let runs = live.is_some() || (settings.ingest && Job::of(&args, Some(&canvas.channel)).is_some_and(|job| !job.slot));
-    let (frames, socket) = match take_over(settings, &canvas.channel, &rate, place, runs) {
+    let (frames, socket) = match take_over(settings, &canvas.channel, &rate, place, runs, false) {
         Ok(taken) => taken,
         Err(e) => {
             log(format_args!("{e}; ErsatzTV graphics instead"));

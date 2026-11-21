@@ -70,7 +70,7 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'input_select', 'youtube_cookies'],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies'],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
           input: CG.input || null,
@@ -806,6 +806,17 @@ function check(cond, msg) {
   await page.waitForSelector(`td:text-is("${wmName}")`);
   const wm = (await api('GetAllWatermarks')).result.find((x) => x.Name === wmName);
   check(wm && /^[0-9A-F]{32}$/.test(wm.Image.Path) && wm.Image.ContentType === 'image/png' && wm.Location === 'TopLeft' && wm.Width === 20, 'znak wodny zapisany z wgranym PNG');
+  // most: wybrany znak wodny po ID w kadrze kanału – na przejęcie przez live ingest (vizrs-ffmpeg, live_watermark)
+  const bridgeMarks = async (q) => {
+    const r = await fetch(`http://127.0.0.1:18409/vizrs-bridge/watermarks/${q}`, { headers: { 'X-VizRS-Token': 'test-token-0123456789' } });
+    return [r.status, await r.json().catch(() => null)];
+  };
+  const [bmStatus, bm] = await bridgeMarks(`24?ids=${wm.Id}`);
+  const one = bm?.result?.watermarks?.[0];
+  check(bmStatus === 200 && bm.result.width > 0 && one && one.image.startsWith('/') && one.width > 0 && one.height > 0 && one.x >= 0 && one.y >= 0 && one.opacity > 0,
+    `most: znak wodny po ID z obrazem i położeniem w kadrze kanału (${bmStatus} ${JSON.stringify(bm).slice(0, 300)})`);
+  check((await bridgeMarks('24?ids=999999'))[1]?.result?.watermarks?.length === 0, 'most: nieznany znak wodny pominięty');
+  check((await bridgeMarks('nie-ma-kanalu?ids=1'))[0] === 404 && (await bridgeMarks('24?ids=x'))[0] === 400, 'most: nieznany kanał 404, złe ID 400');
 
   const wmCh = String(Math.max(...(await api('GetAllChannels', { ShowDisabled: true })).result.map((c) => parseFloat(c.Number) || 0)) + 1);
   const wmChName = 'E2E znak kanał ' + tag;
@@ -1561,6 +1572,12 @@ function check(cond, msg) {
   const badSes = (await page.request.post(`${BASE}/api/session/24/kill`, { headers: { 'X-VizRS-Live': '1' } })).status();
   check(badSes === 404, 'antena: sesja – tylko start, stop, restart');
 
+  // znak wodny legacy do wyboru na przejęcie przez live ingest (live_watermark) – usuwany po wejściach studia
+  const liveMark = await api('CreateWatermark', { Name: 'E2E NA ŻYWO ' + tag, Image: { Path: '', ContentType: '' }, Mode: 'Permanent', ImageSource: 'ChannelLogo',
+    Location: 'TopRight', Size: 'Scaled', Width: 15, HorizontalMargin: 5, VerticalMargin: 5, FrequencyMinutes: 15, DurationSeconds: 15, Opacity: 100,
+    PlaceWithinSourceContent: false, OpacityExpression: '', ZIndex: 0 });
+  const liveMarkId = liveMark.result?.WatermarkId;
+  check(Number.isInteger(liveMarkId), `znak wodny do testu przejęcia założony (${JSON.stringify(liveMark).slice(0, 200)})`);
   // reguły grafiki (CG Playout GET/PUT /api/live/graphics) – z powrotem na ekranie Grafika kanału
   await page.goto(`${BASE}/#grafika`);
   await page.waitForSelector('[data-rules] #gr-on_clip');
@@ -1621,8 +1638,14 @@ function check(cond, msg) {
   await page.click(`${le} .ce-text`);
   await page.fill(`${le} textarea`, 'TAKE 7510');
   await page.click(`${le} .ce-text`);
+  // znak wodny ErsatzTV na przejęcie (CG Playout z „live_watermark”): wybór z znaków wodnych legacy
+  const wmBox = '#gr-c0-live_watermark-ids';
+  const wmChoice = await page.$eval(`${wmBox} input[type=checkbox]`, (c) => c.value).catch(() => null);
+  check(wmChoice != null, 'reguły grafiki: znak wodny ErsatzTV na przejęcie w regule kanału (lista znaków legacy)');
+  if (wmChoice != null) await page.check(`${wmBox} input[value="${wmChoice}"]`);
   await rerender(() => page.click('button:has-text("Zapisz reguły grafiki")'));
   const gr = CG.graphics.rules;
+  check(gr.channels['24'].live_watermark === wmChoice && !('live_watermark' in gr), `reguły grafiki: znak wodny na przejęcie zapisany w regule kanału (${gr.channels['24'].live_watermark})`);
   check(gr.channels['24'].on_live === 'TAKE 7510' && !('on_live' in gr), 'reguły grafiki: logo na przejęcie live zapisane w regule kanału');
   check(/przejęcie przez live ingest/.test(await page.textContent('[data-rules-summary]')), 'reguły grafiki: przejęcie live w tabeli Kiedy / Co / Ile');
   check(gr.on_clip === 'TAKE 4001 headline={title}' && gr.on_end === 'TAKE 1001 programs={next_title}' && gr.end_seconds === 45 && gr.shows.length === 1 && gr.shows[0].show_title === '^Wiadomo'
@@ -1671,6 +1694,9 @@ function check(cond, msg) {
   check(await page.inputValue('#in-gr-0') === 'inherit', 'wejścia: grafika wejścia domyślnie jak grafika live kanału');
   await page.selectOption('#in-gr-2', 'cmd');
   await page.selectOption('select[aria-label="Grafika wejścia 3: strona 1"]', '1001');
+  const inMark = await page.$eval('#in-wm-2-ids input[type=checkbox]', (c) => c.value).catch(() => null);
+  check(inMark != null, 'wejścia: znak wodny ErsatzTV wejścia do wyboru');
+  if (inMark != null) await page.check(`#in-wm-2-ids input[value="${inMark}"]`);
   await page.click('#dlg-buttons button:has-text("Zapisz")');
   await page.waitForSelector('#overlay', { state: 'hidden' });
   const saved = JSON.stringify(CG.inputs || []);
@@ -1678,9 +1704,12 @@ function check(cond, msg) {
     && saved.includes('"url":"rtmp://studio.example.pl/live/abc"'),
     'wejścia: zapis listy do CG Playout (RTMP 1936, SRT 9000 z hasłem, YouTube, link)');
   check(CG.inputs[2].on_live === 'TAKE 1001' && CG.inputs[0].on_live === null, `wejścia: grafika tylko przy wejściu YouTube (${saved})`);
+  check(CG.inputs[2].live_watermark === inMark && CG.inputs[0].live_watermark === null, `wejścia: znak wodny tylko przy wejściu YouTube (${saved})`);
   await page.click('button:has-text("Ustaw wejścia…")');
   await page.waitForSelector('[data-inputs-edit]');
   check(await page.inputValue('#in-gr-2') === 'cmd' && /1001/.test(await page.textContent('[data-cmd-editor="in-gr-2"]')), 'wejścia: grafika wejścia wraca z CG Playout');
+  check(inMark != null && await page.isChecked(`#in-wm-2-ids input[value="${inMark}"]`), 'wejścia: znak wodny wejścia wraca z CG Playout');
+  if (Number.isInteger(liveMarkId)) await api('DeleteWatermark', { WatermarkId: liveMarkId });
   await page.click('#dlg-buttons button:has-text("Anuluj")');
   await page.waitForSelector('#overlay', { state: 'hidden' });
   // ciasteczka YouTube dla yt-dlp (CG Playout z „youtube_cookies” w features)

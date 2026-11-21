@@ -33,6 +33,8 @@ pub struct ChannelRules {
     pub shows: Option<Vec<ShowOverride>>,
     /// Graphics of a live takeover of the channel (a LIVE logo); held schedule meanwhile.
     pub on_live: Option<String>,
+    /// ErsatzTV watermarks (ids) over a live takeover of the channel, with `on_live`.
+    pub live_watermark: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -66,6 +68,7 @@ impl Rules {
                         || c.end_seconds.is_some()
                         || c.shows.is_some()
                         || c.on_live.is_some()
+                        || c.live_watermark.is_some()
                 })
                 .map(|c| ChannelRules {
                     channel: c.channel.clone(),
@@ -75,6 +78,7 @@ impl Rules {
                     end_seconds: c.end_seconds,
                     shows: c.shows.clone(),
                     on_live: c.on_live.clone(),
+                    live_watermark: c.live_watermark.clone(),
                 })
                 .collect(),
         }
@@ -95,6 +99,7 @@ impl Rules {
             own.end_seconds = None;
             own.shows = None;
             own.on_live = None;
+            own.live_watermark = None;
         }
         for rules in &self.channels {
             let own = match config.channels.iter().position(|c| c.channel == rules.channel) {
@@ -110,6 +115,7 @@ impl Rules {
             own.end_seconds = rules.end_seconds;
             own.shows.clone_from(&rules.shows);
             own.on_live.clone_from(&rules.on_live);
+            own.live_watermark.clone_from(&rules.live_watermark);
         }
     }
 
@@ -152,6 +158,10 @@ impl Rules {
                         end_seconds: item.get("end_seconds").map(|v| config::seconds(v, &format!("{prefix}.end_seconds"))).transpose()?,
                         shows: item.get("shows").map(|v| config::show_overrides(v, &format!("{prefix}.shows"))).transpose()?,
                         on_live: field("on_live")?,
+                        live_watermark: field("live_watermark")?
+                            .map(|ids| config::watermark_ids(&ids).map_err(|e| format!("{prefix}.{e}")))
+                            .transpose()?
+                            .filter(|ids| !ids.is_empty()),
                     });
                 }
             }
@@ -195,7 +205,14 @@ impl Rules {
             .iter()
             .map(|c| {
                 let mut members = Vec::new();
-                for (name, v) in [("on_clip", &c.on_clip), ("on_ad", &c.on_ad), ("on_end", &c.on_end), ("on_live", &c.on_live)] {
+                let fields = [
+                    ("on_clip", &c.on_clip),
+                    ("on_ad", &c.on_ad),
+                    ("on_end", &c.on_end),
+                    ("on_live", &c.on_live),
+                    ("live_watermark", &c.live_watermark),
+                ];
+                for (name, v) in fields {
                     if v.is_some() {
                         members.push((name.to_owned(), opt(v)));
                     }
@@ -329,7 +346,7 @@ mod tests {
         let doc = json::parse(
             r#"{"on_clip":"TAKE 4001 headline={title}","ad_match":{"path":"/reklamy/","title":""},"on_end":"TAKE 1405","end_seconds":30,
                "shows":[{"show_title":"^Wiad","on_clip":"TAKE 1001","end_seconds":10}],
-               "channels":{"2":{"on_clip":"TAKE 7","on_live":"TAKE 7510","shows":[{"show_title":"x","on_end":""}]}}}"#,
+               "channels":{"2":{"on_clip":"TAKE 7","on_live":"TAKE 7510","live_watermark":"3, 5","shows":[{"show_title":"x","on_end":""}]}}}"#,
         )
         .unwrap();
         let rules = Rules::parse(&doc).unwrap();
@@ -347,6 +364,7 @@ mod tests {
         assert_eq!(config.for_channel("2").on_clip, "TAKE 7");
         assert_eq!(config.for_channel("2").shows[0].on_end.as_deref(), Some(""));
         assert_eq!((config.for_channel("2").on_live.as_str(), config.for_channel("1").on_live.as_str()), ("TAKE 7510", ""));
+        assert_eq!((config.for_channel("2").live_watermark.as_str(), config.for_channel("1").live_watermark.as_str()), ("3,5", ""));
         let three = config.for_channel("3");
         assert_eq!((three.vizrs.address.as_str(), three.on_ad.as_str()), ("v3:6100", ""));
         assert_eq!(Rules::of(&config), rules);
@@ -354,7 +372,15 @@ mod tests {
 
     #[test]
     fn refuses_bad_documents() {
-        for bad in [r#"[]"#, r#"{"end_seconds":-1}"#, r#"{"shows":[{"on_clip":"x"}]}"#, r#"{"channels":[]}"#, r#"{"on_clip":5}"#] {
+        for bad in [
+            r#"[]"#,
+            r#"{"end_seconds":-1}"#,
+            r#"{"shows":[{"on_clip":"x"}]}"#,
+            r#"{"channels":[]}"#,
+            r#"{"on_clip":5}"#,
+            r#"{"channels":{"1":{"live_watermark":"logo"}}}"#,
+            r#"{"channels":{"1":{"live_watermark":"1,2,3,4,5,6,7,8,9"}}}"#,
+        ] {
             assert!(Rules::parse(&json::parse(bad).unwrap()).is_err(), "{bad}");
         }
         let rules = Rules::parse(&json::parse(r#"{"ad_match":{"path":"(","title":""},"shows":[{"show_title":"["}]}"#).unwrap()).unwrap();

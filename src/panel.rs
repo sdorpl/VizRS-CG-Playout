@@ -135,6 +135,10 @@ fn valid_input_id(id: &str) -> bool {
 /// `on_live`), by their entry `channel=url`.
 type InputGraphics = BTreeMap<String, String>;
 
+/// ErsatzTV watermarks (ids, `3,5`) of the inputs over a takeover from them
+/// (in place of the channel's `live_watermark`), by their entry `channel=url`.
+type InputWatermarks = BTreeMap<String, String>;
+
 /// Longest `on_live` of an input (characters).
 const INPUT_GRAPHICS_MAX: usize = 4000;
 
@@ -142,20 +146,25 @@ fn entry_of(l: &crate::listener::Listener) -> String {
     format!("{}={}", l.channel, l.url)
 }
 
-/// `inputs.json`: `{"listeners": "1=rtmp://…; 2=srt://…", "on_live": {"1=rtmp://…": "TAKE 7510"}}`
-/// (`listeners` in `VIZRS_INGEST`'s format; `on_live` only for the inputs that have it).
-fn inputs_to_json(list: &[crate::listener::Listener], graphics: &InputGraphics) -> String {
+/// `inputs.json`: `{"listeners": "1=rtmp://…; 2=srt://…", "on_live": {"1=rtmp://…": "TAKE 7510"},
+/// "live_watermark": {"1=rtmp://…": "3"}}` (`listeners` in `VIZRS_INGEST`'s format; `on_live` and
+/// `live_watermark` only for the inputs that have them).
+fn inputs_to_json(list: &[crate::listener::Listener], graphics: &InputGraphics, marks: &InputWatermarks) -> String {
     let text = list.iter().map(entry_of).collect::<Vec<_>>().join("; ");
-    let own: Vec<(String, Value)> =
-        list.iter().filter_map(|l| graphics.get(&entry_of(l)).map(|g| (entry_of(l), Value::from(g.as_str())))).collect();
+    let own = |map: &BTreeMap<String, String>| -> Vec<(String, Value)> {
+        list.iter().filter_map(|l| map.get(&entry_of(l)).map(|g| (entry_of(l), Value::from(g.as_str())))).collect()
+    };
     let mut members = vec![("listeners".to_owned(), Value::from(text))];
-    if !own.is_empty() {
-        members.push(("on_live".to_owned(), Value::Object(own)));
+    for (name, map) in [("on_live", graphics), ("live_watermark", marks)] {
+        let own = own(map);
+        if !own.is_empty() {
+            members.push((name.to_owned(), Value::Object(own)));
+        }
     }
     format!("{}\n", Value::Object(members))
 }
 
-fn inputs_from_json(text: &str) -> Result<(Vec<crate::listener::Listener>, InputGraphics), String> {
+fn inputs_from_json(text: &str) -> Result<(Vec<crate::listener::Listener>, InputGraphics, InputWatermarks), String> {
     let value = json::parse(text).map_err(|e| e.to_string())?;
     let listeners = value.get("listeners").and_then(Value::as_str).ok_or("listeners?")?;
     let (list, errors) = crate::listener::parse_listeners(listeners);
@@ -172,7 +181,16 @@ fn inputs_from_json(text: &str) -> Result<(Vec<crate::listener::Listener>, Input
             }
         }
     }
-    Ok((list, graphics))
+    let mut marks = InputWatermarks::new();
+    if let Some(Value::Object(own)) = value.get("live_watermark") {
+        for (entry, ids) in own {
+            let ids = ids.as_str().and_then(|ids| crate::config::watermark_ids(ids).ok()).filter(|ids| !ids.is_empty());
+            if let Some(ids) = ids.filter(|_| list.iter().any(|l| entry_of(l) == *entry)) {
+                marks.insert(entry.clone(), ids);
+            }
+        }
+    }
+    Ok((list, graphics, marks))
 }
 
 /// What the panel last got from ErsatzTV.
@@ -218,6 +236,8 @@ pub struct Panel {
     listeners: Mutex<(Vec<crate::listener::Listener>, bool)>,
     /// Graphics of the inputs (`on_live` of an input in `inputs.json`).
     input_graphics: Mutex<InputGraphics>,
+    /// ErsatzTV watermarks of the inputs (`live_watermark` of an input in `inputs.json`).
+    input_watermarks: Mutex<InputWatermarks>,
     /// How publishers reach the listeners: host, host ports of the first port of each range.
     public: (String, Option<u16>, Option<u16>),
     graphics: Arc<crate::graphics::Store>,
@@ -348,6 +368,7 @@ impl Panel {
             token: config.panel_token.clone(),
             listeners: Mutex::new((listeners, false)),
             input_graphics: Mutex::new(InputGraphics::new()),
+            input_watermarks: Mutex::new(InputWatermarks::new()),
             public: (config.ingest_public.clone(), config.ingest_rtmp_port, config.ingest_srt_port),
             graphics,
             etv_config: config.etv_config.clone(),
@@ -378,9 +399,10 @@ impl Panel {
         panel.fill_encoder();
         if let Some(path) = panel.inputs_path() {
             match fs::read_to_string(&path).map(|text| inputs_from_json(&text)) {
-                Ok(Ok((list, graphics))) => {
+                Ok(Ok((list, graphics, marks))) => {
                     *lock(&panel.listeners) = (list, true);
                     *lock(&panel.input_graphics) = graphics;
+                    *lock(&panel.input_watermarks) = marks;
                 }
                 Ok(Err(e)) => crate::warn!("{}: {e}; inputs from VIZRS_INGEST", path.display()),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -535,6 +557,18 @@ impl Panel {
         lock(&self.input_graphics).get(&entry_of(listener)).cloned()
     }
 
+    /// The ErsatzTV watermarks of a takeover of the channel from its input `input`
+    /// (`listener::input_id`, none = unknown): the input's own, else the channel's
+    /// (`channels.N.live_watermark`); empty = none.
+    pub fn live_watermark(&self, channel: &str, input: Option<&str>) -> String {
+        let own = input.and_then(|input| {
+            let listeners = lock(&self.listeners);
+            let listener = listeners.0.iter().find(|l| l.channel == channel && crate::listener::input_id(l) == input)?;
+            lock(&self.input_watermarks).get(&entry_of(listener)).cloned()
+        });
+        own.unwrap_or_else(|| self.graphics.applied(&self.config).for_channel(channel).live_watermark)
+    }
+
     /// The channel has the input `id` (`listener::input_id`) on its list.
     fn has_input(&self, channel: &str, id: &str) -> bool {
         lock(&self.listeners).0.iter().any(|l| l.channel == channel && crate::listener::input_id(l) == id)
@@ -634,9 +668,14 @@ impl Panel {
             graphics.remove(&entry_of(&wanted));
             graphics.clone()
         };
+        let marks = {
+            let mut marks = lock(&self.input_watermarks);
+            marks.remove(&entry_of(&wanted));
+            marks.clone()
+        };
         if from_file {
             if let Some(path) = self.inputs_path() {
-                if let Err(e) = crate::sync::write_atomic(&path, &inputs_to_json(&list, &graphics)) {
+                if let Err(e) = crate::sync::write_atomic(&path, &inputs_to_json(&list, &graphics, &marks)) {
                     crate::warn!("{}: {e}", path.display());
                 }
             }
@@ -650,12 +689,14 @@ impl Panel {
         use crate::listener::{RTMP_PORTS, SRT_PORTS};
         let (listeners, from_file) = lock(&self.listeners).clone();
         let graphics = lock(&self.input_graphics).clone();
+        let marks = lock(&self.input_watermarks).clone();
         let range = |r: std::ops::RangeInclusive<u16>| Value::Array(vec![f64::from(*r.start()).into(), f64::from(*r.end()).into()]);
         let items = listeners.iter().map(|l| {
             json::object([
                 ("channel", l.channel.as_str().into()),
                 ("url", l.url.as_str().into()),
                 ("on_live", graphics.get(&entry_of(l)).map_or(Value::Null, |g| g.as_str().into())),
+                ("live_watermark", marks.get(&entry_of(l)).map_or(Value::Null, |m| m.as_str().into())),
             ])
         });
         json::object([
@@ -674,6 +715,7 @@ impl Panel {
         };
         let mut entries = Vec::new();
         let mut graphics = InputGraphics::new();
+        let mut marks = InputWatermarks::new();
         for item in items {
             let channel = item.get("channel").and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_f64().map(|n| n.to_string())));
             let url = item.get("url").and_then(Value::as_str);
@@ -696,6 +738,17 @@ impl Panel {
                 }
                 Some(_) => return fail(stream, 400, &format!("grafika wejścia: tekst komend, do {INPUT_GRAPHICS_MAX} znaków")),
             }
+            match item.get("live_watermark") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(ids)) => match crate::config::watermark_ids(ids) {
+                    Ok(ids) if ids.is_empty() => {}
+                    Ok(ids) => {
+                        marks.insert(entry.clone(), ids);
+                    }
+                    Err(_) => return fail(stream, 400, "znak wodny wejścia: numery znaków wodnych ErsatzTV, np. 3 albo 3,5 (do 8)"),
+                },
+                Some(_) => return fail(stream, 400, "znak wodny wejścia: numery znaków wodnych ErsatzTV, np. 3 albo 3,5 (do 8)"),
+            }
             entries.push(entry);
         }
         let (list, errors) = crate::listener::parse_listeners(&entries.join("; "));
@@ -709,7 +762,7 @@ impl Panel {
             return fail(stream, 409, "brak etv_config – wejść nie ma gdzie zapisać");
         };
         let written = fs::create_dir_all(live_shows::folder(&self.etv_config))
-            .and_then(|()| crate::sync::write_atomic(&path, &inputs_to_json(&list, &graphics)));
+            .and_then(|()| crate::sync::write_atomic(&path, &inputs_to_json(&list, &graphics, &marks)));
         if let Err(e) = written {
             return fail(stream, 500, &format!("zapis inputs.json: {e}"));
         }
@@ -722,6 +775,7 @@ impl Panel {
         );
         *lock(&self.listeners) = (list, true);
         *lock(&self.input_graphics) = graphics;
+        *lock(&self.input_watermarks) = marks;
         self.drop_gone_choices(ingest);
         reply(stream, 200, &self.inputs_json(ingest))
     }
@@ -1214,6 +1268,7 @@ impl Panel {
             Value::from("logs"),
             Value::from("on_live"),
             Value::from("input_on_live"),
+            Value::from("live_watermark"),
             Value::from("input_select"),
             Value::from("youtube_cookies"),
         ];
@@ -1691,19 +1746,25 @@ mod tests {
     fn inputs_round_trip() {
         let (list, _) = crate::listener::parse_listeners("1=rtmp://0.0.0.0:1936/live/a; 2=srt://0.0.0.0:9000?passphrase=0123456789");
         let none = InputGraphics::new();
-        assert_eq!(inputs_from_json(&inputs_to_json(&list, &none)).unwrap(), (list.clone(), none.clone()));
-        assert!(!inputs_to_json(&list, &none).contains("on_live"), "an older reader sees the same file");
+        let no_marks = InputWatermarks::new();
+        assert_eq!(inputs_from_json(&inputs_to_json(&list, &none, &no_marks)).unwrap(), (list.clone(), none.clone(), no_marks.clone()));
+        assert!(!inputs_to_json(&list, &none, &no_marks).contains("on_live"), "an older reader sees the same file");
+        assert!(!inputs_to_json(&list, &none, &no_marks).contains("live_watermark"));
         let mut own = InputGraphics::new();
         own.insert("2=srt://0.0.0.0:9000?passphrase=0123456789".into(), "TAKE 7510".into());
         own.insert("3=rtmp://0.0.0.0:1937/live/gone".into(), "TAKE 1".into());
-        let (back, graphics) = inputs_from_json(&inputs_to_json(&list, &own)).unwrap();
+        let mut marks = InputWatermarks::new();
+        marks.insert("1=rtmp://0.0.0.0:1936/live/a".into(), "3,5".into());
+        marks.insert("3=rtmp://0.0.0.0:1937/live/gone".into(), "4".into());
+        let (back, graphics, back_marks) = inputs_from_json(&inputs_to_json(&list, &own, &marks)).unwrap();
         assert_eq!(back, list);
+        assert_eq!(back_marks.into_iter().collect::<Vec<_>>(), [("1=rtmp://0.0.0.0:1936/live/a".to_owned(), "3,5".to_owned())]);
         // Graphics of an input not on the list are left out.
         assert_eq!(
             graphics.into_iter().collect::<Vec<_>>(),
             [("2=srt://0.0.0.0:9000?passphrase=0123456789".to_owned(), "TAKE 7510".to_owned())]
         );
-        assert_eq!(inputs_from_json(r#"{"listeners":""}"#).unwrap(), (vec![], none));
+        assert_eq!(inputs_from_json(r#"{"listeners":""}"#).unwrap(), (vec![], none, no_marks));
         assert!(inputs_from_json(r#"{"listeners":"1=ftp://x"}"#).is_err());
     }
 

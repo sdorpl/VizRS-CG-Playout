@@ -104,6 +104,14 @@ pub fn fetch_watermarks(canvas_url: &str, canvas: &Canvas, token: &str) -> mpsc:
 }
 
 /// `GET path` on the host of `base` with the bridge token: the body of a 200.
+/// Watermarks `ids` (`3,5`) of ErsatzTV in the frame of `channel`, from VizRS
+/// Bridge at `base` (`GET /vizrs-bridge/watermarks/<channel>?ids=…`): those of
+/// a live takeover. Waits at most `BRIDGE_WAIT` for the answer.
+pub fn watermarks_by_id(base: &str, channel: &str, ids: &str, token: &str) -> io::Result<Watermarks> {
+    let path = format!("/vizrs-bridge/watermarks/{}?ids={}", quote_plus(channel), quote_plus(ids));
+    bridge_get(base, &path, token).and_then(|body| parse_watermarks(&body))
+}
+
 fn bridge_get(base: &str, path: &str, token: &str) -> io::Result<String> {
     let url = Url::split(base).ok_or_else(|| error("bad canvas URL".into()))?;
     let mut stream = connect(&url)?;
@@ -120,6 +128,34 @@ fn bridge_get(base: &str, path: &str, token: &str) -> io::Result<String> {
         return Err(parse_watermarks(&body).err().unwrap_or_else(|| error(format!("bridge: HTTP {status}"))));
     }
     Ok(body)
+}
+
+/// The watermarks as images over a live run (`takeover::Marks`): each image
+/// input looped like in `with_watermarks`, prepared as there (size, opacity,
+/// yuva420p in the channel's colour matrix) and placed where ErsatzTV puts it.
+pub fn live_marks(marks: &Watermarks, rate: &str, matrix: &str) -> takeover::Marks {
+    let mut out = takeover::Marks::default();
+    let rate = rate.bytes().all(|b| b.is_ascii_digit() || b == b'/' || b == b'.').then_some(rate).filter(|r| !r.is_empty());
+    let to_yuv = if matrix.is_empty() {
+        "format=yuva420p".to_owned()
+    } else {
+        format!("scale=out_color_matrix={matrix}:out_range=tv,format=yuva420p")
+    };
+    let time_of_day = marks.time_of_day_now();
+    for mark in &marks.list {
+        if mark.image.to_ascii_lowercase().ends_with(".gif") {
+            out.inputs.extend(["-ignore_loop", "0"].map(OsString::from));
+        } else {
+            out.inputs.extend(["-loop", "1"].map(OsString::from));
+            if let Some(rate) = rate {
+                out.inputs.extend(["-framerate", rate].map(OsString::from));
+            }
+        }
+        out.inputs.extend(["-i".into(), OsString::from(&mark.image)]);
+        let prepare = format!("scale={}:{},format=rgba{},{to_yuv}", mark.width, mark.height, opacity(mark, time_of_day));
+        out.images.push((prepare, mark.x, mark.y));
+    }
+    out
 }
 
 /// The command with the watermarks overlaid on top of the graphics of input

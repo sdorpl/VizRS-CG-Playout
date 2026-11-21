@@ -211,6 +211,28 @@ const FORWARDED: [i32; 4] = [sys::SIGTERM, sys::SIGINT, sys::SIGHUP, sys::SIGQUI
 mod tests {
     use super::*;
 
+    #[test]
+    fn region_canvas_names_the_item_for_its_watermarks() {
+        let region = args(&["-i", "/m.mp4", "-headers", "x", "-i", "http://etv:8409/internal/graphics/1/77?region=wm&sig=x", "out"]);
+        assert!(find_canvas(&region).is_none(), "no VizRS element");
+        let (canvas, url) = find_region_canvas(&region).unwrap();
+        assert_eq!((canvas.channel.as_str(), canvas.item.as_str(), canvas.index), ("1", "77", 4));
+        assert!(url.ends_with("region=wm&sig=x"));
+        assert!(
+            find_region_canvas(&args(&["-i", "http://etv:8409/internal/graphics/1/77?sig=x", "out"])).is_none(),
+            "a VizRS canvas is not one"
+        );
+        assert!(find_region_canvas(&args(&["-i", "/m.mp4", "out"])).is_none());
+    }
+
+    #[test]
+    fn rate_of_the_live_graphics_session() {
+        assert_eq!(run::rate_number("25"), 25.0);
+        assert!((run::rate_number("30000/1001") - 29.97).abs() < 0.01);
+        assert_eq!(run::rate_number(""), 25.0);
+        assert_eq!(run::rate_number("0/0"), 25.0);
+    }
+
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
     }

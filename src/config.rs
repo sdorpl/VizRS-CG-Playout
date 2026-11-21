@@ -77,6 +77,9 @@ pub struct ChannelOverride {
     /// Graphics of a live takeover of this channel (e.g. `TAKE 7510`, a LIVE logo);
     /// the schedule's graphics are held while the live is on (DOKUMENTACJA §1).
     pub on_live: Option<String>,
+    /// ErsatzTV watermarks (their ids, `3` or `3,5`) the overlay draws over a live
+    /// takeover of this channel, with `on_live` (DOKUMENTACJA §1).
+    pub live_watermark: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -128,6 +131,8 @@ pub struct Config {
     /// Commands of a live takeover of the channel (only per channel, `channels.N.on_live`;
     /// set by `for_channel`): the schedule's graphics are held meanwhile.
     pub on_live: String,
+    /// ErsatzTV watermarks of a live takeover (`channels.N.live_watermark`, ids; set by `for_channel`).
+    pub live_watermark: String,
     /// How far the packet stream may run ahead of real time (ErsatzTV burst).
     pub lead_seconds: f64,
     /// Size Chromium renders /output at: "" = channel size, "720p", "1280x720".
@@ -207,6 +212,7 @@ impl Default for Config {
             out_seconds: 5.0,
             on_end: String::new(),
             on_live: String::new(),
+            live_watermark: String::new(),
             end_seconds: 60.0,
             end_out_seconds: 5.0,
             end_ref: "programme".into(),
@@ -274,6 +280,19 @@ fn boolean(value: &Value, name: &str) -> Result<bool, String> {
     value.as_bool().ok_or_else(|| format!("{name}: expected true or false"))
 }
 
+/// ErsatzTV watermark ids (`3`, `3,5`; spaces around commas fine), at most 8;
+/// empty = none. Normalised to `3,5`.
+pub fn watermark_ids(text: &str) -> Result<String, String> {
+    let ids: Vec<&str> = text.split(',').map(str::trim).filter(|id| !id.is_empty()).collect();
+    if ids.len() > 8 || ids.iter().any(|id| id.len() > 9 || !id.bytes().all(|b| b.is_ascii_digit())) {
+        return Err(format!(
+            "live_watermark \"{}\": watermark ids of ErsatzTV, e.g. 3 or 3,5 (at most 8)",
+            text.chars().take(40).collect::<String>()
+        ));
+    }
+    Ok(ids.join(","))
+}
+
 /// A `shows` array; `name` is its place in the configuration.
 pub(crate) fn show_overrides(value: &Value, name: &str) -> Result<Vec<ShowOverride>, String> {
     let items = value.as_array().ok_or(format!("{name}: expected an array"))?;
@@ -323,6 +342,7 @@ fn channel_overrides(value: &Value) -> Result<Vec<ChannelOverride>, String> {
             end_seconds: item.get("end_seconds").map(|v| seconds(v, &format!("{prefix}.end_seconds"))).transpose()?,
             shows: item.get("shows").map(|v| show_overrides(v, &format!("{prefix}.shows"))).transpose()?,
             on_live: field(item.get("on_live"), "on_live")?,
+            live_watermark: field(item.get("live_watermark"), "live_watermark")?.map(|ids| watermark_ids(&ids)).transpose()?,
         });
     }
     Ok(channels)
@@ -693,6 +713,7 @@ impl Config {
                 (&own.on_ad, &mut config.on_ad),
                 (&own.on_end, &mut config.on_end),
                 (&own.on_live, &mut config.on_live),
+                (&own.live_watermark, &mut config.live_watermark),
             ];
             for (value, target) in fields {
                 if let Some(value) = value {

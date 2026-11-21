@@ -3,6 +3,7 @@
 use super::*;
 
 /// The overlay's environment.
+#[derive(Clone)]
 pub struct Settings {
     pub ffmpeg: OsString,
     /// Sidecar URL without the trailing `/`; empty = no overlay.
@@ -42,6 +43,10 @@ pub struct Settings {
     /// Token of VizRS Bridge in ErsatzTV (VIZRS_BRIDGE_TOKEN): the watermarks of
     /// a canvas taken over come from it; empty = no watermarks. Never logged.
     pub bridge_token: String,
+    /// VizRS Bridge as the overlay reaches it in ErsatzTV's container
+    /// (VIZRS_BRIDGE_URL, default `http://127.0.0.1:8409`): the watermarks of a
+    /// live takeover (`live_watermark`), with or without a canvas.
+    pub bridge_url: String,
 }
 
 /// What of a command encoding with NVENC stays on the card (`VIZRS_FFMPEG_CUDA`).
@@ -92,6 +97,10 @@ impl Settings {
             sync_ram: var("VIZRS_FFMPEG_SYNC_RAM").trim() == "1",
             no_discardcorrupt: var("VIZRS_FFMPEG_NO_DISCARDCORRUPT").trim() == "1",
             bridge_token: var("VIZRS_BRIDGE_TOKEN").trim().to_owned(),
+            bridge_url: match var("VIZRS_BRIDGE_URL").trim().trim_end_matches('/') {
+                "" => "http://127.0.0.1:8409".to_owned(),
+                url => url.to_owned(),
+            },
         }
         .with_encoder_file(&std::env::var("VIZRS_FFMPEG_SETTINGS").unwrap_or_else(|_| encoder::DEFAULT_PATH.into()))
     }
