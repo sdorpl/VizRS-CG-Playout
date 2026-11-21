@@ -1,6 +1,6 @@
 [package]
 name = "vizrs-live"
-version = "26.11.22"
+version = "26.11.23"
 edition = "2021"
 rust-version = "1.80"
 description = "VizRS Live – panel kanału nad ErsatzTV legacy (przez most VizRS Bridge)"

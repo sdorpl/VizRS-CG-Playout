@@ -3,7 +3,7 @@
 // panel rozmawia z nim przez pośrednika serwera /api/cg/live/… (token CG zostaje w serwerze).
 
 import { VIEWS, S, h, head, panel, pill, btn, table, toast, cmd, cmdNote, confirmDlg, dialog, has, route, pad2, hm, pl, operatorName, onChannel } from '../core.js';
-import { cg, allPages } from './grafika.js';
+import { cg, allPages, graphicsChoices } from './grafika.js';
 import { cmdEditor } from '../cmdedit.js';
 import { fromLegacy, toReplace } from './harmonogramy.js';
 import { minutesOf, hhmm, span } from '../parts.js';
@@ -675,7 +675,7 @@ function airingRows(ch, loaded, coll) {
   if (coll == null) return [];
   return ch.schedules.flatMap((sc) => airingsOf(loaded.get(sc.id) || [], coll).map(({ it }) => ({
     schedule: sc.id, time: it.StartTime.slice(0, 5), behavior: it.FixedStartTimeBehavior || 'Strict', title: it.CustomTitle || '',
-    watermark: (it.WatermarkIds || [])[0] ?? '', orig: it,
+    watermark: (it.WatermarkIds || [])[0] ?? '', graphic: (it.GraphicsElementIds || [])[0] ?? '', orig: it,
   }))).sort((a, b) => a.time.localeCompare(b.time));
 }
 
@@ -696,10 +696,12 @@ async function saveAirings(show, ch, loaded, rows) {
     for (const { i } of airingsOf(items, show.collection_id).reverse()) items = removeAiring(items, i);
     const notes = [];
     for (const r of want.sort((x, y) => x.min - y.min)) {
-      const wm = r.watermark === '' ? [] : r.orig && String((r.orig.WatermarkIds || [])[0] ?? '') === String(r.watermark) ? r.orig.WatermarkIds : [Number(r.watermark)];
+      // pierwszy z listy wybrany w oknie; niezmieniony = cała lista dawnej pozycji (kolejne z Harmonogramów zostają)
+      const pick = (v, key) => (v === '' ? [] : r.orig && String((r.orig[key] || [])[0] ?? '') === String(v) ? r.orig[key] : [Number(v)]);
+      const wm = pick(r.watermark, 'WatermarkIds'), ge = pick(r.graphic ?? '', 'GraphicsElementIds');
       try {
         const out = insertAiring(items, show.collection_id, r.min, show.collection_name,
-          { ...(r.orig || {}), FixedStartTimeBehavior: r.behavior, CustomTitle: r.title.trim(), WatermarkIds: wm });
+          { ...(r.orig || {}), FixedStartTimeBehavior: r.behavior, CustomTitle: r.title.trim(), WatermarkIds: wm, GraphicsElementIds: ge });
         items = out.items;
         if (out.note) notes.push(`${hhmm(r.min)}: ${out.note}`);
       } catch (e) { throw new Error(`„${sc.name}”: ${e.message}`); }
@@ -730,7 +732,7 @@ const findShow = async (id) => ((await cg('live/shows').catch(() => null))?.show
 
 /**
  * Okno audycji: dane w EPG (tytuł, długość, kategoria wiekowa, opis – plik audycji w CG Playout) i emisje w ramówce kanału
- * (godzina, harmonogram = dni, ściśle / elastycznie, własny tytuł emisji w EPG, znak wodny – pozycje harmonogramu w legacy).
+ * (godzina, harmonogram = dni, ściśle / elastycznie, własny tytuł emisji w EPG, znak wodny, element graficzny VizRS – pozycje harmonogramu w legacy).
  * Jeden zapis: audycja w CG Playout, emisje w harmonogramach, przebudowa ramówki.
  */
 async function showDialog(channels, show) {
@@ -747,9 +749,12 @@ async function showDialog(channels, show) {
 
   // emisje: harmonogramy kanału i ich pozycje (ładowane przy otwarciu i zmianie kanału)
   const air = canAir();
-  let ch = null, loaded = new Map(), rows = [], watermarks = [];
+  let ch = null, loaded = new Map(), rows = [], watermarks = [], graphics = [];
   const airBox = h('div', { class: 'ls-airings', 'data-airings': '' });
   const endOf = (t) => { const m = parseHm(t), d = /^(\d+):(\d{2}):(\d{2})$/.exec(f.duration.value.trim()); return m == null || !d ? '' : '→ ' + hhmm(m + +d[1] * 60 + +d[2] + Math.round(+d[3] / 60)); };
+  // elementy graficzne legacy jak w Harmonogramach: strony VizRS CG System najpierw, z numerem strony
+  const graphicOpts = () => graphicsChoices(graphics).map(([id, name, o]) => [id, `${name} · ${o.badge}`, o.badge.startsWith('VizRS ') ? 0 : 1])
+    .sort((a, b) => a[2] - b[2]);
   const drawAirings = () => {
     if (!air) { airBox.replaceChildren(h('p', { class: 'dim' }, 'Most legacy nie ma komend harmonogramu – emisje ustawisz w Harmonogramach.')); return; }
     if (!ch) { airBox.replaceChildren(h('p', { class: 'dim' }, 'Wczytuję harmonogramy kanału…')); return; }
@@ -760,7 +765,7 @@ async function showDialog(channels, show) {
       return el;
     };
     const table_ = rows.length ? h('table', { class: 'ls-air-table' },
-      h('thead', null, h('tr', null, ['Godzina', '', 'Dni · harmonogram', 'Start', 'Tytuł tej emisji w EPG', 'Znak wodny', ''].map((t) => h('th', null, t)))),
+      h('thead', null, h('tr', null, ['Godzina', '', 'Dni · harmonogram', 'Start', 'Tytuł tej emisji w EPG', 'Znak wodny', 'Grafika', ''].map((t) => h('th', null, t)))),
       h('tbody', null, rows.map((r, n) => {
         const time = h('input', { value: r.time, placeholder: 'gg:mm', class: 'mono', maxlength: 5, 'aria-label': `Godzina emisji ${n + 1}` });
         const end = h('span', { class: 'dim mono' }, endOf(r.time));
@@ -773,11 +778,12 @@ async function showDialog(channels, show) {
           h('td', null, sel(BEHAVIOR_OPTS, r.behavior, `Start emisji ${n + 1}`, (v) => { r.behavior = v; })),
           h('td', null, title),
           h('td', null, sel([['', '— brak —'], ...watermarks.map((w) => [w.Id, w.Name])], r.watermark, `Znak wodny emisji ${n + 1}`, (v) => { r.watermark = v; })),
+          h('td', null, sel([['', '— brak —'], ...graphicOpts()], r.graphic, `Element graficzny emisji ${n + 1}`, (v) => { r.graphic = v; })),
           h('td', null, btn('✕', () => { rows.splice(n, 1); drawAirings(); }, 'danger')));
       })))
       : h('p', { class: 'dim' }, 'Brak emisji – audycja nie jest w ramówce.');
     airBox.replaceChildren(table_,
-      h('div', { class: 'bar' }, btn('+ Emisja', () => { rows.push({ schedule: ch.schedules[0].id, time: '', behavior: 'Strict', title: '', watermark: '', orig: null }); drawAirings(); airBox.querySelector('tbody tr:last-child input')?.focus(); }),
+      h('div', { class: 'bar' }, btn('+ Emisja', () => { rows.push({ schedule: ch.schedules[0].id, time: '', behavior: 'Strict', title: '', watermark: '', graphic: '', orig: null }); drawAirings(); airBox.querySelector('tbody tr:last-child input')?.focus(); }),
         h('span', { class: 'dim' }, (ch.schedules.length > 1 ? 'Dni wybiera harmonogram (alternatywne i ich dni ustawiasz w Playoutach). ' : 'Emisja codziennie – inne dni: harmonogram alternatywny w Playoutach. ') + 'Start ściśle czeka na godzinę, elastycznie wchodzi zaraz po poprzedniej pozycji.')));
   };
   const loadChannel = async (channel) => {
@@ -787,6 +793,7 @@ async function showDialog(channels, show) {
       if (!c.error) {
         await Promise.all(c.schedules.map(async (sc) => loaded.set(sc.id, await loadItems(sc.id))));
         if (!watermarks.length && has('GetAllWatermarks')) watermarks = (await cmd('GetAllWatermarks').catch(() => [])) || [];
+        if (!graphics.length && has('GetAllGraphicsElements')) graphics = (await cmd('GetAllGraphicsElements').catch(() => [])) || [];
       }
       if (channel !== f.channel.value) return;  // operator zmienił kanał w trakcie
       ch = c;
@@ -979,7 +986,7 @@ VIEWS.audycje = async () => {
           [(s) => airCell(s, shows, times), 'Emisja w ramówce'],
           [(s) => h('span', { class: 'bar' }, btn('Edytuj…', () => showDialog(channels, s), s.next || times?.has(s.collection_id) ? null : 'acc'), btn('🗑', () => del(s), 'danger')), ''],
         ], { empty: 'Brak audycji LIVE. Dodaj pierwszą przyciskiem „+ Nowa audycja LIVE”.' }),
-        h('p', { class: 'dim live-side' }, 'Wszystko o audycji w jednym oknie („Edytuj…”): tytuł, długość, kategoria wiekowa i opis w EPG oraz emisje – godzina, dni (harmonogram), start ściśle / elastycznie, własny tytuł emisji i znak wodny. Panel zapisuje emisje w harmonogramie kanału i przebudowuje ramówkę.'),
+        h('p', { class: 'dim live-side' }, 'Wszystko o audycji w jednym oknie („Edytuj…”): tytuł, długość, kategoria wiekowa i opis w EPG oraz emisje – godzina, dni (harmonogram), start ściśle / elastycznie, własny tytuł emisji, znak wodny i element graficzny VizRS. Panel zapisuje emisje w harmonogramie kanału i przebudowuje ramówkę.'),
         cmdNote('CG Playout /api/live/shows', ...AIR_CMDS)),
       h('div', { class: 'cols' },
         await libraryPanel(shows),

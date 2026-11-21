@@ -1783,6 +1783,10 @@ function check(cond, msg) {
   await page.fill('input[aria-label="Godzina emisji 2"]', '7:15');
   await page.selectOption('select[aria-label="Start emisji 2"]', 'Flexible');
   await page.fill('input[aria-label="Tytuł emisji 2"]', 'Debata E2E – powtórka');
+  // element graficzny emisji (jak w Harmonogramach) – pierwszy z legacy, gdy stos testowy jakiś ma
+  const geOpts = await page.$$eval('select[aria-label="Element graficzny emisji 2"] option', (o) => o.map((x) => x.value).filter(Boolean));
+  check(await page.isVisible('select[aria-label="Element graficzny emisji 1"]'), 'audycje: wybór elementu graficznego przy emisji');
+  if (geOpts.length) await page.selectOption('select[aria-label="Element graficzny emisji 2"]', geOpts[0]);
   await shot('audycje-okno');
   await page.click('#dlg-buttons button:has-text("Utwórz")');
   await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
@@ -1792,8 +1796,8 @@ function check(cond, msg) {
   check(CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '12'), 'audycje: kategoria wiekowa zapisana w CG Playout');
   let li = await liveItems();
   check(li.length === 2 && li.every((it) => it.StartType === 'Fixed' && it.PlayoutMode === 'One') && /^07:15/.test(li[0].StartTime) && li[0].FixedStartTimeBehavior === 'Flexible'
-    && li[0].CustomTitle === 'Debata E2E – powtórka' && /^20:00/.test(li[1].StartTime) && li[1].FixedStartTimeBehavior === 'Strict' && !li[1].CustomTitle
-    && (await items24()).length === before24 + 2, 'audycje: pozycje w legacy – kolekcja LIVE, godziny, ściśle / elastycznie, tytuł emisji');
+    && li[0].CustomTitle === 'Debata E2E – powtórka' && (!geOpts.length || (li[0].GraphicsElements || []).map((g) => String(g.Id)).join() === geOpts[0]) && !(li[1].GraphicsElements || []).length && /^20:00/.test(li[1].StartTime) && li[1].FixedStartTimeBehavior === 'Strict' && !li[1].CustomTitle
+    && (await items24()).length === before24 + 2, `audycje: pozycje w legacy – kolekcja LIVE, godziny, ściśle / elastycznie, tytuł emisji, element graficzny (${geOpts.length ? 'wybrany' : 'brak w legacy'})`);
   await shot('r12-kreator');
   await page.click('#dlg-buttons button:has-text("Gotowe")');
   await page.waitForSelector('tr:has(td:has-text("Debata E2E")) [data-air-times]');

@@ -4,6 +4,10 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.23 (2026-11-21)
+
+- **Audycje LIVE: grafika przy emisji.** W oknie audycji każda emisja ma obok znaku wodnego wybór elementu graficznego (`GraphicsElementIds` pozycji harmonogramu), jak w Harmonogramach – strony VizRS CG System na początku listy z numerem strony. Gdy pozycja ma kilka elementów z Harmonogramów, a wybór w oknie się nie zmienił, wszystkie zostają (tak samo znaki wodne). DOKUMENTACJA §12, INSTRUKCJA.
+
 ## 26.11.22 (2026-11-21)
 
 - **Audycje LIVE: biblioteka bez folderu `/config/vizrs-live` nie psuje już ramówki.** Na S1 biblioteka „Remote Streams” miała tylko `/media/tv/Live`; plik audycji leżał poza nią, kolekcja `LIVE · …` była pusta, a emisja w harmonogramie zatrzymała budowę playoutu kanału („SmartCollection … has no valid items”). Panel pokazuje teraz czerwone ostrzeżenie z przyciskiem „Dodaj folder /config/vizrs-live” (dotychczasowe ścieżki biblioteki zostają, potem skan), a kreator nie wstawia emisji, dopóki folderu nie ma. DOKUMENTACJA §12.
