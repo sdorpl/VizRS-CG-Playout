@@ -372,6 +372,19 @@ function check(cond, msg) {
   await rerender(() => page.click(`td:has-text("${sched}")`));
   rows = await itemRows();
   check(/kilka \(2\)/.test(rows[0] || ''), 'harmonogram: odrzucone pozycje nie zmieniły harmonogramu');
+  // wąski ekran (telefon): pozycje jako karty „etykieta: wartość”, nic nie wystaje poza szerokość listy
+  const vp = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const narrow = await page.evaluate(() => {
+    const tw = document.querySelector('main .tw.stack');
+    const box = tw.getBoundingClientRect();
+    const tds = [...tw.querySelectorAll('tbody tr:first-child td')];
+    return { fits: tw.scrollWidth <= tw.clientWidth + 1 && tds.every((td) => td.getBoundingClientRect().right <= box.right + 1),
+      head: getComputedStyle(tw.querySelector('thead')).display, labels: tds.map((td) => td.dataset.label).filter(Boolean) };
+  });
+  await page.setViewportSize(vp);
+  check(narrow.fits && narrow.head === 'none' && narrow.labels.includes('Kolejność') && narrow.labels.includes('Wypełniacze'),
+    `harmonogram: na wąskim ekranie pozycje jako karty bez ucinania (${JSON.stringify(narrow)})`);
 
   // wybór wielokrotny z długiej listy (form.js): wyszukiwarka bez polskich znaków, Enter, etykieta z „×”, miniatury;
   // kontrolka budowana wprost w panelu – nie zależy od liczby znaków wodnych i elementów w stosie testowym

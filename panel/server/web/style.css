@@ -422,3 +422,18 @@ img.mini { cursor: zoom-in; }
 .inputs-edit .bar > select { width: auto; }
 .inputs-edit .bar > input.grow { flex: 1 1 260px; min-width: 0; width: auto; }
 .inputs-edit .bar > .dim { flex-basis: 100%; }
+/* wąski ekran: lista pozycji (parts.js itemsEditor, np. pozycje harmonogramu) jako karty „etykieta: wartość” zamiast tabeli
+   szerszej niż ekran – wiersz = karta, komórka = etykieta z data-label + wartość, przyciski pozycji na dole karty */
+@media (max-width: 760px) {
+  .tw.stack table, .tw.stack tbody, .tw.stack tr, .tw.stack td { display: block; }
+  .tw.stack thead { display: none; }
+  .tw.stack tr { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .tw.stack tr.sel { box-shadow: inset 3px 0 0 var(--acc); }
+  .tw.stack td { display: grid; grid-template-columns: minmax(84px, 32%) minmax(0, 1fr); gap: 10px; padding: 3px 0; border: 0;
+    white-space: normal; overflow-wrap: anywhere; }
+  .tw.stack td::before { content: attr(data-label); color: var(--dim); font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .07em; font-family: var(--sans); padding-top: 2px; }
+  .tw.stack td:not([data-label])::before { content: none; }
+  .tw.stack td.act { display: flex; justify-content: flex-end; width: auto; padding-top: 6px; }
+  .tw.stack td.act button { padding: 4px 12px; }
+}

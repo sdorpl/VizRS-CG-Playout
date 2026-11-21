@@ -174,8 +174,8 @@ export function itemsEditor(cfg) {
   function render() {
     const rows = items.map((it, i) => {
       const tr = h('tr', { class: 'click' + (i === open ? ' sel' : '') },
-        h('td', { class: 'num dim' }, String(i + 1)),
-        cfg.cols.map(([f, , o]) => { const v = f(it, i); return h('td', { class: o && o.class }, v instanceof Node ? v : v == null || v === '' ? '—' : String(v)); }),
+        h('td', { class: 'num dim', 'data-label': '#' }, String(i + 1)),
+        cfg.cols.map(([f, t, o]) => { const v = f(it, i); return h('td', { class: o && o.class, 'data-label': typeof t === 'string' ? t : null }, v instanceof Node ? v : v == null || v === '' ? '—' : String(v)); }),
         h('td', { class: 'act' }, h('span', { class: 'bar' },
           cfg.copy ? h('button', { type: 'button', title: 'Kopiuj pozycję', 'aria-label': `Kopiuj pozycję ${i + 1}`, onclick: () => dup(i) }, '⧉') : null,
           h('button', { type: 'button', title: 'W górę', 'aria-label': `Pozycja ${i + 1} w górę`, disabled: i === 0, onclick: () => move(i, -1) }, '↑'),
@@ -185,7 +185,7 @@ export function itemsEditor(cfg) {
       return tr;
     });
     const list = items.length
-      ? h('div', { class: 'tw' }, h('table', null,
+      ? h('div', { class: 'tw stack' }, h('table', null,
         h('thead', null, h('tr', null, h('th', null, '#'), cfg.cols.map(([, t]) => h('th', null, t)), h('th', null, ''))),
         h('tbody', null, rows)))
       : h('div', { class: 'empty' }, cfg.empty || 'Brak pozycji. Dodaj pierwszą.');

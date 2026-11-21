@@ -4,6 +4,10 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.24 (2026-11-21)
+
+- **Harmonogramy na telefonie: pozycje nie są ucinane.** Tabela pozycji (Start, Treść, Tryb, Kolejność, Wypełniacze, Znaki i grafika) miała ok. 820 px i na wąskim ekranie kolumny od „Kolejność” wypadały poza ekran. Poniżej 760 px każda pozycja jest kartą „etykieta: wartość” z przyciskami (kopiuj, w górę, w dół, usuń) na dole – dotyczy wspólnej listy pozycji, więc także bloków, playlist, deco, kalendarza i harmonogramów zastępczych w Playoutach. DOKUMENTACJA §11.
+
 ## 26.11.23 (2026-11-21)
 
 - **Audycje LIVE: grafika przy emisji.** W oknie audycji każda emisja ma obok znaku wodnego wybór elementu graficznego (`GraphicsElementIds` pozycji harmonogramu), jak w Harmonogramach – strony VizRS CG System na początku listy z numerem strony. Gdy pozycja ma kilka elementów z Harmonogramów, a wybór w oknie się nie zmienił, wszystkie zostają (tak samo znaki wodne). DOKUMENTACJA §12, INSTRUKCJA.
