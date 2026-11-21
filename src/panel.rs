@@ -737,6 +737,8 @@ impl Panel {
         let mut members = vec![("store".to_owned(), Value::from(store)), ("present".to_owned(), Value::from(text.is_some()))];
         if let Some(text) = text {
             members.push(("saved_at".into(), saved_ms.map_or(Value::Null, iso)));
+            let ended = crate::yt_cookies::ended(&live_shows::folder(&self.etv_config));
+            members.push(("ended_at".into(), ended.map_or(Value::Null, Value::from)));
             match crate::yt_cookies::parse(&text) {
                 Ok(cookies) => {
                     let summary = crate::yt_cookies::summary(&cookies);

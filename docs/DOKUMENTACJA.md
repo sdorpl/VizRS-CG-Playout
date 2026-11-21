@@ -1194,7 +1194,15 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    cookies are no longer valid”). Dlatego po każdym pytaniu odbiornik zapisuje
    ciasteczka odświeżone przez yt-dlp z powrotem do pliku z panelu (obok
    i zmiana nazwy, 0600, właściciel jak katalogu – sidecar dalej go czyta),
-   o ile plik nie zmienił się od zrobienia kopii (nowe wgranie wygrywa);
+   o ile plik nie zmienił się od zrobienia kopii (nowe wgranie wygrywa)
+   i o ile yt-dlp nie stracił sesji: gdy YouTube ją zakończy, kasuje
+   ciasteczka logowania (`LOGIN_INFO`, `SID`, `SAPISID`…, zostaje m.in.
+   `__Secure-3PSID`) – wtedy plik z panelu zostaje, jak był, odbiornik raz
+   loguje „YouTube ended the account's session … upload new cookies”
+   i zostawia znacznik `youtube-cookies.ended` (czas), który panel pokazuje
+   na czerwono („YouTube zakończył sesję …”), a nowe wgranie kasuje (S1
+   2026-11-20: po 5 h nadawania sesja wygasła, a okrojony plik nadpisał
+   wgrany – live stanął z „Sign in to confirm you're not a bot”);
    następna kopia (ponowny wybór wejścia, restart, inne wejście) zaczyna od
    najnowszych. Te same ciasteczka na dwóch serwerach – jeden wymienia,
    drugi używa starych – też kończą sesję: każdy serwer potrzebuje własnego

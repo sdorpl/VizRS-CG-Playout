@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Zakończona sesja YouTube widoczna w panelu:** gdy YouTube kończy sesję konta, kasuje ciasteczka logowania; odbiornik zapisywał wtedy okrojony plik w miejsce wgranego, a panel dalej pokazywał „Konto zalogowane” (S1 2026-11-20: live z YouTube stanął po 5 h). Teraz plik z panelu zostaje, panel pokazuje na czerwono „YouTube zakończył sesję … – wgraj nowe ciasteczka” (`ended_at` w `/api/live/youtube-cookies`), a „zalogowane” liczy się jak w yt-dlp (`LOGIN_INFO` + `SAPISID`/`__Secure-*PAPISID`). DOKUMENTACJA §1, API.md.
+
 ## 26.11.20 (2026-11-21)
 
 - **Płynny live z YouTube 60 kl./s na kanale 25 kl./s:** stacje 50 Hz (np. TVP Info) trafiają na YouTube jako 60 kl./s z powtórzoną co szóstą klatką; dotąd przejście na 25 albo 30 kl./s dawało nierówny ruch. Sidecar mierzy klatkaż sygnału (`fps` w `/ingest/state`), a przebieg live przy ~60 kl./s na kanale 25/50 usuwa powtórzoną klatkę (`decimate=cycle=6`) przed `fps` – ruch równy. Starszy sidecar: jak dotąd. DOKUMENTACJA §1.

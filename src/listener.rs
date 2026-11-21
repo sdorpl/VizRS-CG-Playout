@@ -702,6 +702,8 @@ pub struct Cookies {
     copy: std::path::PathBuf,
     /// Length and time of the panel's file the copy was made of.
     seen: Option<(u64, std::time::SystemTime)>,
+    /// YouTube ended the session of these cookies (said once, marked for the panel).
+    ended: bool,
 }
 
 /// What a cookies file is now: length and time of change; none = no file.
@@ -712,7 +714,7 @@ fn signature(path: &std::path::Path) -> Option<(u64, std::time::SystemTime)> {
 
 impl Cookies {
     pub fn new(settings: &Settings, copy: std::path::PathBuf) -> Cookies {
-        Cookies { panel: settings.cookies.is_none().then(|| settings.panel_cookies.clone()), copy, seen: None }
+        Cookies { panel: settings.cookies.is_none().then(|| settings.panel_cookies.clone()), copy, seen: None, ended: false }
     }
 
     /// The file for yt-dlp now, and a line for the log when that changed.
@@ -723,6 +725,7 @@ impl Cookies {
             return (now.map(|_| self.copy.clone().into_os_string()), None);
         }
         let was = self.seen.take();
+        self.ended = false;
         let Some(now) = now else {
             let _ = std::fs::remove_file(&self.copy);
             return (None, was.map(|_| "YouTube cookies removed in VizRS Live".to_owned()));
@@ -754,8 +757,20 @@ impl Cookies {
             return None;
         }
         let refreshed = std::fs::read(&self.copy).ok()?;
-        if refreshed.is_empty() || std::fs::read(panel).ok()? == refreshed {
+        let uploaded = std::fs::read(panel).ok()?;
+        if refreshed.is_empty() || uploaded == refreshed {
             return None;
+        }
+        // YouTube ended the session (deleted the sign-in cookies): the panel's
+        // file is not overwritten with what is left – it shows what was uploaded.
+        let session =
+            |bytes: &[u8]| crate::yt_cookies::parse(&String::from_utf8_lossy(bytes)).is_ok_and(|c| crate::yt_cookies::signed_in(&c));
+        if session(&uploaded) && !session(&refreshed) {
+            if std::mem::replace(&mut self.ended, true) {
+                return None;
+            }
+            mark_ended(panel);
+            return Some("YouTube ended the account's session (sign-in cookies deleted) – upload new cookies in VizRS Live".to_owned());
         }
         let folder = panel.parent()?;
         let temporary = folder.join(format!(".youtube-cookies.{}.tmp", std::process::id()));
@@ -792,6 +807,20 @@ impl Drop for Cookies {
     fn drop(&mut self) {
         if self.panel.is_some() {
             let _ = std::fs::remove_file(&self.copy);
+        }
+    }
+}
+
+/// `youtube-cookies.ended` next to the panel's file (src/yt_cookies.rs): the
+/// time YouTube ended the session, for VizRS Live; a new upload removes it.
+/// Owned like the folder, so that the sidecar's user may remove it.
+fn mark_ended(panel: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Some(folder) = panel.parent() else { return };
+    let marker = folder.join(crate::yt_cookies::ENDED);
+    if std::fs::write(&marker, crate::time::iso_time(crate::time::now_ms())).is_ok() {
+        if let Ok(owner) = std::fs::metadata(folder) {
+            let _ = std::os::unix::fs::chown(&marker, Some(owner.uid()), Some(owner.gid()));
         }
     }
 }
@@ -1360,6 +1389,19 @@ mod tests {
         cookies.file(&from_panel);
         drop(cookies);
         assert!(!copy.exists(), "the copy goes with the input");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // YouTube ends the session: what yt-dlp keeps has no sign-in left – the upload stays, marked ended.
+        let session = ".youtube.com\tTRUE\t/\tTRUE\t1893456000\tLOGIN_INFO\tl\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSAPISID\ts\n";
+        crate::yt_cookies::save(&dir, session).unwrap();
+        let mut cookies = Cookies::new(&from_panel, copy.clone());
+        cookies.file(&from_panel);
+        std::fs::write(&copy, ".youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-3PSID\tx\n").unwrap();
+        assert!(cookies.keep_refreshed().unwrap().contains("ended"));
+        assert_eq!(std::fs::read_to_string(&panel).unwrap(), session, "the upload is not overwritten");
+        assert!(crate::yt_cookies::ended(&dir).is_some(), "marked for the panel");
+        assert_eq!(cookies.keep_refreshed(), None, "said once");
+        drop(cookies);
         let _ = std::fs::remove_dir_all(&dir);
 
         let refused = "Sign in to confirm you’re not a bot. This helps protect our community. Use --cookies-from-browser or --cookies";

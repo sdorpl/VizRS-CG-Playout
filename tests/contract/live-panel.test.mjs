@@ -506,13 +506,14 @@ test("YouTube cookies for yt-dlp: uploaded, checked, kept for the owner only, ne
   assert.deepEqual((await api("GET", "youtube-cookies")).body, { store: true, present: false });
   assert.ok((await api("GET", "state")).body.features.includes("youtube_cookies"));
 
-  const text = "# Netscape HTTP Cookie File\r\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-3PSID\ttajne\r\n.youtube.com\tTRUE\t/\tFALSE\t0\tPREF\tf6=1\r\n";
+  const text = "# Netscape HTTP Cookie File\r\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-3PSID\ttajne\r\n.youtube.com\tTRUE\t/\tFALSE\t0\tPREF\tf6=1\r\n#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1893456000\tLOGIN_INFO\tl\r\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSAPISID\ts\r\n";
   const put = await api("PUT", "youtube-cookies", { text });
   assert.equal(put.status, 200);
   assert.equal(put.body.present, true);
-  assert.equal(put.body.cookies, 2);
-  assert.equal(put.body.youtube, 2);
+  assert.equal(put.body.cookies, 4);
+  assert.equal(put.body.youtube, 4);
   assert.equal(put.body.signed_in, true);
+  assert.equal(put.body.ended_at, null);
   assert.equal(put.body.expires, "2030-01-01T00:00:00.000Z");
   assert.match(put.body.saved_at, /^\d{4}-\d\d-\d\dT/);
   assert.ok(!JSON.stringify(put.body).includes("tajne"), "values never go back");
@@ -521,7 +522,12 @@ test("YouTube cookies for yt-dlp: uploaded, checked, kept for the owner only, ne
   assert.ok(saved.includes(".youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-3PSID\ttajne\n"));
   assert.equal(statSync(file).mode & 0o777, 0o600);
   const log = readFileSync(path.join(folder, "vizrs-live", "log.jsonl"), "utf8");
-  assert.match(log, /ciasteczka YouTube wgrane: 2 z youtube.com, konto zalogowane/);
+  assert.match(log, /ciasteczka YouTube wgrane: 4 z youtube.com, konto zalogowane/);
+  writeFileSync(path.join(folder, "vizrs-live", "youtube-cookies.ended"), "2026-11-21T00:00:00.000Z");
+  assert.equal((await api("GET", "youtube-cookies")).body.ended_at, "2026-11-21T00:00:00.000Z", "the ingest service marked the session ended");
+  const left = await api("PUT", "youtube-cookies", { text: ".youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-3PSID\tx\n" });
+  assert.equal(left.body.signed_in, false, "what YouTube leaves of an ended session is no sign-in");
+  assert.equal(left.body.ended_at, null, "a new upload clears the mark");
   assert.ok(!log.includes("tajne"));
 
   const json = [{ domain: ".youtube.com", name: "SID", value: "s", path: "/", secure: true, hostOnly: false, expirationDate: 1893456000 }];

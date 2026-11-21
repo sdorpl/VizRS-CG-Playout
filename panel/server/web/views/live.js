@@ -259,11 +259,12 @@ function cookiesState(st) {
   if (!st.store) return h('div', { class: 'note warn' }, 'CG Playout nie ma etv_config – ciasteczek nie ma gdzie zapisać.');
   if (!st.present) return h('div', { class: 'note', 'data-cookies-state': 'none' }, 'Brak ciasteczek – wejścia YouTube idą bez logowania (na serwerze YouTube zwykle je odrzuca).');
   if (st.error) return h('div', { class: 'note err', 'data-cookies-state': 'bad' }, `Zapisany plik jest zły: ${st.error}`);
+  if (st.ended_at) return h('div', { class: 'note err', 'data-cookies-state': 'ended' }, `YouTube zakończył sesję tego konta ${plDate(st.ended_at)} (usunął ciasteczka logowania) – wejścia YouTube nie pobierają. Wgraj nowe ciasteczka z nowego logowania.`);
   const days = st.expires ? (Date.parse(st.expires) - Date.now()) / 86400000 : null;
   const cls = !st.signed_in || (days != null && days < 0) ? 'err' : days != null && days < 7 ? 'warn' : 'ok';
   return h('div', { class: `note ${cls}`, 'data-cookies-state': cls },
     `Wgrane ${st.saved_at ? plDate(st.saved_at) : ''}: ${st.youtube} z youtube.com (razem ${st.cookies}). `,
-    st.signed_in ? 'Konto zalogowane' : 'Brak ciasteczek zalogowanego konta (SID, LOGIN_INFO) – YouTube może dalej odmawiać',
+    st.signed_in ? 'Konto zalogowane' : 'Brak ciasteczek zalogowanego konta (LOGIN_INFO, SAPISID) – YouTube odmówi; wgraj nowe ciasteczka',
     st.signed_in ? (days == null ? ', ciasteczka sesji (bez daty ważności).' : days < 0 ? `, ważność minęła ${plDate(st.expires)} – wgraj nowe.` : `, ważne do ${plDate(st.expires)}.`) : '.');
 }
 

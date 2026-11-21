@@ -20,12 +20,19 @@ use crate::json::{self, Value};
 
 /// The file in `<etv_config>/vizrs-live/`.
 pub const FILE: &str = "youtube-cookies.txt";
+/// Next to it: the time YouTube ended the session of those cookies (the ingest
+/// service writes it, a new upload removes it).
+pub const ENDED: &str = "youtube-cookies.ended";
 /// The longest file the panel may upload (a whole browser's export is longer: only youtube.com is needed).
 pub const MAX_TEXT: usize = 512 * 1024;
 /// The most cookies in one file.
 const MAX_COOKIES: usize = 5000;
-/// Cookies of a signed-in Google account on youtube.com.
+/// Cookies of a signed-in Google account on youtube.com (their expiry is shown).
 const SIGN_IN: [&str; 5] = ["SID", "__Secure-1PSID", "__Secure-3PSID", "SAPISID", "LOGIN_INFO"];
+/// A session yt-dlp signs in with: `LOGIN_INFO` and one of the API keys it
+/// signs requests with. When YouTube ends a session it deletes `LOGIN_INFO`,
+/// `SID`, `SAPISID`… and leaves the third-party ones (`__Secure-3PSID`).
+const SESSION_KEYS: [&str; 3] = ["SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID"];
 const HEADER: &str = "# Netscape HTTP Cookie File";
 
 /// One cookie (a line of the Netscape file).
@@ -206,12 +213,18 @@ pub fn to_netscape(cookies: &[Cookie]) -> String {
     text
 }
 
+/// The cookies hold a session yt-dlp can sign in with (`SESSION_KEYS`).
+pub fn signed_in(cookies: &[Cookie]) -> bool {
+    let has = |name: &str| cookies.iter().any(|c| c.youtube() && c.name == name);
+    has("LOGIN_INFO") && SESSION_KEYS.iter().any(|key| has(key))
+}
+
 pub fn summary(cookies: &[Cookie]) -> Summary {
     let sign_in: Vec<&Cookie> = cookies.iter().filter(|c| c.youtube() && SIGN_IN.contains(&c.name.as_str())).collect();
     Summary {
         cookies: cookies.len(),
         youtube: cookies.iter().filter(|c| c.youtube()).count(),
-        signed_in: !sign_in.is_empty(),
+        signed_in: signed_in(cookies),
         expires: sign_in.iter().map(|c| c.expires).filter(|&s| s > 0).min(),
     }
 }
@@ -220,9 +233,18 @@ pub fn path(folder: &Path) -> PathBuf {
     folder.join(FILE)
 }
 
-/// Writes the file (mode 0600: it is a sign-in) in place of the old one at once.
+/// When YouTube ended the session of the stored cookies (ISO time), if it did.
+pub fn ended(folder: &Path) -> Option<String> {
+    let text = fs::read_to_string(folder.join(ENDED)).ok()?;
+    let text = text.trim();
+    (!text.is_empty() && text.len() < 40).then(|| text.to_owned())
+}
+
+/// Writes the file (mode 0600: it is a sign-in) in place of the old one at once;
+/// new cookies, a new session: the mark of an ended one goes.
 pub fn save(folder: &Path, text: &str) -> io::Result<()> {
     fs::create_dir_all(folder)?;
+    let _ = fs::remove_file(folder.join(ENDED));
     let target = path(folder);
     let temporary = folder.join(format!(".{FILE}.{}.tmp", std::process::id()));
     let written = OpenOptions::new()
@@ -241,6 +263,7 @@ pub fn save(folder: &Path, text: &str) -> io::Result<()> {
 
 /// Removes the file; none is fine.
 pub fn remove(folder: &Path) -> io::Result<()> {
+    let _ = fs::remove_file(folder.join(ENDED));
     match fs::remove_file(path(folder)) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
@@ -261,8 +284,8 @@ mod tests {
         assert_eq!(cookies[2].value, "", "a value left out with its tab");
         assert_eq!(
             summary(&cookies),
-            Summary { cookies: 4, youtube: 3, signed_in: true, expires: Some(1_800_000_000) },
-            "sign-in cookies of youtube.com only"
+            Summary { cookies: 4, youtube: 3, signed_in: false, expires: Some(1_800_000_000) },
+            "sign-in cookies of youtube.com only; LOGIN_INFO without an API key is no session"
         );
         let text = to_netscape(&cookies);
         assert!(text.starts_with(HEADER));
@@ -278,6 +301,25 @@ mod tests {
         assert_eq!(cookies[0].line(), "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tv");
         assert_eq!(cookies[1].line(), "www.youtube.com\tFALSE\t/\tFALSE\t0\tVISITOR\tw");
         assert!(parse(r#"{"cookies":[{"domain":".youtube.com","name":"a","value":"b"}]}"#).is_ok());
+    }
+
+    #[test]
+    fn a_session_yt_dlp_signs_in_with() {
+        let file = |names: &[&str]| -> Vec<Cookie> {
+            parse(&names.iter().map(|n| format!(".youtube.com\tTRUE\t/\tTRUE\t1893456000\t{n}\tv\n")).collect::<String>()).unwrap()
+        };
+        assert!(signed_in(&file(&["LOGIN_INFO", "SAPISID", "SID"])));
+        assert!(signed_in(&file(&["LOGIN_INFO", "__Secure-3PAPISID"])));
+        // What YouTube leaves of an ended session (S1, 2026-11-20).
+        assert!(!signed_in(&file(&["__Secure-3PSID", "__Secure-3PAPISID", "__Secure-1PSIDTS", "PREF", "VISITOR_INFO1_LIVE"])));
+        let folder = std::env::temp_dir().join(format!("vizrs-yt-ended-{}", std::process::id()));
+        save(&folder, "x").unwrap();
+        assert_eq!(ended(&folder), None);
+        fs::write(folder.join(ENDED), "2026-11-21T00:00:00.000Z\n").unwrap();
+        assert_eq!(ended(&folder).as_deref(), Some("2026-11-21T00:00:00.000Z"));
+        save(&folder, "y").unwrap();
+        assert_eq!(ended(&folder), None, "a new upload, a new session");
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]

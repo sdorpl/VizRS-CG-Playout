@@ -130,7 +130,7 @@ function check(cond, msg) {
           CG.cookies = body.text;
         }
         if (q.method === 'DELETE') CG.cookies = null;
-        return send(200, CG.cookies ? { store: true, present: true, saved_at: '2026-11-20T17:00:00.000Z', cookies: 3, youtube: 2, signed_in: true, expires: '2027-12-01T00:00:00.000Z' } : { store: true, present: false });
+        return send(200, CG.cookies ? { store: true, present: true, saved_at: '2026-11-20T17:00:00.000Z', ended_at: CG.cookiesEnded || null, cookies: 3, youtube: 2, signed_in: true, expires: '2027-12-01T00:00:00.000Z' } : { store: true, present: false });
       }
       // koder nakładki (CG Playout GET/PUT /api/live/encoder): encoder.json wypełniony z .env = veryfast
       if (u === '/api/live/encoder') {
@@ -1686,6 +1686,12 @@ function check(cond, msg) {
   await page.click('button:has-text("Ciasteczka YouTube…")');
   await page.waitForSelector('[data-cookies] [data-cookies-state="ok"]');
   check(/2 z youtube\.com/.test(await page.textContent('[data-cookies-state]')) && !/tajne/.test(await page.textContent('[data-cookies]')), 'ciasteczka YouTube: stan bez wartości');
+  await page.click('#dlg-buttons button:has-text("Anuluj")');
+  CG.cookiesEnded = '2026-11-21T00:00:00.000Z';
+  await page.click('button:has-text("Ciasteczka YouTube…")');
+  await page.waitForSelector('[data-cookies] [data-cookies-state="ended"]');
+  check(/zakończył sesję/.test(await page.textContent('[data-cookies-state]')), 'ciasteczka YouTube: sesja zakończona przez YouTube pokazana');
+  CG.cookiesEnded = null;
   await page.click('#dlg-buttons button:has-text("Usuń ciasteczka")');
   await page.click('#dlg-buttons button:has-text("Usuń")');
   await page.waitForSelector('#toast:has-text("usunięte")');
