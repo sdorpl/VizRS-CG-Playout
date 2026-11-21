@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Audycje LIVE: biblioteka bez folderu `/config/vizrs-live` nie psuje już ramówki.** Na S1 biblioteka „Remote Streams” miała tylko `/media/tv/Live`; plik audycji leżał poza nią, kolekcja `LIVE · …` była pusta, a emisja w harmonogramie zatrzymała budowę playoutu kanału („SmartCollection … has no valid items”). Panel pokazuje teraz czerwone ostrzeżenie z przyciskiem „Dodaj folder /config/vizrs-live” (dotychczasowe ścieżki biblioteki zostają, potem skan), a kreator nie wstawia emisji, dopóki folderu nie ma. DOKUMENTACJA §12.
+
 ## 26.11.21 (2026-11-21)
 
 - **Zakończona sesja YouTube widoczna w panelu:** gdy YouTube kończy sesję konta, kasuje ciasteczka logowania; odbiornik zapisywał wtedy okrojony plik w miejsce wgranego, a panel dalej pokazywał „Konto zalogowane” (S1 2026-11-20: live z YouTube stanął po 5 h). Teraz plik z panelu zostaje, panel pokazuje na czerwono „YouTube zakończył sesję … – wgraj nowe ciasteczka” (`ended_at` w `/api/live/youtube-cookies`), a „zalogowane” liczy się jak w yt-dlp (`LOGIN_INFO` + `SAPISID`/`__Secure-*PAPISID`). DOKUMENTACJA §1, API.md.

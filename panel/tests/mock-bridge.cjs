@@ -204,8 +204,9 @@ const H = {
     { Title: 'Zero Duration', Status: 'Pass', Message: 'OK', BriefMessage: 'OK' },
   ],
   GetTroubleshootingInfo: () => ({ Version: 'v26.12.0', FFmpegVersion: '7.1.1', NextVersion: '0.2.5', Cpus: [{ Manufacturer: 'ARM', Name: 'Neoverse-N1' }], VideoControllers: [], Channels: DB.channels, FFmpegProfiles: DB.profiles, Watermarks: DB.watermarks }),
-  GetAllLocalLibraries: () => [{ Id: 1, Name: 'Archiwum INFO24', MediaKind: 'OtherVideos' }, { Id: 2, Name: 'Plansze i grafiki', MediaKind: 'Images' }, { Id: 3, Name: 'Seriale', MediaKind: 'Shows' }],
-  GetLocalLibraryPaths: (a) => [{ Id: a.LocalLibraryId * 10, Path: ['', '/media/info24', '/media/plansze', '/media/seriale'][a.LocalLibraryId] || '/media', LibraryId: a.LocalLibraryId }],
+  GetAllLocalLibraries: () => [{ Id: 1, Name: 'Archiwum INFO24', MediaKind: 'OtherVideos' }, { Id: 2, Name: 'Plansze i grafiki', MediaKind: 'Images' }, { Id: 3, Name: 'Seriale', MediaKind: 'Shows' }, { Id: 7, Name: 'Remote Streams', MediaKind: 'RemoteStreams' }],
+  // biblioteka audycji 7 bez /config/vizrs-live (jak S1 2026-11-21): panel ostrzega i proponuje dopisanie folderu
+  GetLocalLibraryPaths: (a) => [{ Id: a.LocalLibraryId * 10, Path: ['', '/media/info24', '/media/plansze', '/media/seriale'][a.LocalLibraryId] || (a.LocalLibraryId === 7 ? '/media/tv/Live' : '/media'), LibraryId: a.LocalLibraryId }],
   CountMediaItemsByLibrary: (a) => [0, 412, 36, 128][a.LibraryId] ?? 0,
   CountMediaItemsByLibraryPath: (a) => [0, 412, 36, 128][a.LibraryPathId / 10] ?? 0,
   GetImageFolders: (a) => (a.LibraryFolderId == null
@@ -367,7 +368,7 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
       }
       if (u.pathname === '/api/live/graphics') return reply(r, 200, { rules: { on_clip: 'TAKE 101 headline={title}', on_ad: '', ad_match: { path: '/reklamy/', title: '' }, on_end: 'TAKE 102 next={next_title}', end_seconds: 30, shows: [], channels: { 24: { on_live: 'TAKE 4001' } } }, source: 'config', store: true });
       if (u.pathname === '/api/live/shows' && q.method === 'GET') return reply(r, 200, { shows: cgShows, error: null,
-        channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name })), guide_known: true, max: 50, etv: { configured: true, ok: true, error: null }, settings: { library: null, store: true } });
+        channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name })), guide_known: true, max: 50, etv: { configured: true, ok: true, error: null }, settings: { library: 7, store: true } });
       {
         // zapis audycji w pamięci (jak CG Playout: kroki w odpowiedzi); nowa audycja dostaje kolejną kolekcję
         const sm = u.pathname.match(/^\/api\/live\/shows(?:\/([\w.-]+))?$/);

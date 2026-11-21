@@ -826,7 +826,10 @@ async function showDialog(channels, show) {
   const steps = [...(r?.steps || [])];
   if (editAir && (rows.length || airingRows(ch, loaded, saved.collection_id).length)) {
     if (saved.collection_id == null) steps.push({ step: 'schedule', ok: false, detail: 'kolekcja audycji jeszcze nie istnieje w ErsatzTV – emisje zapiszesz po „⟳ Odśwież z ErsatzTV”' });
-    else {
+    else if (rows.length && (await liveFolderOk()) === false) {
+      // pusta kolekcja w harmonogramie = legacy nie zbuduje ramówki kanału; zdjęcie emisji (rows puste) wolno zawsze
+      steps.push({ step: 'schedule', ok: false, detail: `biblioteka audycji nie ma folderu ${LIVE_FOLDER} – legacy nie widzi pliku audycji, a pusta kolekcja w harmonogramie zatrzymałaby budowę ramówki. Dodaj folder (Audycje LIVE → Połączenie z ErsatzTV) i zapisz emisje ponownie.` });
+    } else {
       try { steps.push(...(await saveAirings(saved, ch, loaded, rows))); } catch (e) { steps.push({ step: 'schedule', ok: false, detail: e.message }); }
     }
   }
@@ -834,6 +837,32 @@ async function showDialog(channels, show) {
   await route(true);
   if (!steps.length) { toast('Bez zmian'); return; }
   await doneDialog(`„${saved.title || data.title}” ${show ? 'zapisana' : 'jest'} w ErsatzTV`, { steps }, show ? null : saved);
+}
+
+// Pliki audycji CG Playout pisze do /config/vizrs-live (w kontenerze legacy): biblioteka audycji musi mieć ten folder,
+// inaczej skan ich nie widzi, kolekcja `LIVE · …` jest pusta, a jej emisja w harmonogramie zatrzymuje budowę ramówki
+// kanału („SmartCollection … has no valid items”, S1 2026-11-21).
+const LIVE_FOLDER = '/config/vizrs-live';
+const isLiveFolder = (p) => /\/vizrs-live\/?$/.test(p.Path || '');
+
+/** Biblioteka audycji ma folder z plikami: true / false; null = nie da się sprawdzić (brak biblioteki w CG, starszy most). */
+async function liveFolderOk() {
+  if (!has('GetLocalLibraryPaths')) return null;
+  const lib = (await cg('live/shows').catch(() => null))?.settings?.library;
+  if (lib == null) return null;
+  const paths = await cmd('GetLocalLibraryPaths', { LocalLibraryId: lib }).catch(() => null);
+  return paths == null ? null : paths.some(isLiveFolder);
+}
+
+/** Dopisuje /config/vizrs-live do biblioteki – UpdateLocalLibrary zastępuje listę ścieżek, więc idą też wszystkie obecne. */
+async function addLiveFolder(lib, name, paths) {
+  if (!await confirmDlg('Dodać folder audycji do biblioteki?', `Biblioteka „${name}” dostanie folder ${LIVE_FOLDER} (obecne foldery zostają: ${paths.map((p) => p.Path).join(', ') || 'brak'}). Potem CG Playout zleci skan, a kolekcje audycji LIVE wypełnią się w ciągu minuty.`, 'Dodaj folder', 'acc')) return;
+  try {
+    await cmd('UpdateLocalLibrary', { Id: lib, Name: name, Paths: [...paths.map((p) => ({ Id: p.Id, Path: p.Path })), { Id: 0, Path: LIVE_FOLDER }] });
+    await cg('live/shows/scan', 'POST').catch(() => null);
+    toast(`Folder ${LIVE_FOLDER} dodany do „${name}”, skan zlecony – potem przebuduj ramówkę kanału`);
+  } catch (e) { toast('Legacy odrzucił zmianę biblioteki: ' + e.message, 'bad'); }
+  route(true);
 }
 
 /** Biblioteka „Na żywo”: Remote Streams z folderem /config/vizrs-live – wybór z bibliotek legacy zamiast wpisywania ID. */
@@ -847,14 +876,20 @@ async function libraryPanel(shows) {
     lib != null && !libs.some((l) => l.Id === lib) ? h('option', { value: lib, selected: true }, `ID ${lib} (nie ma w legacy)`) : null);
   let paths = null;
   if (lib != null && has('GetLocalLibraryPaths')) paths = await cmd('GetLocalLibraryPaths', { LocalLibraryId: lib }).catch(() => null);
-  const hasFolder = paths?.some((p) => /\/vizrs-live\/?$/.test(p.Path || ''));
+  const hasFolder = paths?.some(isLiveFolder);
+  const libName = libs.find((l) => l.Id === lib)?.Name || `ID ${lib}`;
+  const missing = paths != null && !hasFolder ? h('div', { class: 'note err', 'data-live-folder': 'missing' },
+    `Biblioteka „${libName}” nie ma folderu ${LIVE_FOLDER} (ma: ${paths.map((p) => p.Path).join(', ') || 'brak folderów'}). ` +
+    'Legacy nie widzi plików audycji: kolekcje LIVE są puste, a audycja w harmonogramie zatrzymuje budowę ramówki kanału. ',
+    has('UpdateLocalLibrary') ? btn(`Dodaj folder ${LIVE_FOLDER}`, () => addLiveFolder(lib, libName, paths), 'acc') : 'Dodaj go w Bibliotekach (Ścieżki) i zleć skan.') : null;
   const etv = shows.etv || {};
   return panel('Połączenie z ErsatzTV', null,
     h('dl', { class: 'kv' },
       h('dt', null, 'CG Playout ↔ legacy'), h('dd', null, etv.configured === false ? pill('brak VIZRS_ETV_URL', 'bad') : etv.ok ? pill('odpowiada', 'ok') : pill(etv.error || 'sprawdzam…', 'warn')),
       h('dt', null, 'Biblioteka'), h('dd', null, lib != null ? pill(`ID ${lib}`, 'ok') : pill('nie ustawiona', 'bad'),
-        paths == null ? null : hasFolder ? ' z folderem /config/vizrs-live' : pill('bez folderu /config/vizrs-live', 'warn')),
+        paths == null ? null : hasFolder ? ' z folderem /config/vizrs-live' : pill('bez folderu /config/vizrs-live', 'bad')),
       h('dt', null, 'Zapis audycji'), h('dd', null, settings.store === false ? pill('CG bez VIZRS_ETV_CONFIG – nie zapisze', 'bad') : pill('tak', 'ok'))),
+    missing,
     h('div', { class: 'live-side' }, h('div', { class: 'bar' }, pick, btn('Zapisz bibliotekę', async () => {
       try { await cg('live/settings', 'PUT', { library: pick.value === '' ? null : Number(pick.value) }); toast('Biblioteka audycji LIVE zapisana w CG Playout'); } catch (e) { toast(e.message, 'bad'); }
       route(true);
@@ -862,7 +897,7 @@ async function libraryPanel(shows) {
     h('p', { class: 'dim' }, libs.length
       ? 'Biblioteka Remote Streams w legacy z folderem /config/vizrs-live – tam CG Playout zapisuje pliki audycji.'
       : 'Legacy nie ma biblioteki Remote Streams. Załóż ją w Media → Biblioteki lokalne (rodzaj: strumienie zdalne) ze ścieżką /config/vizrs-live, potem wybierz tutaj.')),
-    cmdNote('GetAllLocalLibraries', 'GetLocalLibraryPaths', 'CG Playout PUT /api/live/settings'));
+    cmdNote('GetAllLocalLibraries', 'GetLocalLibraryPaths', 'UpdateLocalLibrary', 'CG Playout PUT /api/live/settings'));
 }
 
 /** Godziny emisji audycji z harmonogramów kanałów: Map(collection_id → „20:00 · sob, nd 18:00”); null = nie da się odczytać. */

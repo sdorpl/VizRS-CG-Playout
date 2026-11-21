@@ -85,6 +85,8 @@ function check(cond, msg) {
       if (u === '/api/live/shows' && q.method === 'GET') return send(200, { shows: CG.shows, error: null, channels: [{ number: '24', name: 'INFO24' }], guide_known: true, max: 50,
         etv: { configured: true, ok: true, error: null }, settings: { library: CG.library, store: true } });
       if (u === '/api/live/settings' && q.method === 'PUT') { CG.library = body.library; return send(200, { library: CG.library, store: true }); }
+      // skan biblioteki audycji (po „Dodaj folder /config/vizrs-live”)
+      if (u === '/api/live/shows/scan' && q.method === 'POST') { CG.scans = (CG.scans || 0) + 1; return send(200, { steps: [{ step: 'scan', ok: true, detail: 'skan biblioteki 7 zlecony' }] }); }
       if (u === '/api/live/shows' && q.method === 'POST') {
         if (!/[\p{L}\d]/u.test(body.title || '')) return send(400, { error: 'tytuł: 1–200 znaków, choć jedna litera albo cyfra' });
         const show = { id: `${body.channel}-${body.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, channel: body.channel, title: body.title, duration: body.duration, plot: body.plot, content_rating: body.content_rating ?? '', collection: true, collection_id: CG.collectionId ?? null, collection_name: 'LIVE · ' + body.title, next: null, file_ok: true, airings: 0 };
@@ -1746,6 +1748,17 @@ function check(cond, msg) {
   await page.selectOption('select[aria-label="Biblioteka audycji LIVE"]', { label: 'Remote Streams (ID 7)' });
   await rerender(() => page.click('button:has-text("Zapisz bibliotekę")'));
   check(CG.library === 7, 'audycje: biblioteka Remote Streams z legacy zapisana w CG Playout');
+  // biblioteka bez folderu /config/vizrs-live: legacy nie widzi plików audycji – ostrzeżenie i „Dodaj folder” (obecne ścieżki zostają)
+  const libPaths7 = async () => (await api('GetLocalLibraryPaths', { LocalLibraryId: 7 })).result.map((x) => x.Path);
+  const paths7 = await libPaths7();
+  if (!paths7.some((x) => /\/vizrs-live\/?$/.test(x))) {
+    await page.waitForSelector('[data-live-folder="missing"]');
+    await page.click('[data-live-folder] button:has-text("Dodaj folder")');
+    await rerender(() => page.click('#dlg-buttons button:has-text("Dodaj folder")'));
+  }
+  const after7 = await libPaths7();
+  check(after7.includes('/config/vizrs-live') && paths7.every((x) => after7.includes(x)) && !(await page.$('[data-live-folder="missing"]')),
+    `audycje: folder /config/vizrs-live w bibliotece audycji, inne ścieżki zostały (${after7.join(', ')})`);
   await page.click('button:has-text("+ Nowa audycja LIVE")');
   await page.fill('#ls-title', '***');
   await rerender(() => page.click('#dlg-buttons button:has-text("Utwórz")'));
