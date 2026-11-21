@@ -278,35 +278,7 @@ pub(crate) fn with_graphics(
     let feed = Mutex::new(relayed(settings, frames, socket, place));
     let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
         let mut current = feed.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(zones) = watch.as_ref().and_then(ZoneWatch::take) {
-            let path = format!(
-                "/ffmpeg/frames?session={}&fps={}&area=1&rev={}&zones={}&at={elapsed:.3}",
-                quote_plus(&current.frames.session),
-                quote_plus(&current.frames.rate),
-                zones.rev,
-                quote_plus(&zones.geometry)
-            );
-            match open_frames(&settings.sidecar, &path) {
-                Ok(socket) => {
-                    let frames = Frames {
-                        width: zones.width,
-                        height: zones.height,
-                        rate: current.frames.rate.clone(),
-                        matrix: current.frames.matrix.clone(),
-                        areas: zones.areas,
-                        resume: if current.frames.resume.is_empty() { String::new() } else { zones.resume },
-                        session: current.frames.session.clone(),
-                        ahead: current.frames.ahead,
-                        zones_rev: Some(zones.rev),
-                    };
-                    let shown = if zones.geometry.is_empty() { "the whole channel" } else { zones.geometry.as_str() };
-                    log(format_args!("graphics zones {shown} from {elapsed:.1} s of the piece"));
-                    current.control.close();
-                    *current = relayed(settings, frames, socket, place);
-                }
-                Err(e) => log(format_args!("frame stream of the new graphics zones: {e}; the zones before stay")),
-            }
-        }
+        follow_zones(settings, watch.as_ref(), &mut current, elapsed, place);
         let frames = &current.frames;
         let (reader, writer) = frame_channel()?;
         let fd = reader.as_raw_fd();
@@ -346,20 +318,25 @@ pub(crate) fn with_graphics(
 pub(crate) struct LiveGraphics {
     feed: Feed,
     session: TcpStream,
+    /// Zones of the session widened in the middle of the piece (`area: auto`): the live run restarts in them.
+    watch: Option<ZoneWatch>,
 }
 
 impl LiveGraphics {
     /// The session and its frames, `format` the channel's.
     pub(crate) fn start(settings: &Settings, channel: &str, format: &takeover::Format) -> io::Result<LiveGraphics> {
         let session = open_live_session(&settings.sidecar, channel, format)?;
-        let (frames, socket) = match take_over(settings, channel, &format.rate, true, false, true) {
+        // `follow`: the runs restart in widened zones, so the sidecar gives the zones of the
+        // pages that may come (the takeover's) – not of every page of the show (the whole channel).
+        let (frames, socket) = match take_over(settings, channel, &format.rate, true, true, true) {
             Ok(taken) => taken,
             Err(e) => {
                 let _ = session.shutdown(Shutdown::Both);
                 return Err(e);
             }
         };
-        Ok(LiveGraphics { feed: relayed(settings, frames, socket, true), session })
+        let watch = frames.zones_rev.map(|rev| ZoneWatch::start(&settings.sidecar, &frames.session, rev));
+        Ok(LiveGraphics { feed: relayed(settings, frames, socket, true), session, watch })
     }
 
     /// The frames end, then the session (the sidecar ends it with its reader).
@@ -436,15 +413,21 @@ fn without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio
     let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
         let Some(source) = source else {
             graphics.bare.store(false, Ordering::Relaxed);
+            graphics.drawn.store(false, Ordering::Relaxed);
             return spawn(settings, adjusted(job.program(args, elapsed), settings, None), None);
         };
         let marks = takeover_marks(source);
-        let ready = graphics.ready(settings, args, job);
+        let mut ready = graphics.ready(settings, args, job);
+        if let Some(live) = ready.as_mut() {
+            follow_zones(settings, live.watch.as_ref(), &mut live.feed, elapsed, true);
+        }
         let Some(live) = ready.as_ref() else {
             graphics.bare.store(true, Ordering::Relaxed);
+            graphics.drawn.store(false, Ordering::Relaxed);
             return spawn(settings, live_command(settings, args, job, elapsed, Some(source), None, marks.as_ref()), None);
         };
         graphics.bare.store(false, Ordering::Relaxed);
+        graphics.drawn.store(true, Ordering::Relaxed);
         let (reader, writer) = frame_channel()?;
         let fd = reader.as_raw_fd();
         let child = spawn(
@@ -465,8 +448,19 @@ fn without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    // A live run without graphics stops for the graphics that came meanwhile.
-    let restart = || graphics.bare.load(Ordering::Relaxed) && graphics.ready(settings, args, job).is_some();
+    // A live run without graphics stops for the graphics that came meanwhile, one
+    // with them for zones widened in the middle of the piece (its graphics end first).
+    let restart = || {
+        let ready = graphics.ready(settings, args, job);
+        match ready.as_ref() {
+            Some(_) if graphics.bare.load(Ordering::Relaxed) => true,
+            Some(live) if graphics.drawn.load(Ordering::Relaxed) && live.watch.as_ref().is_some_and(ZoneWatch::newer) => {
+                live.feed.control.cut();
+                true
+            }
+            _ => false,
+        }
+    };
     let code = sequence(settings, job, on, audio, true, &run, &restart);
     graphics.close();
     code
@@ -567,6 +561,8 @@ struct PieceGraphics {
     asked: AtomicBool,
     /// The run of the moment is a live run without them.
     bare: AtomicBool,
+    /// The run of the moment is a live run with them.
+    drawn: AtomicBool,
 }
 
 impl PieceGraphics {
@@ -617,6 +613,39 @@ impl PieceGraphics {
                 }
             });
         }
+    }
+}
+
+/// Zones widened in the middle of the piece (`watch`, PLAN-strefy S3b): the
+/// next run gets a new frame stream of the session in them, from `elapsed`.
+fn follow_zones(settings: &Settings, watch: Option<&ZoneWatch>, current: &mut Feed, elapsed: f64, place: bool) {
+    let Some(zones) = watch.and_then(ZoneWatch::take) else { return };
+    let path = format!(
+        "/ffmpeg/frames?session={}&fps={}&area=1&rev={}&zones={}&at={elapsed:.3}",
+        quote_plus(&current.frames.session),
+        quote_plus(&current.frames.rate),
+        zones.rev,
+        quote_plus(&zones.geometry)
+    );
+    match open_frames(&settings.sidecar, &path) {
+        Ok(socket) => {
+            let frames = Frames {
+                width: zones.width,
+                height: zones.height,
+                rate: current.frames.rate.clone(),
+                matrix: current.frames.matrix.clone(),
+                areas: zones.areas,
+                resume: if current.frames.resume.is_empty() { String::new() } else { zones.resume },
+                session: current.frames.session.clone(),
+                ahead: current.frames.ahead,
+                zones_rev: Some(zones.rev),
+            };
+            let shown = if zones.geometry.is_empty() { "the whole channel" } else { zones.geometry.as_str() };
+            log(format_args!("graphics zones {shown} from {elapsed:.1} s of the piece"));
+            current.control.close();
+            *current = relayed(settings, frames, socket, place);
+        }
+        Err(e) => log(format_args!("frame stream of the new graphics zones: {e}; the zones before stay")),
     }
 }
 

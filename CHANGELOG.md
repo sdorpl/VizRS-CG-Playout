@@ -4,6 +4,10 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.27 (2026-11-21)
+
+- **Mniej pracy nakładki przy studiu na pozycji bez elementu VizRS.** Własna sesja grafiki studia (26.11.26) brała strefę „cały kadr”: nakładka nie zgłaszała, że umie poszerzyć strefy w trakcie kawałka, więc sidecar obejmował wszystkie strony show. Teraz przejmuje ją z `follow=1` – grafika tylko w strefach stron przejęcia (np. logo NA ŻYWO), a nowa strona w innym miejscu restartuje przebieg live w poszerzonych strefach, jak przy pozycji z elementem. Pomiar lokalny (1600×900, 25 kl./s, x264 ultrafast): pełny kadr grafiki 15,1 s CPU na 20 s obrazu, sam obszar logo 10,9 s. DOKUMENTACJA §1 „Grafika podczas przejęcia”.
+
 ## 26.11.26 (2026-11-21)
 
 - **Audycja LIVE z harmonogramu ma swoją grafikę i znak wodny, studio poza ramówką – swoje.** Do tej pory przebieg live audycji ze slotu liczył się w sidecarze jako przejęcie: grafika audycji (element VizRS pozycji) była wstrzymywana, a wchodziło `on_live` kanału (S1, „BTB Info” 03:30: `TAKE 7510` zamiast logo 7507). Teraz przebieg slotu czyta studio z `&programme=1` i nie jest przejęciem – działają element i reguły pozycji audycji, a jej znaki wodne ErsatzTV (`WatermarkIds`, np. z okna Audycje LIVE) nakładka kładzie w przebiegach live slotu, ze studiem i na planszy bez studia (z elementem VizRS i bez niego). Przejęcie poza ramówką zostaje przy grafice studia (`on_live` kanału albo wejścia).

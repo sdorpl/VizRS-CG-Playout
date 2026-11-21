@@ -1,6 +1,6 @@
 [package]
 name = "vizrs-cg"
-version = "26.11.26"
+version = "26.11.27"
 license = "MIT"
 edition = "2024"
 rust-version = "1.87"

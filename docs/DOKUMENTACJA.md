@@ -1479,7 +1479,7 @@ wprowadza dedykowaną grafikę kanału zdefiniowaną w polu `on_live`
   takiego kawałka zakłada w sidecarze własną sesję grafiki kanału
   (`POST /etv?channel=N&live=1`, rozmiar i klatkaż kanału) i przejmuje ją
   (`GET /ffmpeg?channel=N&…&live=1`); jej klatki idą do każdego przebiegu live
-  tego kawałka (strefy jak przy elemencie), a przebiegi ramówki zostają, jak je
+  tego kawałka (strefy jak przy elemencie: nakładka przejmuje sesję z `follow=1`, więc sidecar daje strefy stron przejęcia – np. samego logo `on_live` – a poszerzenie w trakcie kawałka, gdy operator wprowadzi inną stronę, restartuje przebieg live w nowych strefach; do 26.11.26 `follow=0` i strefa obejmowała wszystkie strony show, czyli cały kadr – lokalnie ok. 0,2 rdzenia więcej przy 1600×900), a przebiegi ramówki zostają, jak je
   zrobił ErsatzTV (z jego znakami wodnymi). Sesja zakłada się w tle – przebieg
   live na nią nie czeka: rusza bez grafiki i jest restartowany z grafiką, gdy
   sesja jest gotowa (jak przy poszerzeniu stref); kawałek, który zaczyna się
