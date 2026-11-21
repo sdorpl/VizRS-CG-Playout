@@ -293,6 +293,8 @@ services:
       # (Ciasteczka YouTube; /etv-config/vizrs-live/youtube-cookies.txt, yt-dlp gets a
       # copy). Set: an own cookies file (Netscape format, writable) instead of those.
       VIZRS_YTDLP_COOKIES: ${VIZRS_YTDLP_COOKIES:-}
+      # The session of the cookies from VizRS Live is kept alive this often (minutes; 0 = never).
+      VIZRS_YTDLP_KEEPALIVE_MIN: ${VIZRS_YTDLP_KEEPALIVE_MIN:-30}
     volumes:
       - vizrs-client:/vizrs:ro
       - ${ERSATZTV_CONFIG:-ersatztv-config}:/etv-config

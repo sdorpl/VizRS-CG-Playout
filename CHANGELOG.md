@@ -4,6 +4,10 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.25 (2026-11-21)
+
+- **Ciasteczka YouTube: podtrzymanie sesji.** Na S1 sesja konta znów padła (między 09:06 a 13:22 UTC), a wyszło to dopiero przy ponownym wyborze wejścia YouTube: wejścia pytają YouTube tylko przy starcie i co ok. 6 h, a przeglądarka odświeża sesję co kilka minut. Usługa `ingest` co 30 min (`VIZRS_YTDLP_KEEPALIVE_MIN`, 0 = wyłączone), także bez wybranego wejścia YouTube, odświeża ciasteczka z panelu przez yt-dlp (jedna pozycja strony widocznej tylko po zalogowaniu, bez pobierania) i zapisuje je z powrotem. Zakończona sesja jest widoczna od razu: znacznik `ended`, czerwony stan w oknie ciasteczek i **alarm w banerze** panelu. Udane podtrzymanie: „Sesja sprawdzona i podtrzymana …” (`checked_at` w `/api/live/youtube-cookies`). yt-dlp z tymi ciasteczkami działa pojedynczo, a ostrzeżenie „cookies are no longer valid” przy pytaniu wejścia też oznacza koniec sesji. Ciasteczek, które YouTube już unieważnił, to nie naprawi – trzeba wgrać nowe. DOKUMENTACJA §1, §11, API.md, INSTRUKCJA.
+
 ## 26.11.24 (2026-11-21)
 
 - **Harmonogramy na telefonie: pozycje nie są ucinane.** Tabela pozycji (Start, Treść, Tryb, Kolejność, Wypełniacze, Znaki i grafika) miała ok. 820 px i na wąskim ekranie kolumny od „Kolejność” wypadały poza ekran. Poniżej 760 px każda pozycja jest kartą „etykieta: wartość” z przyciskami (kopiuj, w górę, w dół, usuń) na dole – dotyczy wspólnej listy pozycji, więc także bloków, playlist, deco, kalendarza i harmonogramów zastępczych w Playoutach. DOKUMENTACJA §11.

@@ -21,6 +21,8 @@
 //     VIZRS_YTDLP_COOKIES  a cookies file for yt-dlp (a server YouTube asks to sign in);
 //                          empty: the one VizRS Live uploads (src/yt_cookies.rs), a copy of
 //     VIZRS_YTDLP_PANEL_COOKIES  (default /etv-config/vizrs-live/youtube-cookies.txt)
+//     VIZRS_YTDLP_KEEPALIVE_MIN  how often the session of the cookies from VizRS Live is
+//                          kept alive and checked (minutes, default 30; 0 = never)
 //
 // A YouTube input (`1=https://www.youtube.com/…`) has no publisher: yt-dlp
 // finds its stream, ffmpeg reads it and the rest goes as from a publisher.
@@ -52,6 +54,19 @@ const DEFAULT_DENO: &str = "/vizrs/deno";
 const PANEL_COOKIES: &str = "/etv-config/vizrs-live/youtube-cookies.txt";
 /// A yt-dlp lookup that takes longer is stopped.
 const RESOLVE_LIMIT: Duration = Duration::from_secs(90);
+/// The session of the cookies from VizRS Live is kept alive this often (`VIZRS_YTDLP_KEEPALIVE_MIN`).
+const DEFAULT_KEEPALIVE_MIN: u64 = 30;
+/// The first keep-alive after the service starts (not at once: a restart of
+/// the container is not a reason to ask YouTube).
+const KEEPALIVE_FIRST: Duration = Duration::from_secs(120);
+/// A page only a signed-in account sees: yt-dlp reads one entry of it with the
+/// cookies, YouTube refreshes them as for a browser, and a session it ended
+/// shows (yt-dlp: "cookies are no longer valid", "Login details are needed").
+const KEEPALIVE_URL: &str = "https://www.youtube.com/feed/history";
+/// One yt-dlp with the cookies from VizRS Live at a time (inputs, keep-alive):
+/// two refreshing the same session at once would leave one with rotated-out
+/// cookies, which YouTube takes for stolen.
+static YTDLP_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// A YouTube input that is not on (a broadcast not started, a refused lookup) is asked again this often.
 const YOUTUBE_AGAIN: Duration = Duration::from_secs(30);
 /// A link input that gave nothing (the stream not on, a refused address) is read again this often.
@@ -384,6 +399,8 @@ pub struct Settings {
     pub cookies: Option<OsString>,
     /// Without it: the cookies file VizRS Live uploads (`VIZRS_YTDLP_PANEL_COOKIES`); yt-dlp gets a copy.
     pub panel_cookies: std::path::PathBuf,
+    /// How often the session of those cookies is kept alive (`VIZRS_YTDLP_KEEPALIVE_MIN`); none = never.
+    pub keepalive: Option<Duration>,
 }
 
 impl Settings {
@@ -396,6 +413,10 @@ impl Settings {
         let idle = match var("VIZRS_INGEST_IDLE_MS").trim() {
             "" => DEFAULT_IDLE_MS,
             text => text.parse().ok().filter(|&ms| ms > 0).ok_or(format!("VIZRS_INGEST_IDLE_MS=\"{text}\": milliseconds > 0"))?,
+        };
+        let keepalive = match var("VIZRS_YTDLP_KEEPALIVE_MIN").trim() {
+            "" => DEFAULT_KEEPALIVE_MIN,
+            text => text.parse().map_err(|_| format!("VIZRS_YTDLP_KEEPALIVE_MIN=\"{text}\": minutes (0 = never)"))?,
         };
         let settings = Settings {
             ffmpeg: std::env::var_os("VIZRS_FFMPEG").unwrap_or_else(|| DEFAULT_FFMPEG.into()),
@@ -410,6 +431,7 @@ impl Settings {
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| PANEL_COOKIES.into())
                 .into(),
+            keepalive: (keepalive > 0).then(|| Duration::from_secs(keepalive.min(24 * 60) * 60)),
         };
         if settings.sidecar.is_empty() {
             return Err("VIZRS_CG_URL is empty".into());
@@ -746,6 +768,18 @@ impl Cookies {
         self.panel.as_deref().is_some_and(|panel| signature(panel) != self.seen)
     }
 
+    /// YouTube ended the session of these cookies (yt-dlp lost the sign-in
+    /// cookies, or said they are no longer valid): marked for VizRS Live, a
+    /// line for the log – once, until the panel's file changes.
+    pub fn session_ended(&mut self) -> Option<String> {
+        let panel = self.panel.as_deref()?;
+        if self.seen.is_none() || std::mem::replace(&mut self.ended, true) {
+            return None;
+        }
+        mark_ended(panel);
+        Some("YouTube ended the account's session (sign-in cookies deleted) – upload new cookies in VizRS Live".to_owned())
+    }
+
     /// After yt-dlp: cookies it refreshed in the copy replace the panel's
     /// file – only while that file is still the one the copy was made of (a
     /// new upload wins). Written beside it and renamed, mode 0600, owned like
@@ -766,11 +800,7 @@ impl Cookies {
         let session =
             |bytes: &[u8]| crate::yt_cookies::parse(&String::from_utf8_lossy(bytes)).is_ok_and(|c| crate::yt_cookies::signed_in(&c));
         if session(&uploaded) && !session(&refreshed) {
-            if std::mem::replace(&mut self.ended, true) {
-                return None;
-            }
-            mark_ended(panel);
-            return Some("YouTube ended the account's session (sign-in cookies deleted) – upload new cookies in VizRS Live".to_owned());
+            return self.session_ended();
         }
         let folder = panel.parent()?;
         let temporary = folder.join(format!(".youtube-cookies.{}.tmp", std::process::id()));
@@ -815,12 +845,18 @@ impl Drop for Cookies {
 /// time YouTube ended the session, for VizRS Live; a new upload removes it.
 /// Owned like the folder, so that the sidecar's user may remove it.
 fn mark_ended(panel: &std::path::Path) {
+    if let Some(folder) = panel.parent() {
+        write_owned(&folder.join(crate::yt_cookies::ENDED), &crate::time::iso_time(crate::time::now_ms()));
+    }
+}
+
+/// A small file next to the panel's cookies, owned like their folder (the
+/// sidecar's user reads and removes it).
+fn write_owned(path: &std::path::Path, text: &str) {
     use std::os::unix::fs::MetadataExt;
-    let Some(folder) = panel.parent() else { return };
-    let marker = folder.join(crate::yt_cookies::ENDED);
-    if std::fs::write(&marker, crate::time::iso_time(crate::time::now_ms())).is_ok() {
-        if let Ok(owner) = std::fs::metadata(folder) {
-            let _ = std::os::unix::fs::chown(&marker, Some(owner.uid()), Some(owner.gid()));
+    if std::fs::write(path, text).is_ok() {
+        if let Some(owner) = path.parent().and_then(|folder| std::fs::metadata(folder).ok()) {
+            let _ = std::os::unix::fs::chown(path, Some(owner.uid()), Some(owner.gid()));
         }
     }
 }
@@ -859,11 +895,17 @@ fn wait_or_cookies(running: &Running, time: Duration, cookies: &Cookies) -> bool
     running.stop.load(Ordering::Relaxed)
 }
 
-/// yt-dlp for a YouTube input, at most `RESOLVE_LIMIT`.
-fn resolve(settings: &Settings, url: &str, cookies: Option<&std::ffi::OsStr>, running: &Running) -> Result<Found, String> {
+/// What one yt-dlp gave: its exit (none = stopped or out of time) and output.
+struct Ytdlp {
+    success: Option<bool>,
+    stdout: String,
+    stderr: String,
+}
+
+/// yt-dlp with `args`, at most `RESOLVE_LIMIT`; `running` stops it.
+fn run_ytdlp(settings: &Settings, args: Vec<OsString>, running: &Running) -> Result<Ytdlp, String> {
     let mut command = Command::new(&settings.ytdlp);
-    let deno = std::path::Path::new(&settings.deno).is_file().then_some(settings.deno.as_os_str());
-    command.args(ytdlp_args(url, cookies, deno)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // SAFETY: only async-signal-safe calls in the forked child.
     unsafe {
         command.pre_exec(|| crate::sys::ffmpeg_child_setup(-1));
@@ -899,12 +941,133 @@ fn resolve(settings: &Settings, url: &str, cookies: Option<&std::ffi::OsStr>, ru
         }
     };
     running.pid.store(0, Ordering::Relaxed);
-    let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
-    match status {
+    Ok(Ytdlp { success: status.map(|s| s.success()), stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+}
+
+/// yt-dlp for a YouTube input, at most `RESOLVE_LIMIT`.
+fn resolve(settings: &Settings, url: &str, cookies: Option<&std::ffi::OsStr>, running: &Running) -> Result<Found, String> {
+    let deno = std::path::Path::new(&settings.deno).is_file().then_some(settings.deno.as_os_str());
+    let out = run_ytdlp(settings, ytdlp_args(url, cookies, deno), running)?;
+    match out.success {
         None if running.stop.load(Ordering::Relaxed) => Err("stopped".into()),
         None => Err(format!("yt-dlp gave no answer in {} s", RESOLVE_LIMIT.as_secs())),
-        Some(status) if !status.success() => Err(format!("{}{}", rotated_note(&stderr), ytdlp_error(&stderr))),
-        Some(_) => parse_found(&stdout),
+        Some(false) => Err(format!("{}{}", rotated_note(&out.stderr), ytdlp_error(&out.stderr))),
+        Some(true) => parse_found(&out.stdout),
+    }
+}
+
+/// yt-dlp's arguments for a keep-alive: one entry of `KEEPALIVE_URL`, nothing
+/// downloaded, no JavaScript runtime (no stream to find). Warnings stay on:
+/// "cookies are no longer valid" is one.
+pub fn keepalive_args(cookies: &std::ffi::OsStr) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "--ignore-config",
+        "--no-cache-dir",
+        "--socket-timeout",
+        "15",
+        "--flat-playlist",
+        "--playlist-items",
+        "1",
+        "--skip-download",
+        "--print",
+        "id",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
+    args.extend(["--cookies".into(), cookies.to_owned(), "--".into(), KEEPALIVE_URL.into()]);
+    args
+}
+
+/// What a keep-alive found.
+#[derive(Debug, PartialEq)]
+pub enum Kept {
+    /// The session is on.
+    Alive,
+    /// YouTube ended it.
+    Ended,
+    /// No answer to go by (network, YouTube's refusal of the address, yt-dlp): asked again next time.
+    Unknown(String),
+}
+
+/// yt-dlp's verdict on the session in a keep-alive's output.
+pub fn keepalive_verdict(success: Option<bool>, stderr: &str) -> Kept {
+    if stderr.contains("cookies are no longer valid") || stderr.contains("Login details are needed") {
+        Kept::Ended
+    } else if success == Some(true) {
+        Kept::Alive
+    } else if success.is_none() {
+        Kept::Unknown(format!("yt-dlp gave no answer in {} s", RESOLVE_LIMIT.as_secs()))
+    } else {
+        Kept::Unknown(ytdlp_error(stderr))
+    }
+}
+
+/// `youtube-cookies.checked` next to the panel's file (src/yt_cookies.rs):
+/// when a keep-alive last found the session on, for VizRS Live.
+fn mark_checked(panel: &std::path::Path) {
+    if let Some(folder) = panel.parent() {
+        write_owned(&folder.join(crate::yt_cookies::CHECKED), &crate::time::iso_time(crate::time::now_ms()));
+    }
+}
+
+/// Keeps the session of the cookies from VizRS Live alive: every
+/// `keepalive` yt-dlp reads one entry of a page only a signed-in account
+/// sees, with a copy of them; what YouTube refreshed goes back to the panel's
+/// file (`keep_refreshed`), as after an input's lookup. A browser does this
+/// every few minutes; inputs alone ask YouTube only when they start and when
+/// a broadcast's address runs out (about 6 h), and a session left alone for
+/// hours ended (S1 2026-11-21, seen only when the input was chosen again).
+/// An ended session is marked for VizRS Live at once; then nothing until new
+/// cookies. Own cookies (`VIZRS_YTDLP_COOKIES`): not this service's to keep.
+fn keepalive(settings: &Settings, every: Duration) {
+    let Some(panel) = settings.cookies.is_none().then(|| settings.panel_cookies.clone()) else { return };
+    let running = Running::default();
+    let mut cookies = Cookies::new(settings, std::env::temp_dir().join("vizrs-ytdlp-cookies-keepalive.txt"));
+    let mut last = String::new();
+    std::thread::sleep(KEEPALIVE_FIRST);
+    loop {
+        if let Some(line) = keep_session(settings, &panel, &mut cookies, &running) {
+            let line = format!("YouTube session keep-alive: {line}; again in {} min", every.as_secs() / 60);
+            if line != last {
+                log(&line);
+                last = line;
+            }
+        }
+        std::thread::sleep(every);
+    }
+}
+
+/// One keep-alive (`keepalive`): a line for the log, none when there is
+/// nothing to keep (no cookies, no session in them, the session already ended).
+fn keep_session(settings: &Settings, panel: &std::path::Path, cookies: &mut Cookies, running: &Running) -> Option<String> {
+    let folder = panel.parent()?;
+    let text = std::fs::read_to_string(panel).ok()?;
+    let session = crate::yt_cookies::parse(&text).is_ok_and(|c| crate::yt_cookies::signed_in(&c));
+    if !session || crate::yt_cookies::ended(folder).is_some() {
+        return None;
+    }
+    let turn = YTDLP_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (file, _) = cookies.file(settings);
+    let out = match &file {
+        Some(file) => run_ytdlp(settings, keepalive_args(file), running),
+        None => Err("no copy of the cookies".into()),
+    };
+    let kept = cookies.keep_refreshed();
+    drop(turn);
+    let verdict = match out {
+        Ok(out) => keepalive_verdict(out.success, &out.stderr),
+        Err(e) => Kept::Unknown(e),
+    };
+    match (verdict, kept) {
+        // keep_refreshed found the sign-in cookies gone (and marked it).
+        (_, Some(line)) if cookies.ended => Some(line),
+        (Kept::Ended, _) => cookies.session_ended(),
+        (Kept::Alive, kept) => {
+            mark_checked(panel);
+            Some(format!("the session is on{}", if kept.is_some() { ", the cookies refreshed" } else { "" }))
+        }
+        (Kept::Unknown(e), _) => Some(e),
     }
 }
 
@@ -949,9 +1112,16 @@ fn pull(settings: &Settings, listener: &Listener, running: &Running) {
         if let Some(change) = change {
             log(format_args!("channel {channel}: YouTube {url}: {change}"));
         }
+        let turn = YTDLP_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let resolved = resolve(settings, url, file.as_deref(), running);
         if let Some(kept) = cookies.keep_refreshed() {
             log(format_args!("channel {channel}: YouTube {url}: {kept}"));
+        }
+        drop(turn);
+        if resolved.as_ref().is_err_and(|e| e.contains("cookies are no longer valid")) {
+            if let Some(ended) = cookies.session_ended() {
+                log(format_args!("channel {channel}: YouTube {url}: {ended}"));
+            }
         }
         let found = match resolved {
             Ok(found) => found,
@@ -1094,6 +1264,10 @@ pub fn run(settings: Settings) -> i32 {
     let mut running: Vec<(Listener, Arc<Running>)> = Vec::new();
     let mut last_error = String::new();
     let program = Program::now();
+    if let Some(every) = settings.keepalive {
+        let settings = Arc::clone(&settings);
+        std::thread::spawn(move || keepalive(&settings, every));
+    }
     loop {
         // The sidecar of a new release puts a new `vizrs-ffmpeg` in the volume: the
         // container (restart: unless-stopped) starts again with it. Until 2026-11-19
@@ -1345,6 +1519,7 @@ mod tests {
             deno: "deno".into(),
             cookies: cookies.map(OsString::from),
             panel_cookies: panel.clone(),
+            keepalive: None,
         };
         let own = settings(Some("/own/cookies.txt"));
         let mut cookies = Cookies::new(&own, copy.clone());
@@ -1408,5 +1583,81 @@ mod tests {
         assert!(sign_in_hint(refused, false).contains("upload the cookies"));
         assert!(sign_in_hint(refused, true).contains("expired"));
         assert_eq!(sign_in_hint("Video unavailable", false), "");
+    }
+
+    #[test]
+    fn keepalive_reads_a_page_only_a_signed_in_account_sees() {
+        let args: Vec<String> = keepalive_args("/tmp/c.txt".as_ref()).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.windows(2).any(|w| w == ["--cookies", "/tmp/c.txt"]));
+        assert!(args.windows(2).any(|w| w == ["--playlist-items", "1"]));
+        assert!(
+            args.contains(&"--skip-download".to_owned()) && !args.contains(&"--no-warnings".to_owned()),
+            "warnings say the session ended"
+        );
+        assert_eq!(args.last().map(String::as_str), Some(KEEPALIVE_URL));
+        let invalid = "WARNING: [youtube] The provided YouTube account cookies are no longer valid. They have likely been rotated";
+        assert_eq!(keepalive_verdict(Some(true), invalid), Kept::Ended);
+        assert_eq!(
+            keepalive_verdict(Some(false), "ERROR: [youtube:history] Login details are needed to download this content."),
+            Kept::Ended
+        );
+        assert_eq!(keepalive_verdict(Some(true), ""), Kept::Alive);
+        assert_eq!(
+            keepalive_verdict(Some(false), "ERROR: [youtube:tab] Unable to download webpage: timed out"),
+            Kept::Unknown("timed out".into())
+        );
+        assert!(matches!(keepalive_verdict(None, ""), Kept::Unknown(_)));
+    }
+
+    #[test]
+    fn keepalive_keeps_the_session_and_marks_its_end() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("vizrs-keepalive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let panel = dir.join("youtube-cookies.txt");
+        // A yt-dlp that does what $MODE says to the file after --cookies.
+        let ytdlp = dir.join("yt-dlp");
+        std::fs::write(&ytdlp, "#!/bin/sh\nwhile [ \"$1\" != --cookies ]; do shift; done; f=$2\nmode=$(cat \"$(dirname \"$0\")/mode\")\ncase $mode in\n  refresh) sed -i s/=old/=new/ \"$f\"; echo abc ;;\n  invalid) echo 'WARNING: [youtube] The provided YouTube account cookies are no longer valid.' >&2; exit 1 ;;\n  gone) printf '.youtube.com\\tTRUE\\t/\\tTRUE\\t1893456000\\t__Secure-3PSID\\tx\\n' > \"$f\" ;;\n  net) echo 'ERROR: [youtube:tab] Unable to download webpage: timed out' >&2; exit 1 ;;\nesac\n").unwrap();
+        std::fs::set_permissions(&ytdlp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mode = |m: &str| std::fs::write(dir.join("mode"), m).unwrap();
+        let settings = Settings {
+            ffmpeg: "ffmpeg".into(),
+            sidecar: String::new(),
+            token: String::new(),
+            idle: Duration::from_secs(1),
+            listeners: Vec::new(),
+            ytdlp: ytdlp.into(),
+            deno: "deno".into(),
+            cookies: None,
+            panel_cookies: panel.clone(),
+            keepalive: Some(Duration::from_secs(60)),
+        };
+        let running = Running::default();
+        let mut cookies = Cookies::new(&settings, dir.join("copy.txt"));
+        assert_eq!(keep_session(&settings, &panel, &mut cookies, &running), None, "no cookies, nothing to keep");
+        let session = ".youtube.com\tTRUE\t/\tTRUE\t1893456000\tLOGIN_INFO\tl\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSAPISID\ts\n.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSIDCC\tv=old\n";
+        crate::yt_cookies::save(&dir, session).unwrap();
+
+        mode("net");
+        assert!(keep_session(&settings, &panel, &mut cookies, &running).unwrap().contains("timed out"));
+        assert_eq!((crate::yt_cookies::checked(&dir), crate::yt_cookies::ended(&dir)), (None, None), "no verdict, no mark");
+
+        mode("refresh");
+        assert_eq!(keep_session(&settings, &panel, &mut cookies, &running).as_deref(), Some("the session is on, the cookies refreshed"));
+        assert!(std::fs::read_to_string(&panel).unwrap().contains("v=new"), "what YouTube refreshed goes to the panel's file");
+        assert!(crate::yt_cookies::checked(&dir).is_some(), "checked, for the panel");
+
+        mode("invalid");
+        assert!(keep_session(&settings, &panel, &mut cookies, &running).unwrap().contains("ended"));
+        assert!(crate::yt_cookies::ended(&dir).is_some(), "marked at once, not when an input is chosen again");
+        assert_eq!(keep_session(&settings, &panel, &mut cookies, &running), None, "an ended session: nothing until new cookies");
+
+        crate::yt_cookies::save(&dir, session).unwrap();
+        mode("gone");
+        assert!(keep_session(&settings, &panel, &mut cookies, &running).unwrap().contains("ended"), "new cookies are kept again");
+        assert_eq!(std::fs::read_to_string(&panel).unwrap(), session, "the sign-in cookies YouTube took are not written over the upload");
+        assert!(crate::yt_cookies::ended(&dir).is_some());
+        drop(cookies);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

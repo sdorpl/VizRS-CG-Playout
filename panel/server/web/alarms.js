@@ -17,7 +17,8 @@ let audio = null;
 
 /**
  * Alarmy z bieżącego stanu (czysta funkcja – testowalna): [{ key, level, text, href }].
- * d = { now, channels, playouts: Map(numer → playout), items: Map(numer → pozycje), cg: stan CG albo null, sessions: tablica albo null }.
+ * d = { now, channels, playouts: Map(numer → playout), items: Map(numer → pozycje), cg: stan CG albo null, sessions: tablica albo null,
+ *       cookies: stan ciasteczek YouTube z CG Playout albo null }.
  */
 export function computeAlarms(d) {
   const out = [];
@@ -53,6 +54,10 @@ export function computeAlarms(d) {
       if (now - since >= GRAPHICS_OFF_MS) out.push({ key: 'graphics-off', level: 'bad', text: `cała grafika VizRS zdjęta od ${hm(new Date(since))} – przywróć w Na antenie`, href: '#antena' });
     } else graphicsOffSeen = null;
   }
+  // ciasteczka YouTube: sesję zakończył YouTube – wejścia YouTube nie pobiorą transmisji, dopóki ktoś nie wgra nowych
+  if (d.cookies?.present && d.cookies.ended_at) {
+    out.push({ key: `yt-cookies-${d.cookies.ended_at}`, level: 'bad', text: `YouTube zakończył sesję konta ciasteczek ${hm(new Date(d.cookies.ended_at))} – wgraj nowe ciasteczka (Sloty na żywo → Ciasteczka YouTube)`, href: '#live' });
+  }
   return out;
 }
 
@@ -84,7 +89,9 @@ async function gather() {
     const r = await cmd('GetFuturePlayoutItemsById', { PlayoutId: p.PlayoutId, ShowFiller: true, PageNum: 0, PageSize: 30 }).catch(() => null);
     items.set(String(c.Number), r?.Page || []);
   }));
-  return { now, channels: mine, playouts, items, cg, sessions };
+  const cookies = cg && !(cg instanceof Error) && (cg.features || []).includes('youtube_cookies')
+    ? await api('/api/cg/live/youtube-cookies').then((r) => r.result).catch(() => null) : null;
+  return { now, channels: mine, playouts, items, cg, sessions, cookies };
 }
 
 /** Banner alarmów pod paskiem górnym; uruchamia sprawdzanie co 60 s. */

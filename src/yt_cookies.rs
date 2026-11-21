@@ -23,6 +23,9 @@ pub const FILE: &str = "youtube-cookies.txt";
 /// Next to it: the time YouTube ended the session of those cookies (the ingest
 /// service writes it, a new upload removes it).
 pub const ENDED: &str = "youtube-cookies.ended";
+/// Next to it: the time the ingest service's keep-alive last found the session
+/// on (src/listener.rs); a new upload removes it.
+pub const CHECKED: &str = "youtube-cookies.checked";
 /// The longest file the panel may upload (a whole browser's export is longer: only youtube.com is needed).
 pub const MAX_TEXT: usize = 512 * 1024;
 /// The most cookies in one file.
@@ -233,18 +236,34 @@ pub fn path(folder: &Path) -> PathBuf {
     folder.join(FILE)
 }
 
-/// When YouTube ended the session of the stored cookies (ISO time), if it did.
-pub fn ended(folder: &Path) -> Option<String> {
-    let text = fs::read_to_string(folder.join(ENDED)).ok()?;
+/// An ISO time in a marker file next to the cookies, if there is one.
+fn marker(folder: &Path, name: &str) -> Option<String> {
+    let text = fs::read_to_string(folder.join(name)).ok()?;
     let text = text.trim();
     (!text.is_empty() && text.len() < 40).then(|| text.to_owned())
+}
+
+/// When YouTube ended the session of the stored cookies (ISO time), if it did.
+pub fn ended(folder: &Path) -> Option<String> {
+    marker(folder, ENDED)
+}
+
+/// When the keep-alive last found the session of the stored cookies on (ISO time).
+pub fn checked(folder: &Path) -> Option<String> {
+    marker(folder, CHECKED)
+}
+
+/// The marks of the old session go with its cookies.
+fn forget_session(folder: &Path) {
+    let _ = fs::remove_file(folder.join(ENDED));
+    let _ = fs::remove_file(folder.join(CHECKED));
 }
 
 /// Writes the file (mode 0600: it is a sign-in) in place of the old one at once;
 /// new cookies, a new session: the mark of an ended one goes.
 pub fn save(folder: &Path, text: &str) -> io::Result<()> {
     fs::create_dir_all(folder)?;
-    let _ = fs::remove_file(folder.join(ENDED));
+    forget_session(folder);
     let target = path(folder);
     let temporary = folder.join(format!(".{FILE}.{}.tmp", std::process::id()));
     let written = OpenOptions::new()
@@ -263,7 +282,7 @@ pub fn save(folder: &Path, text: &str) -> io::Result<()> {
 
 /// Removes the file; none is fine.
 pub fn remove(folder: &Path) -> io::Result<()> {
-    let _ = fs::remove_file(folder.join(ENDED));
+    forget_session(folder);
     match fs::remove_file(path(folder)) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
@@ -316,9 +335,11 @@ mod tests {
         save(&folder, "x").unwrap();
         assert_eq!(ended(&folder), None);
         fs::write(folder.join(ENDED), "2026-11-21T00:00:00.000Z\n").unwrap();
+        fs::write(folder.join(CHECKED), "2026-11-20T23:30:00.000Z").unwrap();
         assert_eq!(ended(&folder).as_deref(), Some("2026-11-21T00:00:00.000Z"));
+        assert_eq!(checked(&folder).as_deref(), Some("2026-11-20T23:30:00.000Z"));
         save(&folder, "y").unwrap();
-        assert_eq!(ended(&folder), None, "a new upload, a new session");
+        assert_eq!((ended(&folder), checked(&folder)), (None, None), "a new upload, a new session");
         let _ = fs::remove_dir_all(&folder);
     }
 

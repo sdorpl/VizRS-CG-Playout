@@ -351,7 +351,7 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
       }
       if (u.pathname === '/api/live/youtube-cookies') {
         if (q.method === 'PUT') ytCookies = true; else if (q.method === 'DELETE') ytCookies = false;
-        return reply(r, 200, ytCookies ? { store: true, present: true, saved_at: new Date(Date.now() - 3600e3).toISOString(), cookies: 24, youtube: 18, signed_in: true, expires: new Date(Date.now() + 200 * 86400e3).toISOString() } : { store: true, present: false });
+        return reply(r, 200, ytCookies ? { store: true, present: true, saved_at: new Date(Date.now() - 3600e3).toISOString(), checked_at: new Date(Date.now() - 600e3).toISOString(), ended_at: null, cookies: 24, youtube: 18, signed_in: true, expires: new Date(Date.now() + 200 * 86400e3).toISOString() } : { store: true, present: false });
       }
       if (u.pathname === '/api/live/inputs') {
         if (q.method === 'PUT') inputs = JSON.parse(b || '{}').listeners || [];

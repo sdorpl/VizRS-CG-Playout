@@ -132,7 +132,7 @@ function check(cond, msg) {
           CG.cookies = body.text;
         }
         if (q.method === 'DELETE') CG.cookies = null;
-        return send(200, CG.cookies ? { store: true, present: true, saved_at: '2026-11-20T17:00:00.000Z', ended_at: CG.cookiesEnded || null, cookies: 3, youtube: 2, signed_in: true, expires: '2027-12-01T00:00:00.000Z' } : { store: true, present: false });
+        return send(200, CG.cookies ? { store: true, present: true, saved_at: '2026-11-20T17:00:00.000Z', ended_at: CG.cookiesEnded || null, checked_at: CG.cookiesChecked || null, cookies: 3, youtube: 2, signed_in: true, expires: '2027-12-01T00:00:00.000Z' } : { store: true, present: false });
       }
       // koder nakładki (CG Playout GET/PUT /api/live/encoder): encoder.json wypełniony z .env = veryfast
       if (u === '/api/live/encoder') {
@@ -1701,12 +1701,26 @@ function check(cond, msg) {
   await page.click('button:has-text("Ciasteczka YouTube…")');
   await page.waitForSelector('[data-cookies] [data-cookies-state="ok"]');
   check(/2 z youtube\.com/.test(await page.textContent('[data-cookies-state]')) && !/tajne/.test(await page.textContent('[data-cookies]')), 'ciasteczka YouTube: stan bez wartości');
+  check(!await page.$('[data-cookies-checked]'), 'ciasteczka YouTube: bez podtrzymania (starszy CG Playout) – bez wiersza o sprawdzeniu');
+  await page.click('#dlg-buttons button:has-text("Anuluj")');
+  CG.cookiesChecked = '2026-11-21T13:30:00.000Z';
+  await page.click('button:has-text("Ciasteczka YouTube…")');
+  await page.waitForSelector('[data-cookies] [data-cookies-checked]');
+  check(/Sesja sprawdzona i podtrzymana/.test(await page.textContent('[data-cookies-state]')), 'ciasteczka YouTube: czas ostatniego podtrzymania sesji');
   await page.click('#dlg-buttons button:has-text("Anuluj")');
   CG.cookiesEnded = '2026-11-21T00:00:00.000Z';
   await page.click('button:has-text("Ciasteczka YouTube…")');
   await page.waitForSelector('[data-cookies] [data-cookies-state="ended"]');
   check(/zakończył sesję/.test(await page.textContent('[data-cookies-state]')), 'ciasteczka YouTube: sesja zakończona przez YouTube pokazana');
+  const ytAlarm = await page.evaluate(async () => {
+    const { computeAlarms } = await import('/alarms.js');
+    const base = { now: Date.now(), channels: [], playouts: new Map(), items: new Map(), cg: null, sessions: null };
+    return [computeAlarms({ ...base, cookies: { present: true, ended_at: '2026-11-21T00:00:00.000Z' } }), computeAlarms({ ...base, cookies: { present: true, ended_at: null } })];
+  });
+  check(ytAlarm[0].length === 1 && ytAlarm[0][0].level === 'bad' && /wgraj nowe ciasteczka/.test(ytAlarm[0][0].text) && ytAlarm[1].length === 0,
+    `alarm: zakończona sesja ciasteczek YouTube w banerze (${JSON.stringify(ytAlarm[0])})`);
   CG.cookiesEnded = null;
+  CG.cookiesChecked = null;
   await page.click('#dlg-buttons button:has-text("Usuń ciasteczka")');
   await page.click('#dlg-buttons button:has-text("Usuń")');
   await page.waitForSelector('#toast:has-text("usunięte")');
