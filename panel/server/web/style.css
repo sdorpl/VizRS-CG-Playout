@@ -322,7 +322,26 @@ details.how[open] summary { margin-bottom: 8px; }
 .rule-card .form, [data-rules] .form { grid-template-columns: 150px minmax(0, 1fr); }
 [data-rules] h3 { margin: 16px 0 8px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--acc); }
 [data-rules] .form input[type=number] { width: 11em; }
-@media (max-width: 560px) { .ce-field { grid-template-columns: 1fr auto; } .ce-field > .dim { display: none; } .ce-fields { padding-left: 0; } .ce-prev { max-width: 100%; text-align: left; } }
+/* telefon: etykieta nad polem, edytor komend na całą szerokość karty (bez ucinania prawej krawędzi) */
+@media (max-width: 560px) {
+  .rule-card .form, [data-rules] .form { grid-template-columns: minmax(0, 1fr); gap: 4px 0; padding: 10px; }
+  [data-rules] .form > label { padding-top: 6px; }
+  [data-rules] .form > *, .ce, .ce-body, .ce-step, .ce-field > * { min-width: 0; }
+  [data-rules].pad { padding-left: 10px; padding-right: 10px; }
+  .ce-top select.ce-mode { min-width: 0; width: 100%; }
+  .ce-body { padding: 8px; }
+  .ce-step { padding: 8px; }
+  .ce-act { flex: 1 1 auto; min-width: 0; }
+  .ce-pick { min-width: 0; flex: 1 1 100%; }
+  .ce-fields { padding-left: 0; }
+  .ce-field { grid-template-columns: minmax(0, 1fr) 4.5em auto; }
+  .ce-field > .ce-sym { width: 100%; }
+  .ce-field > .ce-key { grid-column: 1 / -1; }
+  .ce-field > .dim { display: none; }
+  .ce-prev { max-width: 100%; text-align: left; flex: 1 1 100%; order: 3; }
+  .rule-card > summary { padding: 7px 8px; }
+  .rule-card .rc-title { overflow-wrap: anywhere; min-width: 0; }
+}
 
 /* Przeglądarka: okładki (przez /api/artwork/…) i odtwarzanie pozycji w karcie (clip.js) */
 .card-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: start; }
