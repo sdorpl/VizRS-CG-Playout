@@ -1610,8 +1610,9 @@ wysyła `AUTH <token>`.
 | `{duration}` | długość klipu `hh:mm:ss` |
 | `{next_title}` | tytuł następnego programu |
 | `{next_start}` / `{next_start_full}` | start następnego, `hh:mm` / `hh:mm:ss`, w strefie `TZ` (niżej) |
+| `{next_start_iso}` | start następnego jako czas UTC co do sekundy (`2026-11-02T19:00:00Z`) – pole `target` zegara VizRS w trybie `target` (odliczanie do następnej audycji, np. `TAKE 1407 target={next_start_iso}`); oba renderery VizRS czytają `Z` i przesunięcie strefy. Transkodowanie wyprzedza antenę – zegar strony przesuwa o to `clock_offset_seconds` (`VIZRS_CLOCK_OFFSET`, §5), inaczej odliczanie na antenie spóźnia się o wyprzedzenie; pusty bez EPG |
 | `{next_duration}` | długość następnego `hh:mm:ss` |
-| `{next2_title}`, `{next2_start}` / `{next2_start_full}`, `{next2_duration}` | to samo dla programu po następnym (trzeci wpis EPG, `epg_entries: 3`) |
+| `{next2_title}`, `{next2_start}` / `{next2_start_full}`, `{next2_start_iso}`, `{next2_duration}` | to samo dla programu po następnym (trzeci wpis EPG, `epg_entries: 3`) |
 
 `|` w wartościach zamienia się na `/`, a znaki końca linii są usuwane.
 Godziny programów ErsatzTV podaje w UTC (`…Z`, `…+00:00`), niezależnie od własnej

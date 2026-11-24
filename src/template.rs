@@ -69,6 +69,12 @@ fn local_time(iso: &str) -> String {
     text_clock(iso)
 }
 
+/// `2026-11-02T19:00:00Z`: an epoch time in UTC to the second (a VizRS clock target).
+fn iso_seconds(epoch_ms: i64) -> String {
+    let full = time::iso_time(epoch_ms);
+    format!("{}Z", &full[..19])
+}
+
 /// The `hh:mm:ss` written in an ISO time.
 fn text_clock(iso: &str) -> String {
     let bytes = iso.as_bytes();
@@ -137,10 +143,14 @@ pub struct ClipContext {
     pub seek: f64,
     pub next_title: String,
     pub next_start_full: String,
+    /// Start of the next programme as a UTC ISO time (`{next_start_iso}`), for the
+    /// `target` of a VizRS clock counting down to it (PLAN-za-chwile Z4).
+    pub next_start_iso: String,
     pub next_duration: f64,
     /// The programme after the next one (`{next2_*}`).
     pub next2_title: String,
     pub next2_start_full: String,
+    pub next2_start_iso: String,
     pub next2_duration: f64,
     /// Stop of the guide entry the item starts in: the end of the programme
     /// when breaks cut it into several items ("" without a guide).
@@ -205,9 +215,11 @@ impl ClipContext {
             seek: time_span_seconds(data.get("MediaItem_StreamSeek")),
             next_title: next.map(|n| text(n, "Title")).unwrap_or_default(),
             next_start_full: start_time(next),
+            next_start_iso: next_span.map(|(s, _)| iso_seconds(s)).unwrap_or_default(),
             next_duration: next_span.map_or(0.0, |(s, e)| (e - s) as f64 / 1000.0),
             next2_title: next2.map(|n| text(n, "Title")).unwrap_or_default(),
             next2_start_full: start_time(next2),
+            next2_start_iso: next2_span.map(|(s, _)| iso_seconds(s)).unwrap_or_default(),
             next2_duration: next2_span.map_or(0.0, |(s, e)| (e - s) as f64 / 1000.0),
             programme_stop: programme.map(|p| text(p, "Stop")).unwrap_or_default(),
             width: size("Width"),
@@ -387,10 +399,12 @@ fn render_line(line: &str, ctx: &ClipContext) -> String {
         ("{next_title}", value(&ctx.next_title)),
         ("{next_start}", hh_mm(&ctx.next_start_full)),
         ("{next_start_full}", ctx.next_start_full.clone()),
+        ("{next_start_iso}", ctx.next_start_iso.clone()),
         ("{next_duration}", clock(ctx.next_duration)),
         ("{next2_title}", value(&ctx.next2_title)),
         ("{next2_start}", hh_mm(&ctx.next2_start_full)),
         ("{next2_start_full}", ctx.next2_start_full.clone()),
+        ("{next2_start_iso}", ctx.next2_start_iso.clone()),
         ("{next2_duration}", clock(ctx.next2_duration)),
     ]
     .iter()
@@ -460,6 +474,12 @@ mod tests {
         );
         let fields = json::parse(render_commands(template, &ctx)[1].splitn(4, ' ').nth(3).unwrap()).unwrap();
         assert_eq!(fields.get("programs").and_then(Value::as_str), Some("Serwis\nFilm \"Noc\""));
+        // Z4: the start as a clock target (UTC, to the second), whatever offset the guide has.
+        assert_eq!(
+            render_commands("TAKE 1407 target={next_start_iso}|t2={next2_start_iso}", &ctx),
+            ["TAKE 1407 target=2026-11-04T19:30:00Z|t2=2026-11-04T19:45:00Z"]
+        );
+        assert_eq!(render_commands("x={next_start_iso}", &ClipContext::default()), ["x="]);
     }
 
     #[test]

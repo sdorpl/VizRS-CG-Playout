@@ -8,8 +8,8 @@ import { h } from './core.js';
 /** Symbole ramówki wstawiane w wartości pól (CG Playout, DOKUMENTACJA §11). */
 export const SYMBOLS = [
   ['{title}', 'tytuł pozycji'], ['{show_title}', 'tytuł serialu'], ['{duration}', 'długość pozycji'], ['{source}', 'ścieżka pliku'],
-  ['{next_title}', 'następny – tytuł'], ['{next_start}', 'następny – start gg:mm'], ['{next_start_full}', 'następny – start gg:mm:ss'], ['{next_duration}', 'następny – długość'],
-  ['{next2_title}', 'po nim – tytuł'], ['{next2_start}', 'po nim – start gg:mm'], ['{next2_start_full}', 'po nim – start gg:mm:ss'], ['{next2_duration}', 'po nim – długość'],
+  ['{next_title}', 'następny – tytuł'], ['{next_start}', 'następny – start gg:mm'], ['{next_start_full}', 'następny – start gg:mm:ss'], ['{next_start_iso}', 'następny – start dla odliczania zegara'], ['{next_duration}', 'następny – długość'],
+  ['{next2_title}', 'po nim – tytuł'], ['{next2_start}', 'po nim – start gg:mm'], ['{next2_start_full}', 'po nim – start gg:mm:ss'], ['{next2_start_iso}', 'po nim – start dla odliczania zegara'], ['{next2_duration}', 'po nim – długość'],
 ];
 
 export const ACTS = {
