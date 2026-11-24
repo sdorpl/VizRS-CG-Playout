@@ -151,7 +151,7 @@ pub(crate) fn on_menu(app: &AppHandle, id: &str) {
                 let a = state(app);
                 let mode = match &a.mode {
                     Mode::Remote { url, .. } => {
-                        format!("panel {url} (przez pośrednika okna – token zostaje w programie)")
+                        format!("panel {url} (przez pośrednika okna – sesja konta i token zostają w programie)")
                     }
                     Mode::None => "nie połączono".into(),
                 };

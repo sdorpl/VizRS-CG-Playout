@@ -32,9 +32,9 @@ button:disabled { opacity:.5; cursor:default; }
 <div class="now" id="now"></div>
 <label for="url">Adres panelu</label>
 <input type="text" id="url" placeholder="https://live.example.pl" autocomplete="off" spellcheck="false">
-<label for="token">Token panelu</label>
+<label for="token">Token panelu (opcjonalnie)</label>
 <div class="row"><input type="password" id="token" autocomplete="off" spellcheck="false"><button id="show" type="button" title="Pokaż token">👁</button></div>
-<div class="hint">Token z <code>--token</code> / <code>VIZRS_LIVE_TOKEN</code> panelu. Zostaje w programie – strona panelu go nie dostaje.</div>
+<div class="hint">Panel z kontami operatorów: zostaw puste – zalogujesz się loginem i hasłem w oknie panelu, a program zapamięta sesję (nie hasło). Token z <code>--token</code> / <code>VIZRS_LIVE_TOKEN</code> panelu – dla paneli bez kont i awaryjnie; zostaje w programie, strona panelu go nie dostaje.</div>
 <label class="check"><input type="checkbox" id="keep"> zapamiętaj token na tym komputerze</label>
 <label class="check"><input type="checkbox" id="auto"> łącz z tym panelem przy uruchomieniu</label>
 <label>Zapisane panele</label>
@@ -65,7 +65,7 @@ function fill(s) {
 for (const s of C.servers) {
   const d = document.createElement('div'); d.className = 'srv';
   const u = document.createElement('span'); u.className = 'u'; u.textContent = s.url;
-  const t = document.createElement('span'); t.className = 't'; t.textContent = s.hasToken ? 'token zapisany' : '';
+  const t = document.createElement('span'); t.className = 't'; t.textContent = [s.hasSession && 'zalogowano kontem', s.hasToken && 'token zapisany'].filter(Boolean).join(' · ');
   const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.title = 'Usuń z listy';
   x.onclick = (e) => { e.stopPropagation(); send({ action: 'forget', url: s.url }); d.remove(); };
   d.onclick = () => fill(s); d.ondblclick = () => { fill(s); go(); };

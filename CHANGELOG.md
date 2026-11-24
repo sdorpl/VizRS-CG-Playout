@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Aplikacja okienna panelu logowana kontem (K20).** Okno „Połącz z panelem” nie wymaga już tokenu: przy panelu z kontami operatorów okno pokazuje ekran logowania panelu (login i hasło), jak przeglądarka. Sesję trzyma pośrednik programu – strona jej nie zna – i zapamiętuje jej identyfikator (nie hasło) w `live-connections.json`, więc po ponownym uruchomieniu logowanie nie wraca; „Wyloguj” w panelu albo wygaśnięcie sesji – znów ekran logowania. Token zostaje jako druga ścieżka (panele bez kont, awaryjnie). DOKUMENTACJA §11 (Aplikacja okienna panelu).
+
 ## 26.11.28 (2026-11-24)
 
 - **Przebieg live w rozdzielczości kanału, nie 1920×1080.** Na S1 (2026-11-22, audycja LIVE na kanale 1600×900) studio szło w 1920×1080, a logo, znak wodny i grafika – zmniejszone i przyklejone do lewego górnego rogu. Przyczyna: nakładka brała rozmiar kanału z najnowszego segmentu, a po restarcie ErsatzTV segmentu nie było; w kawałku slotu nie było też `scale` (sygnał przy sondowaniu miał już rozmiar kanału), więc zostawało domyślne 1920×1080 – i każdy następny przebieg czytał je z segmentu poprzedniego. Teraz rozmiar pochodzi najpierw z profilu FFmpeg kanału w ErsatzTV (API legacy pod `VIZRS_BRIDGE_URL`), potem z `pad`/`crop`/`scale` kawałka i klatek grafiki, a segment jest tylko ostatnią deską ratunku; źródło rozmiaru trafia do śladu przejęć. Dotyczy każdego wejścia, także YouTube (1920×1080 na kanale innego rozmiaru). DOKUMENTACJA §1.

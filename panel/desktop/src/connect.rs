@@ -1,10 +1,13 @@
 //! Okno „Połącz z panelem”: adres i token panelu VizRS CG Playout (np. na VPS), lista zapisanych połączeń.
+//! Bez tokenu okno loguje się kontem operatora na ekranie logowania panelu (K20) – identyfikator sesji (nie hasło)
+//! zostaje w pośredniku i w `live-connections.json`, więc po ponownym uruchomieniu logowanie nie wraca.
 //! Wzór: okno połączenia VizRS CG System (`source/shell/src/connect.rs`) – bez wspólnego crate'a.
 //!
 //! Strona okna jest wbudowana w program (nie pochodzi z panelu), więc tylko ona może wysłać przez most
 //! komunikat połączenia – strona panelu nie może przełączyć okna na inny adres.
 //! Lista leży w `live-connections.json` w katalogu konfiguracji użytkownika (Linux `~/.config/vizrs`,
-//! Windows `%APPDATA%\VizRS`, macOS `~/Library/Application Support/VizRS`); token tylko na życzenie.
+//! Windows `%APPDATA%\VizRS`, macOS `~/Library/Application Support/VizRS`); token tylko na życzenie, sesja konta
+//! zawsze (jak ciasteczko w przeglądarce – wygasa w panelu, wylogowanie ją kasuje).
 
 use std::path::PathBuf;
 
@@ -15,11 +18,25 @@ pub use crate::conn_url::{normalize_url, valid_token};
 /// Najwięcej zapisanych serwerów.
 const MAX_SAVED: usize = 20;
 
+/// Zapisany panel.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Server {
+    pub url: String,
+    /// token, jeśli zapamiętany
+    pub token: Option<String>,
+    /// identyfikator sesji konta (ciasteczko `vizrs_live` panelu)
+    pub session: Option<String>,
+}
+
+/// Identyfikator sesji panelu: same litery i cyfry (panel daje 64 znaki szesnastkowe).
+pub fn valid_session(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 256 && s.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 /// Zapisane połączenia.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Saved {
-    /// (adres, token, jeśli zapamiętany)
-    pub servers: Vec<(String, Option<String>)>,
+    pub servers: Vec<Server>,
     /// adres, z którym okno łączy się przy uruchomieniu (bez `--connect`)
     pub auto: Option<String>,
 }
@@ -61,7 +78,15 @@ impl Saved {
                             .as_str()
                             .filter(|t| valid_token(t))
                             .map(str::to_string);
-                        Some((url, token))
+                        let session = s["session"]
+                            .as_str()
+                            .filter(|t| valid_session(t))
+                            .map(str::to_string);
+                        Some(Server {
+                            url,
+                            token,
+                            session,
+                        })
                     })
                     .take(MAX_SAVED)
                     .collect()
@@ -75,7 +100,7 @@ impl Saved {
         let servers: Vec<Value> = self
             .servers
             .iter()
-            .map(|(u, t)| json!({ "url": u, "token": t }))
+            .map(|s| json!({ "url": s.url, "token": s.token, "session": s.session }))
             .collect();
         serde_json::to_string_pretty(&json!({ "servers": servers, "auto": self.auto }))
             .unwrap_or_default()
@@ -88,7 +113,7 @@ impl Saved {
             .unwrap_or_default()
     }
 
-    /// Zapis z prawami tylko dla właściciela (plik może zawierać token).
+    /// Zapis z prawami tylko dla właściciela (plik może zawierać token i sesję).
     pub fn save(&self) -> Result<(), String> {
         let p = config_path().ok_or("brak katalogu konfiguracji użytkownika")?;
         if let Some(d) = p.parent() {
@@ -107,15 +132,17 @@ impl Saved {
             .map_err(|e| format!("{}: {e}", p.display()))
     }
 
-    /// Serwer na początek listy (ostatnio używany).
+    /// Serwer na początek listy (ostatnio używany); sesja konta zostaje.
     pub fn remember(&mut self, url: &str, token: Option<&str>, keep_token: bool, auto: bool) {
-        self.servers.retain(|(u, _)| u != url);
+        let session = self.session_for(url);
+        self.servers.retain(|s| s.url != url);
         self.servers.insert(
             0,
-            (
-                url.to_string(),
-                token.filter(|_| keep_token).map(str::to_string),
-            ),
+            Server {
+                url: url.to_string(),
+                token: token.filter(|_| keep_token).map(str::to_string),
+                session,
+            },
         );
         self.servers.truncate(MAX_SAVED);
         if auto {
@@ -126,7 +153,7 @@ impl Saved {
     }
 
     pub fn forget(&mut self, url: &str) {
-        self.servers.retain(|(u, _)| u != url);
+        self.servers.retain(|s| s.url != url);
         if self.auto.as_deref() == Some(url) {
             self.auto = None;
         }
@@ -135,8 +162,31 @@ impl Saved {
     pub fn token_for(&self, url: &str) -> Option<String> {
         self.servers
             .iter()
-            .find(|(u, _)| u == url)
-            .and_then(|(_, t)| t.clone())
+            .find(|s| s.url == url)
+            .and_then(|s| s.token.clone())
+    }
+
+    pub fn session_for(&self, url: &str) -> Option<String> {
+        self.servers
+            .iter()
+            .find(|s| s.url == url)
+            .and_then(|s| s.session.clone())
+    }
+
+    /// Sesja konta panelu `url` (z pośrednika: logowanie i wylogowanie na stronie). Panel spoza listy
+    /// (`--connect`) trafia na jej koniec, gdy jest sesja – inaczej po ponownym uruchomieniu logowanie wraca.
+    pub fn set_session(&mut self, url: &str, session: Option<&str>) {
+        let session = session.filter(|t| valid_session(t)).map(str::to_string);
+        let full = self.servers.len() >= MAX_SAVED;
+        match self.servers.iter_mut().find(|s| s.url == url) {
+            Some(s) => s.session = session,
+            None if session.is_some() && !full => self.servers.push(Server {
+                url: url.to_string(),
+                token: None,
+                session,
+            }),
+            None => {}
+        }
     }
 }
 
@@ -190,7 +240,7 @@ pub fn page_data(saved: &Saved, current: &str, current_token: Option<&str>) -> S
     let servers: Vec<Value> = saved
         .servers
         .iter()
-        .map(|(u, t)| json!({ "url": u, "hasToken": t.is_some() }))
+        .map(|s| json!({ "url": s.url, "hasToken": s.token.is_some(), "hasSession": s.session.is_some() }))
         .collect();
     let remote = !current.is_empty();
     let data = json!({
@@ -234,13 +284,36 @@ mod tests {
         s.remember("https://a", Some("t1"), true, true);
         s.remember("https://b", Some("t2"), false, false);
         s.remember("https://a", Some("t3"), true, false);
+        let pairs = |s: &Saved| {
+            s.servers
+                .iter()
+                .map(|x| (x.url.clone(), x.token.clone()))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            s.servers,
+            pairs(&s),
             vec![
                 ("https://a".into(), Some("t3".into())),
                 ("https://b".into(), None)
             ]
         );
+        // sesja konta: przeżywa ponowne połączenie i zapis, wylogowanie ją kasuje
+        s.set_session("https://a", Some("abc123"));
+        s.remember("https://a", None, false, false);
+        assert_eq!(s.session_for("https://a").as_deref(), Some("abc123"));
+        assert_eq!(
+            Saved::parse(&s.to_json())
+                .session_for("https://a")
+                .as_deref(),
+            Some("abc123")
+        );
+        s.set_session("https://a", Some("z ł a"));
+        assert_eq!(s.session_for("https://a"), None);
+        s.set_session("https://nieznany", None);
+        assert_eq!(s.servers.len(), 2);
+        s.set_session("https://nieznany", Some("abc"));
+        assert_eq!(s.servers.len(), 3);
+        s.forget("https://nieznany");
         assert_eq!(s.auto, None);
         s.remember("https://b", None, false, true);
         let back = Saved::parse(&s.to_json());
@@ -249,8 +322,13 @@ mod tests {
         assert_eq!(s.auto, None);
         assert_eq!(Saved::parse("{zły"), Saved::default());
         assert_eq!(
-            Saved::parse(r#"{"servers":[{"url":"https://x","token":"z ł y"}]}"#).servers,
-            vec![("https://x".into(), None)]
+            Saved::parse(r#"{"servers":[{"url":"https://x","token":"z ł y","session":"a b"}]}"#)
+                .servers,
+            vec![Server {
+                url: "https://x".into(),
+                token: None,
+                session: None
+            }]
         );
     }
 }

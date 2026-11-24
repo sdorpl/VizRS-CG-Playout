@@ -93,7 +93,7 @@ Przebieg łączy [LUKI.md](../LUKI.md) i punkty z §2–§3 w jedną kolejkę: n
 | K17 | Alarmy: banner, dźwięk, webhook (Vizrt I; webhook w CG) | K9, K14 | zrobione (panel + CG Playout 26.11.x) |
 | K18 | Podgląd kanału: HEVC w `mux.js`, dźwięk inny niż AAC – sprawdzić wykonalność (LUKI #21, G3) | – | zrobione (2026-11-09) |
 | K19 | Konta operatorów: login i hasło zamiast tokenu, konfiguracja z panelu (pierwsze konto kodem z logu, Użytkownicy, Moje konto, role admin/operator, sesje na wolumenie) | – | zrobione (2026-11-18, gałąź `live-ingest-new`) |
-| K20 | Okno AppImage logowane kontem (pośrednik z sesją konta zamiast `Bearer`) | K19 | do zrobienia |
+| K20 | Okno AppImage logowane kontem (pośrednik z sesją konta zamiast `Bearer`) | K19 | zrobione (2026-11-24, gałąź `k20-okno-konto`) |
 | K21 | Jedno konto w pakiecie (opcja): konta panelu logują do VizRS Trio i Artist (przełącznik w Użytkownicy, `/api/sso`, CG System `--panel-login`) | K19 | zrobione (2026-11-18, `live-ingest-new` + CG System `konta-panelu`) |
 
 **Poza przebiegiem** (wiersze zostają w LUKI):
@@ -172,6 +172,8 @@ Logowanie tokenem przez www jest uciążliwe; konfiguracja tylko z poziomu www, 
 
 ### K20 – okno AppImage z kontem
 Pośrednik okna (`desktop/src/proxy.rs`) dokleja dziś `Bearer <token>`. Z kontami: okno „Połącz z panelem” pyta o login i hasło, samo woła `POST /api/login`, trzyma identyfikator sesji (nie hasło) w `live-connections.json` i dokleja ciasteczko `vizrs_live`; 401 → okno połączenia. Token zostaje jako druga ścieżka.
+
+**Zrobione 2026-11-24 – odstępstwo od szkicu:** login i hasło wpisuje się na ekranie logowania panelu w oknie (ten sam co w przeglądarce: pierwsze konto, „Token awaryjny”), nie w oknie połączenia – pośrednik zatrzymuje `Set-Cookie: vizrs_live` u siebie, dokleja sesję (pierwszeństwo przed tokenem) i zapisuje ją w `live-connections.json`. 401 przy sesji = sesja zapomniana i ekran logowania panelu zamiast okna połączenia. Dzięki temu wylogowanie, zmiana konta i zakładanie pierwszego konta działają w oknie bez osobnego kodu. Okna natywne VizRS CG System (`vizrs-shell`) i Artist – dalej tokenem (K21, „Otwarte”).
 
 ### K21 – jedno konto w pakiecie (decyzja użytkownika 2026-11-18)
 „Pozwól na logowanie jednym kontem, ale jako opcję, a nie konieczność” → jedno konto w całym pakiecie: panel jest źródłem kont, VizRS CG System przyjmuje je opcjonalnie. Przełącznik w panelu (domyślnie wyłączony), adres panelu w compose (`VIZRS_PANEL_LOGIN`); Trio samo (OBS) bez zmian – token. Zamiast osobnych kont w CG System (dawny pomysł K21) – CG System nie trzyma haseł. Zrobione: DOKUMENTACJA §11 „Logowanie w pakiecie”, API.md §2 `/api/sso…`, CG System DOKUMENTACJA §12. Otwarte: okna natywne (`vizrs-shell`, Artist) dalej tokenem – razem z K20.

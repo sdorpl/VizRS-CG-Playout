@@ -1,13 +1,16 @@
 //! Pośrednik panelu zdalnego: serwer strony okna na `127.0.0.1` (losowy port). Każde żądanie strony idzie do panelu
-//! VizRS CG Playout z tokenem okna (`Authorization: Bearer …`), więc **token nie trafia do strony** (wzór: pośrednik
-//! VizRS CG Artist, `local::start_remote`). Dostęp tylko dla okna: sekret w pierwszym adresie → ciasteczko
+//! VizRS CG Playout z sesją konta (ciasteczko `vizrs_live`) albo z tokenem okna (`Authorization: Bearer …`), więc
+//! **ani token, ani identyfikator sesji nie trafiają do strony** (wzór: pośrednik VizRS CG Artist,
+//! `local::start_remote`). Sesję konta (K20) zakłada sama strona – ekranem logowania panelu: pośrednik zatrzymuje
+//! `Set-Cookie: vizrs_live=…` z odpowiedzi panelu u siebie i dokleja je do kolejnych żądań; zmianę (logowanie,
+//! wylogowanie) zgłasza programowi, który zapamiętuje sesję w `live-connections.json`. Dostęp tylko dla okna: sekret w pierwszym adresie → ciasteczko
 //! `HttpOnly`, kontrola `Host` (ochrona przed DNS rebinding) i `Origin`. Odpowiedzi idą strumieniem (podgląd HLS,
 //! odtwarzanie pliku z `Range`), bez buforowania całości.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ureq::http;
@@ -16,6 +19,8 @@ use ureq::http;
 const MAX_BODY: usize = 64 * 1024 * 1024;
 const MAX_HEAD: usize = 64 * 1024;
 const COOKIE: &str = "vizrs_desktop";
+/// Ciasteczko sesji konta panelu (`panel/server`, `COOKIE`).
+const SESSION: &str = "vizrs_live";
 /// Nagłówki żądania strony przekazywane do panelu (reszta – w tym ciasteczka – zostaje w oknie).
 const FORWARD_REQ: &[&str] = &[
     "accept",
@@ -102,17 +107,20 @@ fn agent(timeout: Option<Duration>) -> ureq::Agent {
         .into()
 }
 
-/// Przed przełączeniem okna: `GET /api/status` z tokenem – dostępność, token, czy to panel VizRS CG Playout.
-pub fn check(url: &str, token: Option<&str>) -> Result<(), String> {
-    let target = clean_target(url)?;
-    let mut b = http::Request::builder()
+/// `GET` z treścią JSON (do 1 MB): kod i obiekt (`None` – treść nie jest obiektem JSON).
+fn get_json(
+    target: &str,
+    path: &str,
+    auth: Auth<'_>,
+) -> Result<(u16, Option<serde_json::Value>), String> {
+    let b = http::Request::builder()
         .method("GET")
-        .uri(format!("{target}/api/status"))
+        .uri(format!("{target}{path}"))
         .header("Accept", "application/json");
-    if let Some(t) = token {
-        b = b.header("Authorization", format!("Bearer {t}"));
-    }
-    let req = b.body(()).map_err(|e| format!("{target}: {e}"))?;
+    let req = auth
+        .apply(b)
+        .body(())
+        .map_err(|e| format!("{target}: {e}"))?;
     let mut res = agent(Some(Duration::from_secs(8)))
         .run(req)
         .map_err(|e| format!("Brak połączenia z {target}: {e}"))?;
@@ -123,24 +131,101 @@ pub fn check(url: &str, token: Option<&str>) -> Result<(), String> {
         .limit(1024 * 1024)
         .read_to_vec()
         .unwrap_or_default();
-    match status {
-        200 if serde_json::from_slice::<serde_json::Value>(&body).is_ok_and(|v| v.is_object()) => {
-            Ok(())
+    let v = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .filter(|v| v.is_object());
+    Ok((status, v))
+}
+
+/// Czym pośrednik loguje się do panelu: sesja konta ma pierwszeństwo (token awaryjny wygrałby w panelu i strona
+/// nie pokazałaby konta), bez niej – token.
+#[derive(Clone, Copy)]
+struct Auth<'a> {
+    token: Option<&'a str>,
+    session: Option<&'a str>,
+}
+
+impl Auth<'_> {
+    fn apply(self, b: http::request::Builder) -> http::request::Builder {
+        match (self.session, self.token) {
+            (Some(s), _) => b.header("Cookie", format!("{SESSION}={s}")),
+            (None, Some(t)) => b.header("Authorization", format!("Bearer {t}")),
+            (None, None) => b,
         }
+    }
+}
+
+/// Przed przełączeniem okna: `GET /api/status` z sesją albo tokenem – dostępność, token, czy to panel VizRS CG
+/// Playout. Bez tokenu i bez ważnej sesji wystarczą konta w panelu (`GET /api/auth`): strona pokaże logowanie
+/// kontem albo zakładanie pierwszego konta.
+pub fn check(url: &str, token: Option<&str>, session: Option<&str>) -> Result<(), String> {
+    let target = clean_target(url)?;
+    let (status, v) = get_json(&target, "/api/status", Auth { token, session })?;
+    match status {
+        200 if v.is_some() => Ok(()),
         200 => Err(format!(
             "{target} odpowiada, ale to nie jest panel VizRS CG Playout"
         )),
-        401 => Err(if token.is_some() {
-            "Panel odrzucił token.".into()
-        } else {
-            "Panel wymaga tokenu.".into()
-        }),
+        401 if token.is_some() && session.is_none() => Err("Panel odrzucił token.".into()),
+        401 => {
+            let auth = get_json(
+                &target,
+                "/api/auth",
+                Auth {
+                    token: None,
+                    session: None,
+                },
+            )
+            .ok()
+            .and_then(|(_, v)| v)
+            .map(|v| v["result"].clone())
+            .unwrap_or_default();
+            if auth["accounts"].as_bool() == Some(true) || auth["setup"].as_bool() == Some(true) {
+                Ok(())
+            } else if token.is_some() {
+                Err("Panel odrzucił token.".into())
+            } else {
+                Err("Panel wymaga tokenu (konta operatorów są w nim wyłączone).".into())
+            }
+        }
         code => Err(format!("{target}: odpowiedź HTTP {code}")),
     }
 }
 
-/// Uruchamia pośrednika do panelu `url` z tokenem `token`.
-pub fn start(url: &str, token: Option<String>) -> Result<Proxy, String> {
+/// Zgłoszenie zmiany sesji konta (`None` – wylogowanie albo sesja wygasła).
+pub type OnSession = Box<dyn Fn(Option<String>) + Send + Sync>;
+
+/// Identyfikator sesji z `Set-Cookie` panelu: `Some(Some(id))` – nowa sesja, `Some(None)` – skasowana,
+/// `None` – nagłówek nie dotyczy sesji.
+fn session_from_set_cookie(v: &str) -> Option<Option<String>> {
+    let mut parts = v.split(';').map(str::trim);
+    let (k, val) = parts.next()?.split_once('=')?;
+    if k.trim() != SESSION {
+        return None;
+    }
+    let gone = val.is_empty()
+        || parts.any(|a| {
+            a.split_once('=').is_some_and(|(k, v)| {
+                k.trim().eq_ignore_ascii_case("max-age")
+                    && v.trim().parse::<i64>().is_ok_and(|n| n <= 0)
+            })
+        });
+    if gone {
+        return Some(None);
+    }
+    // identyfikator panelu: 64 znaki szesnastkowe; inne wartości – nie nasze, pomijamy
+    (val.len() <= 256 && val.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then(|| Some(val.to_string()))
+}
+
+/// Uruchamia pośrednika do panelu `url` z tokenem `token` i zapamiętaną sesją konta `session`;
+/// `on_session` dostaje każdą zmianę sesji (logowanie i wylogowanie na stronie).
+pub fn start(
+    url: &str,
+    token: Option<String>,
+    session: Option<String>,
+    on_session: Option<OnSession>,
+) -> Result<Proxy, String> {
     let target = clean_target(url)?;
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("pośrednik: {e}"))?;
     let port = listener
@@ -153,6 +238,8 @@ pub fn start(url: &str, token: Option<String>) -> Result<Proxy, String> {
     let ctx = Arc::new(Ctx {
         target,
         token,
+        session: Mutex::new(session),
+        on_session,
         secret: secret.clone(),
         host: format!("127.0.0.1:{port}"),
         agent: agent(None),
@@ -178,6 +265,8 @@ pub fn start(url: &str, token: Option<String>) -> Result<Proxy, String> {
 struct Ctx {
     target: String,
     token: Option<String>,
+    session: Mutex<Option<String>>,
+    on_session: Option<OnSession>,
     secret: String,
     host: String,
     agent: ureq::Agent,
@@ -351,9 +440,16 @@ fn forward(ctx: &Ctx, req: &Req, s: &mut TcpStream) -> Result<(), String> {
             b = b.header(*name, v);
         }
     }
-    if let Some(t) = &ctx.token {
-        b = b.header("Authorization", format!("Bearer {t}"));
+    let session = ctx
+        .session
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    b = Auth {
+        token: ctx.token.as_deref(),
+        session: session.as_deref(),
     }
+    .apply(b);
     let r = b.body(req.body.clone()).map_err(|e| e.to_string())?;
     let res = match ctx.agent.run(r) {
         Ok(res) => res,
@@ -363,6 +459,16 @@ fn forward(ctx: &Ctx, req: &Req, s: &mut TcpStream) -> Result<(), String> {
         }
     };
     let status = res.status().as_u16();
+    // sesja konta zostaje w pośredniku (strona nie dostaje Set-Cookie)
+    for v in res.headers().get_all("set-cookie") {
+        if let Some(new) = v.to_str().ok().and_then(session_from_set_cookie) {
+            set_session(ctx, new);
+        }
+    }
+    // sesja wygasła albo skasowana w panelu (np. zmiana hasła) – strona pokaże logowanie; bez sesji token
+    if status == 401 && session.is_some() {
+        set_session(ctx, None);
+    }
     let mut head = format!(
         "HTTP/1.1 {status} {}\r\nConnection: close\r\n",
         reason(status)
@@ -388,6 +494,20 @@ fn forward(ctx: &Ctx, req: &Req, s: &mut TcpStream) -> Result<(), String> {
             Err(e.to_string())
         }
     })
+}
+
+fn set_session(ctx: &Ctx, new: Option<String>) {
+    let changed = {
+        let mut g = ctx.session.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = *g != new;
+        *g = new.clone();
+        changed
+    };
+    if changed {
+        if let Some(f) = &ctx.on_session {
+            f(new);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -439,7 +559,13 @@ mod tests {
                 let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: x=1\r\nContent-Length: {}\r\n\r\n{body}", body.len());
             }
         });
-        let p = start(&format!("http://{paddr}"), Some("tok-123".into())).unwrap();
+        let p = start(
+            &format!("http://{paddr}"),
+            Some("tok-123".into()),
+            None,
+            None,
+        )
+        .unwrap();
         let host = p.base.trim_start_matches("http://").to_string();
         let get = |path: &str, extra: &str| {
             let mut c = TcpStream::connect(&host).unwrap();
@@ -477,5 +603,108 @@ mod tests {
         let mut out = String::new();
         c.read_to_string(&mut out).unwrap();
         assert!(out.starts_with("HTTP/1.1 403"), "obcy Host");
+    }
+
+    #[test]
+    fn session_cookie_parsing() {
+        let id = "ab".repeat(32);
+        assert_eq!(
+            session_from_set_cookie(&format!(
+                "vizrs_live={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200"
+            )),
+            Some(Some(id))
+        );
+        assert_eq!(
+            session_from_set_cookie("vizrs_live=; HttpOnly; Path=/; Max-Age=0"),
+            Some(None)
+        );
+        assert_eq!(
+            session_from_set_cookie("vizrs_live=x1; max-age=0"),
+            Some(None)
+        );
+        assert_eq!(session_from_set_cookie("inne=1; Path=/"), None);
+        assert_eq!(
+            session_from_set_cookie("vizrs_live=a;b"),
+            Some(Some("a".into()))
+        );
+        assert_eq!(session_from_set_cookie("vizrs_live=a\"b"), None);
+    }
+
+    /// K20: logowanie kontem na stronie – pośrednik trzyma sesję u siebie (strona nie widzi ciasteczka),
+    /// dokleja ją zamiast tokenu, zgłasza zmiany, a wylogowanie i 401 ją kasują.
+    #[test]
+    fn proxy_keeps_account_session() {
+        let id = "c0".repeat(32);
+        let panel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let paddr = panel.local_addr().unwrap();
+        let pid = id.clone();
+        std::thread::spawn(move || {
+            for c in panel.incoming().flatten() {
+                let mut c = c;
+                let mut buf = [0u8; 8192];
+                let n = c.read(&mut buf).unwrap_or(0);
+                let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                let low = text.to_lowercase();
+                let path = text.split(' ').nth(1).unwrap_or("").to_string();
+                let (code, cookie) = match path.as_str() {
+                    "/api/login" => (
+                        "200 OK",
+                        format!(
+                            "Set-Cookie: vizrs_live={pid}; HttpOnly; Path=/; Max-Age=43200\r\n"
+                        ),
+                    ),
+                    "/api/logout" => (
+                        "200 OK",
+                        "Set-Cookie: vizrs_live=; HttpOnly; Path=/; Max-Age=0\r\n".into(),
+                    ),
+                    "/api/expired" => ("401 Unauthorized", String::new()),
+                    _ => ("200 OK", String::new()),
+                };
+                let body = format!(
+                    "session={} bearer={}",
+                    low.contains(&format!("cookie: vizrs_live={pid}")),
+                    low.contains("authorization: bearer")
+                );
+                let _ = write!(c, "HTTP/1.1 {code}\r\nContent-Type: text/plain\r\n{cookie}Content-Length: {}\r\n\r\n{body}", body.len());
+            }
+        });
+        let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+        let s2 = seen.clone();
+        let p = start(
+            &format!("http://{paddr}"),
+            Some("tok-123".into()),
+            None,
+            Some(Box::new(move |s| s2.lock().unwrap().push(s))),
+        )
+        .unwrap();
+        let host = p.base.trim_start_matches("http://").to_string();
+        let ck = format!("Cookie: {COOKIE}={}\r\n", p.secret);
+        let call = |method: &str, path: &str| {
+            let mut c = TcpStream::connect(&host).unwrap();
+            write!(
+                c,
+                "{method} {path} HTTP/1.1\r\nHost: {host}\r\n{ck}Content-Length: 0\r\n\r\n"
+            )
+            .unwrap();
+            let mut out = String::new();
+            c.read_to_string(&mut out).unwrap();
+            out
+        };
+        assert!(call("GET", "/api/status").contains("session=false bearer=true"));
+        let l = call("POST", "/api/login");
+        assert!(
+            !l.to_lowercase().contains("set-cookie"),
+            "strona nie dostaje sesji: {l}"
+        );
+        assert!(call("GET", "/api/status").contains("session=true bearer=false"));
+        call("POST", "/api/logout");
+        assert!(call("GET", "/api/status").contains("session=false bearer=true"));
+        call("POST", "/api/login");
+        assert!(call("GET", "/api/expired").starts_with("HTTP/1.1 401"));
+        assert!(call("GET", "/api/status").contains("session=false bearer=true"));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![Some(id.clone()), None, Some(id), None]
+        );
     }
 }

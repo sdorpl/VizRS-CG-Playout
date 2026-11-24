@@ -23,7 +23,17 @@ pub(crate) fn use_remote(
     url: String,
     token: Option<String>,
 ) -> Result<(), String> {
-    let p = proxy::start(&url, token)?;
+    // sesja konta (K20): zapamiętana dla tego panelu; logowanie i wylogowanie na stronie trafiają do listy paneli
+    let session = connect::Saved::load().session_for(&url);
+    let u = url.clone();
+    let on_session: proxy::OnSession = Box::new(move |s| {
+        let mut saved = connect::Saved::load();
+        saved.set_session(&u, s.as_deref());
+        if let Err(e) = saved.save() {
+            eprintln!("zapis sesji konta: {e}");
+        }
+    });
+    let p = proxy::start(&url, token, session, Some(on_session))?;
     let mut a = state(app);
     a.mode = Mode::Remote { url, proxy: p };
     Ok(())

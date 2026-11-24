@@ -4,7 +4,7 @@
 //!
 //! Natywna aplikacja sterowania: klient panelu działającego na serwerze w stosie (np. VPS, studio). Strona to ten
 //! sam panel co w przeglądarce (serwuje go `vizrs-live` na serwerze); okno łączy się z nim przez pośrednika na
-//! `127.0.0.1` (`proxy`), który dokleja token – strona go nie zna. Okno niczego nie uruchamia lokalnie: panel bez
+//! `127.0.0.1` (`proxy`), który dokleja sesję konta albo token – strona ich nie zna. Okno niczego nie uruchamia lokalnie: panel bez
 //! ErsatzTV i jego mostu nie ma czym sterować. Bez zapisanego panelu „przy uruchomieniu” – okno „Połącz z panelem”.
 //!
 //! Strona nie ma dostępu do systemu – tylko komunikaty z białej listy (`bridge`) przez komendę `ipc`, i tylko
@@ -72,6 +72,7 @@ Użycie: vizrs-live-desktop [connect] [opcje]
 Klient panelu na serwerze. Bez opcji: zapisany panel „przy uruchomieniu”, a bez niego okno „Połącz z panelem”.
 
   connect         najpierw okno „Połącz z panelem” (adres i token panelu, lista zapisanych)
+                  Bez tokenu: logowanie kontem operatora w oknie panelu, sesja zapamiętana na tym komputerze.
   --connect URL   panel na serwerze, np. https://live.example.pl albo http://serwer:8090 (VIZRS_LIVE_CONNECT)
   --token T       token panelu (VIZRS_LIVE_TOKEN) – zostaje w programie, strona go nie dostaje
   --probe JS --probe-out JSON   narzędzie testowe: po wczytaniu strony wykonaj skrypt, zapisz wynik, zakończ
@@ -134,7 +135,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 /// Gdzie pracuje okno.
 enum Mode {
-    /// panel na serwerze przez pośrednika z tokenem
+    /// panel na serwerze przez pośrednika z sesją konta albo tokenem
     Remote { url: String, proxy: proxy::Proxy },
     /// przed wyborem (okno połączenia)
     None,

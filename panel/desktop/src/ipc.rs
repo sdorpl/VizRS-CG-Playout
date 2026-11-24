@@ -22,12 +22,20 @@ pub(crate) fn on_conn(app: &AppHandle, body: &str) {
             }
         }
         connect::Msg::Connect(mut req) => {
-            if req.token.is_none() {
-                req.token = connect::Saved::load().token_for(&req.url);
+            let mut saved = connect::Saved::load();
+            if req.token.is_some() {
+                // wpisany token = logowanie tokenem: zapamiętana sesja konta miałaby pierwszeństwo
+                saved.set_session(&req.url, None);
+                if let Err(e) = saved.save() {
+                    eprintln!("zapis listy paneli: {e}");
+                }
+            } else {
+                req.token = saved.token_for(&req.url);
             }
+            let session = saved.session_for(&req.url);
             let app = app.clone();
             std::thread::spawn(move || {
-                let err = proxy::check(&req.url, req.token.as_deref()).err();
+                let err = proxy::check(&req.url, req.token.as_deref(), session.as_deref()).err();
                 let app2 = app.clone();
                 let _ = app.run_on_main_thread(move || on_checked(&app2, req, err));
             });
