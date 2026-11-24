@@ -84,7 +84,7 @@ namespace VizRS.Bridge
         private const int MaxBody = 1 << 20;
         private const int MaxUpload = 10 << 20;
         private static readonly string[] UploadKinds = ["Logo", "Watermark"];
-        public const string Version = "26.11.27";
+        public const string Version = "26.11.28";
 
         private readonly RequestDelegate _next;
         private readonly byte[]? _token;
