@@ -4,8 +4,12 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.30 (2026-11-24)
+
+- **Renderer natywny z VizRS CG System 26.11.13** (`VIZRS_REF`): strony z ruchem `node.motion` (presety wejścia i wyjścia 2D) i obrazami WebP rysuje `vizrs-render` zamiast Chromium – mniej CPU na kanale. Odwrócenia 3D, maska ukośna, żaluzja, glitch, RGB, efekty tekstu, pętle i tło – dalej Chromium (`renderer: auto`).
 - **Zdarzenia wtórne: jedna pozycja i ścieżka pliku.** Cel reguły może być konkretną pozycją ramówki (`target.start` – kanał i start pozycji) albo wzorcem ścieżki pliku (`target.path`, np. folder kolekcji) – zamiast kolekcji i ID pozycji, których ErsatzTV nie podaje sidecarowi. Karta pozycji ma „Zdarzenie: tylko ta pozycja” i „…każda emisja tytułu”; ta sama karta otwiera się teraz także z tabeli najbliższych pozycji w Playoutach.
 - **Zatwierdza tylko administrator.** „Zatwierdź” przy zdarzeniach wtórnych widzi administrator panelu; serwer panelu odrzuca (403) nowe albo przeniesione zatwierdzenia w zapisie od operatora.
+
 ## 26.11.29 (2026-11-24)
 
 - **Symbol `{next_start_iso}` (i `{next2_start_iso}`) – odliczanie do następnej audycji.** Start następnego programu jako czas UTC (`2026-11-02T19:00:00Z`) do pola `target` zegara VizRS w trybie `target`, np. „Za chwilę · 02:15” (PLAN-za-chwile Z4). W edytorze komend panelu na liście symboli. DOKUMENTACJA §3.

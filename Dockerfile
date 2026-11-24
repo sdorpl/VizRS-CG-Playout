@@ -68,7 +68,7 @@ RUN RUSTFLAGS="$(cat /rust-opts)" cargo build --release --locked --target "$(cat
     && mkdir -p /client \
     && cp "target/$(cat /target-musl)/release/vizrs-etv-client" "target/$(cat /target-musl)/release/vizrs-ffmpeg" /client/
 
-ARG VIZRS_REF=v26.11.11
+ARG VIZRS_REF=v26.11.13
 RUN git clone --depth 1 --branch "$VIZRS_REF" https://github.com/sdorpl/VizRS-CG-System.git /vizrs \
     && cd /vizrs/source/render \
     && RUSTFLAGS="$(cat /rust-opts)" cargo build --release --locked --target "$(cat /target)" \
