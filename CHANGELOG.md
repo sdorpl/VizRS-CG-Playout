@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.29 (2026-11-24)
+
 - **Symbol `{next_start_iso}` (i `{next2_start_iso}`) – odliczanie do następnej audycji.** Start następnego programu jako czas UTC (`2026-11-02T19:00:00Z`) do pola `target` zegara VizRS w trybie `target`, np. „Za chwilę · 02:15” (PLAN-za-chwile Z4). W edytorze komend panelu na liście symboli. DOKUMENTACJA §3.
 - **Zdarzenia wtórne (K15) z ważnością i zatwierdzaniem (K16).** Nowa lista reguł `secondary` w regułach grafiki: strony VizRS w zaplanowanych chwilach pozycji wybranych po tytule audycji albo pozycji – kilka zdarzeń na pozycję (np. belka 10 s po starcie, „Za chwilę” 30 s przed końcem), każde z czasem na antenie i polami strony. Reguła i zdarzenie mogą mieć daty ważności i wymagać zatwierdzenia (promo) – niezatwierdzone i poza datami nie wchodzą. Panel: „Zdarzenia wtórne” w Grafice kanału (oś pozycji, zatwierdzanie, filtr czekających i wygasających) i karta pozycji w Przewodniku EPG z „Dodaj zdarzenie”. Cel `collection`/`item_id` z kontraktu odrzucany – ErsatzTV nie podaje ich sidecarowi. Cechy `events`, `approval` w `/api/live/state`. DOKUMENTACJA §3, §12; API.md §1.
 - **Zapis reguł grafiki z panelu nie kasuje zdarzeń wtórnych**, a linia „teraz” w Przewodniku EPG nie zasłania kliknięcia w bieżącą pozycję.

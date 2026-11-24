@@ -88,12 +88,12 @@ Przebieg łączy [LUKI.md](../LUKI.md) i punkty z §2–§3 w jedną kolejkę: n
 | K12 | Warstwy i strony VizRS na antenie w karcie kanału (LUKI #22, Vizrt D; CG) | – | zrobione (panel + CG Playout 26.11.x) |
 | K13 | Ręczne TAKE / CONTINUE / OUT pojedynczej strony (Vizrt H; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
 | K14 | Dziennik emisji (as-run) z eksportem CSV (Vizrt C; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
-| K15 | Zdarzenia wtórne przypięte do audycji/kolekcji, oś pozycji z grafiką (Vizrt A; CG) | K12 | zrobione (2026-11-24, gałąź `k15-k16-zdarzenia`; cel tylko po tytule – niżej) |
-| K16 | Ważność (od–do) i zatwierdzanie stron promo (Vizrt G; CG) | K15 | zrobione (2026-11-24, gałąź `k15-k16-zdarzenia`) |
+| K15 | Zdarzenia wtórne przypięte do audycji/kolekcji, oś pozycji z grafiką (Vizrt A; CG) | K12 | zrobione (2026-11-24, wydane w 26.11.29; cel tylko po tytule – niżej) |
+| K16 | Ważność (od–do) i zatwierdzanie stron promo (Vizrt G; CG) | K15 | zrobione (2026-11-24, wydane w 26.11.29) |
 | K17 | Alarmy: banner, dźwięk, webhook (Vizrt I; webhook w CG) | K9, K14 | zrobione (panel + CG Playout 26.11.x) |
 | K18 | Podgląd kanału: HEVC w `mux.js`, dźwięk inny niż AAC – sprawdzić wykonalność (LUKI #21, G3) | – | zrobione (2026-11-09) |
 | K19 | Konta operatorów: login i hasło zamiast tokenu, konfiguracja z panelu (pierwsze konto kodem z logu, Użytkownicy, Moje konto, role admin/operator, sesje na wolumenie) | – | zrobione (2026-11-18, gałąź `live-ingest-new`) |
-| K20 | Okno AppImage logowane kontem (pośrednik z sesją konta zamiast `Bearer`) | K19 | zrobione (2026-11-24, gałąź `k20-okno-konto`) |
+| K20 | Okno AppImage logowane kontem (pośrednik z sesją konta zamiast `Bearer`) | K19 | zrobione (2026-11-24, wydane w 26.11.29) |
 | K21 | Jedno konto w pakiecie (opcja): konta panelu logują do VizRS Trio i Artist (przełącznik w Użytkownicy, `/api/sso`, CG System `--panel-login`) | K19 | zrobione (2026-11-18, `live-ingest-new` + CG System `konta-panelu`) |
 
 **Poza przebiegiem** (wiersze zostają w LUKI):
