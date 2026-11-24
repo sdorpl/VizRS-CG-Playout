@@ -1735,6 +1735,9 @@ function check(cond, msg) {
   const secRules = CG.graphics.rules.secondary;
   check(secRules.length === 1 && secRules[0].approved?.by && secRules[0].events[0].page === '1001' && secRules[0].events[0].duration_s === 8 && CG.graphics.rules.on_clip !== undefined,
     'zdarzenia wtórne: zatwierdzenie zapisane w CG Playout (kto, kiedy), reszta reguł bez zmian');
+  // z powrotem na Sloty na żywo – na nich dalsze testy (ciasteczka YouTube)
+  await page.goto(`${BASE}/#live`);
+  await page.waitForSelector('button:has-text("Ciasteczka YouTube…")');
 
   // ciasteczka YouTube dla yt-dlp (CG Playout z „youtube_cookies” w features)
   await page.click('button:has-text("Ciasteczka YouTube…")');
