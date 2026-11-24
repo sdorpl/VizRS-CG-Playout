@@ -31,14 +31,21 @@ export function ruleState(r, day = localDay()) {
 const evOn = (e, day) => e.approved !== null && !(e.valid_from && e.valid_from > day) && !(e.valid_to && e.valid_to < day);
 const regex = (src) => { try { return src ? new RegExp(src, 'i') : null; } catch { return undefined; } };
 
-/** Zdarzenia reguł pasujących do pozycji (kanał, tytuł; panel nie zna show_title – oba wzorce na tytule). */
-export function eventsFor(rules, channel, title, day = localDay()) {
+/**
+ * Zdarzenia reguł pasujących do pozycji (kanał, tytuł, start; panel nie zna show_title – wzorce tytułów na tytule).
+ * Reguły ze wzorcem ścieżki pliku pomija (legacy nie podaje ścieżki pozycji) – liczy je w `skipped`.
+ */
+export function eventsFor(rules, channel, title, day = localDay(), start = null) {
   const out = [];
+  out.skipped = 0;
   for (const r of rules || []) {
     if (r.channel && String(r.channel) !== String(channel)) continue;
     const t = r.target || {};
+    if (t.start && (start == null || Math.abs(Date.parse(t.start) - start) > 2000)) continue;
+    if (t.path) { out.skipped++; continue; }
     const pats = [t.show_title, t.title].filter(Boolean).map(regex);
-    if (!pats.length || pats.some((p) => !p || !p.test(title))) continue;
+    if (!pats.length && !t.start) continue;
+    if (pats.some((p) => !p || !p.test(title))) continue;
     const st = ruleState(r, day);
     for (const e of r.events || []) out.push({ rule: r, ev: e, on: st.on && evOn(e, day) });
   }
@@ -84,7 +91,7 @@ export async function itemCard(it, channel) {
   if (S.status?.cg) doc = await api('/api/cg/live/graphics').then((r) => r.result).catch(() => null);
   const state = S.status?.cg ? await api('/api/cg/live/state').then((r) => r.result).catch(() => null) : null;
   const feat = (state?.features || []).includes('events');
-  const list = feat && doc ? eventsFor(doc.rules?.secondary, channel, it.Title || '', localDay(new Date(s))) : [];
+  const list = feat && doc ? eventsFor(doc.rules?.secondary, channel, it.Title || '', localDay(new Date(s)), s) : [];
   const hm = (t) => new Date(t).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
   const body = h('div', { 'data-item-card': '' },
     h('p', null, h('b', null, it.Title || '—'), ` · kanał ${channel} · ${hm(s)}–${hm(e)} (${Math.round((e - s) / 60e3)} min)`),
@@ -92,10 +99,14 @@ export async function itemCard(it, channel) {
       : list.length ? [axis(list, (e - s) / 1000),
         h('ul', { class: 'se-list' }, list.map((x) => h('li', null, h('b', null, `strona ${x.ev.page}`), ` – ${when(x.ev)} · ${x.rule.name || 'reguła bez nazwy'}`, x.on ? null : [' ', pill('nie wchodzi', 'warn')])))]
         : h('p', { class: 'dim' }, 'Żadna reguła zdarzeń wtórnych nie pasuje do tej pozycji.'),
+    list.skipped ? h('p', { class: 'dim' }, `Reguły po ścieżce pliku (${list.skipped}) – nie sprawdzone tutaj, legacy nie podaje ścieżki pozycji.`) : null,
     feat ? h('p', { class: 'hint' }, 'Wzorce reguł panel sprawdza na tytule pozycji; CG Playout porównuje „show_title” z tytułem audycji (serialu) – przy odcinkach wynik może się różnić.') : null);
-  const v = await dialog('Pozycja ramówki', body, feat ? [['Dodaj zdarzenie', 'add', 'acc'], ['Zamknij', false]] : [['Zamknij', false]]);
-  if (v === 'add') {
-    PREFILL = { name: it.Title || '', channel: String(channel), title: '^' + escapeRe(it.Title || '') + '$' };
+  const v = await dialog('Pozycja ramówki', body, feat
+    ? [['Zdarzenie: tylko ta pozycja', 'one'], ['Zdarzenie: każda emisja tytułu', 'add', 'acc'], ['Zamknij', false]] : [['Zamknij', false]]);
+  if (v === 'add' || v === 'one') {
+    PREFILL = v === 'one'
+      ? { name: `${it.Title || ''} · ${hm(s)}`, channel: String(channel), start: new Date(s).toISOString() }
+      : { name: it.Title || '', channel: String(channel), title: '^' + escapeRe(it.Title || '') + '$' };
     if (location.hash === '#grafika') route(true); else location.hash = '#grafika';
   }
 }
@@ -123,6 +134,8 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
       'Ta wersja VizRS CG Playout nie ma zdarzeń wtórnych (brak „events” w features stanu /api/live/state) – zaktualizuj CG Playout (≥ 26.11.29).'));
   }
   const approval = features.includes('approval');
+  // K16: zatwierdza administrator (panel bez kont i token awaryjny = administrator); serwer panelu pilnuje tego samego
+  const canApprove = !S.auth?.user || S.auth.user.role === 'admin';
   const day = localDay();
   const rules = (doc.rules?.secondary || []).map((r) => structuredClone(r));
   const cards = [];
@@ -152,6 +165,8 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
     ch.value = r.channel || '';
     const show = h('input', { id: id('show'), class: 'mono', value: r.target?.show_title || '', placeholder: 'np. ^Wiadomości', 'aria-label': `Tytuł audycji (regex) ${i + 1}` });
     const title = h('input', { id: id('title'), class: 'mono', value: r.target?.title || '', placeholder: 'np. Sport', 'aria-label': `Tytuł pozycji (regex) ${i + 1}` });
+    const path = h('input', { id: id('path'), class: 'mono', value: r.target?.path || '', placeholder: 'np. /media/seriale/', 'aria-label': `Ścieżka pliku (regex) ${i + 1}` });
+    const start = h('input', { id: id('start'), class: 'mono', value: r.target?.start || '', placeholder: 'puste = każda pasująca pozycja', 'aria-label': `Tylko pozycja o starcie ${i + 1}` });
     const from = h('input', { id: id('from'), type: 'date', value: r.valid_from || '', 'aria-label': `Ważna od ${i + 1}` });
     const to = h('input', { id: id('to'), type: 'date', value: r.valid_to || '', 'aria-label': `Ważna do ${i + 1}` });
     // zatwierdzanie: brak klucza = bez zatwierdzania, null = czeka, {by, at} = zatwierdzona
@@ -163,11 +178,13 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
         kids.push(h('span', { class: 'dim' }, 'bez zatwierdzania'), btn('Wymagaj zatwierdzenia', () => { approved = null; redraw(); }));
       } else if (approved === null) {
         kids.push(pill('czeka na zatwierdzenie', 'warn'),
-          btn('Zatwierdź', () => { approved = { by: S.auth?.user?.name || 'operator', at: new Date().toISOString() }; redraw(); }, 'acc'),
+          canApprove ? btn('Zatwierdź', () => { approved = { by: S.auth?.user?.name || 'administrator', at: new Date().toISOString() }; redraw(); }, 'acc')
+            : h('span', { class: 'dim' }, 'zatwierdza administrator'),
           btn('Bez zatwierdzania', () => { approved = undefined; redraw(); }));
       } else {
         kids.push(pill(`zatwierdził ${approved.by}${approved.at ? ' · ' + new Date(approved.at).toLocaleString('pl-PL') : ''}`, 'ok'),
           btn('Cofnij zatwierdzenie', () => { approved = null; redraw(); }));
+        if (!canApprove) kids.push(h('span', { class: 'dim' }, 'zmiana treści cofnie zatwierdzenie – ponownie zatwierdzi administrator'));
       }
       apprBox.replaceChildren(...kids);
     };
@@ -211,6 +228,8 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
       if (ch.value) o.channel = ch.value;
       if (show.value.trim()) o.target.show_title = show.value.trim();
       if (title.value.trim()) o.target.title = title.value.trim();
+      if (path.value.trim()) o.target.path = path.value.trim();
+      if (start.value.trim()) o.target.start = start.value.trim();
       if (from.value) o.valid_from = from.value;
       if (to.value) o.valid_to = to.value;
       if (approved !== undefined) o.approved = approved;
@@ -219,8 +238,10 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
     c.read = (n) => {
       const where = `Reguła ${n} („${name.value.trim() || 'bez nazwy'}”)`;
       const o = c.snapshot();
-      if (!o.target.show_title && !o.target.title) throw new Error(`${where}: podaj tytuł audycji albo pozycji (regex)`);
-      for (const [k, v] of Object.entries(o.target)) if (regex(v) === undefined) throw new Error(`${where}: „${v}” to nie jest poprawne wyrażenie regularne (${k})`);
+      if (!o.target.show_title && !o.target.title && !o.target.path && !o.target.start) throw new Error(`${where}: podaj tytuł audycji albo pozycji, ścieżkę pliku albo start pozycji`);
+      for (const [k, v] of Object.entries(o.target)) if (k !== 'start' && regex(v) === undefined) throw new Error(`${where}: „${v}” to nie jest poprawne wyrażenie regularne (${k})`);
+      if (o.target.start && Number.isNaN(Date.parse(o.target.start))) throw new Error(`${where}: start pozycji jako data i godzina ISO (np. 2026-11-24T20:00:00Z)`);
+      if (o.target.start && !o.channel) throw new Error(`${where}: reguła jednej pozycji wymaga kanału`);
       const evs = c.events.filter((x) => !x.removed);
       if (!evs.length) throw new Error(`${where}: dodaj co najmniej jedno zdarzenie`);
       o.events = evs.map((x, j) => x.read(`${where}, zdarzenie ${j + 1}`));
@@ -237,12 +258,13 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
       drawApproval();
       const snap = c.snapshot();
       const st = ruleState(snap, day);
-      titleEl.textContent = snap.name || (snap.target.show_title ? `audycja ~ ${snap.target.show_title}` : snap.target.title ? `pozycja ~ ${snap.target.title}` : 'nowa reguła');
+      titleEl.textContent = snap.name || (snap.target.start ? `pozycja ${new Date(snap.target.start).toLocaleString('pl-PL')}` : snap.target.show_title ? `audycja ~ ${snap.target.show_title}`
+        : snap.target.title ? `pozycja ~ ${snap.target.title}` : snap.target.path ? `plik ~ ${snap.target.path}` : 'nowa reguła');
       stateBox.replaceChildren(...st.pills.map(([t, k]) => pill(t, k)), ...(st.on ? [] : [pill('nie wchodzi', 'warn')]));
       axisBox.replaceChildren(axis(snap.events.map((ev) => ({ ev, on: st.on && evOn(ev, day) })), null));
       applyFilter();
     };
-    for (const x of [name, ch, show, title, from, to]) { x.addEventListener('input', redraw); x.addEventListener('change', redraw); }
+    for (const x of [name, ch, show, title, path, start, from, to]) { x.addEventListener('input', redraw); x.addEventListener('change', redraw); }
     (r.events || []).forEach((e, j) => evBox.append(evRow(e, j)));
     const rm = h('button', { type: 'button', class: 'danger', 'aria-label': `Usuń regułę zdarzeń ${i + 1}`, onclick: (ev) => { ev.preventDefault(); c.removed = true; c.el.remove(); } }, 'Usuń');
     c.el = h('details', { class: 'rule-card', open: open || undefined, 'data-se-rule': String(i) },
@@ -252,6 +274,8 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
         h('label', { for: id('channel') }, 'Kanał'), ch,
         h('label', { for: id('show') }, 'Tytuł audycji (regex)'), show,
         h('label', { for: id('title') }, 'Tytuł pozycji (regex)'), title,
+        h('label', { for: id('path') }, 'Ścieżka pliku (regex)'), path,
+        h('label', { for: id('start') }, 'Tylko pozycja o starcie'), start,
         approval ? [h('label', { for: id('from') }, 'Ważna od'), from, h('label', { for: id('to') }, 'Ważna do'), to, h('label', null, 'Zatwierdzenie'), apprBox] : null),
       h('h4', null, 'Zdarzenia'), evBox,
       h('div', { class: 'bar' }, btn('+ Zdarzenie', () => { evBox.append(evRow({ anchor: 'start', offset_s: 10, duration_s: 10 }, c.events.length)); redraw(); })),
@@ -264,7 +288,7 @@ export function secondaryPanel(doc, pages, cgChannels, features) {
   rules.forEach((r, i) => box.append(card(r, i)));
   if (PREFILL) {
     const p = PREFILL; PREFILL = null;
-    box.append(card({ name: p.name, channel: p.channel, target: { title: p.title }, events: [{ page: pages.keys().next().value ?? '', anchor: 'start', offset_s: 10, duration_s: 10 }] }, cards.length, true));
+    box.append(card({ name: p.name, channel: p.channel, target: p.start ? { start: p.start } : { title: p.title }, events: [{ page: pages.keys().next().value ?? '', anchor: 'start', offset_s: 10, duration_s: 10 }] }, cards.length, true));
     setTimeout(() => box.lastElementChild?.scrollIntoView({ block: 'center' }), 0);
   }
 

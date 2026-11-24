@@ -37,6 +37,27 @@ impl Value {
             _ => None,
         }
     }
+    /// Postać kanoniczna do porównań (klucze obiektów posortowane, bez odstępów); nie do wysyłania.
+    pub fn canon(&self) -> String {
+        match self {
+            Value::Null => "null".into(),
+            Value::Bool(b) => b.to_string(),
+            Value::Num(n) => format!("{n}"),
+            Value::Str(s) => format!("{s:?}"),
+            Value::Arr(a) => format!(
+                "[{}]",
+                a.iter().map(Value::canon).collect::<Vec<_>>().join(",")
+            ),
+            Value::Obj(m) => {
+                let mut kv: Vec<_> = m
+                    .iter()
+                    .map(|(k, v)| format!("{k:?}:{}", v.canon()))
+                    .collect();
+                kv.sort();
+                format!("{{{}}}", kv.join(","))
+            }
+        }
+    }
 }
 
 const MAX_DEPTH: usize = 64;

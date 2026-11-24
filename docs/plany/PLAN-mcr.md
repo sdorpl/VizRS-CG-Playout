@@ -163,7 +163,7 @@ Dziś reguły grafiki są ogólne (każda pozycja, przerwa, slot). Dodać reguł
 ### K16 – ważność i zatwierdzanie stron promo (CG)
 Reguła/zdarzenie dostaje `valid_from`, `valid_to` i `approved` (kto, kiedy); CG pomija niezatwierdzone i przeterminowane. Panel: pigułki „czeka na zatwierdzenie” / „wygasa jutro”, filtr. Wzór: VCB 5.4.
 
-**Zrobione 2026-11-24:** brak klucza `approved` = bez zatwierdzania (zwykłe zdarzenia nie wymagają klikania), `null` = czeka, `{by, at}` = zatwierdzone; daty – data lokalna startu pozycji. Panel: zatwierdza konto zalogowanego operatora; zmiana treści zatwierdzonej reguły cofa zatwierdzenie. Bez ról („kto może zatwierdzać”) – zatwierdza każdy operator.
+**Zrobione 2026-11-24:** brak klucza `approved` = bez zatwierdzania (zwykłe zdarzenia nie wymagają klikania), `null` = czeka, `{by, at}` = zatwierdzone; daty – data lokalna startu pozycji. Panel: zatwierdza konto zalogowanego operatora; zmiana treści zatwierdzonej reguły cofa zatwierdzenie. Od 26.11.30 zatwierdza tylko administrator (UI i strażnik w serwerze panelu); cel `path`/`start` zamiast kolekcji i ID pozycji; karta pozycji także w Playoutach.
 
 ### K17 – alarmy
 Panel (przeglądarka): banner i opcjonalny dźwięk, gdy K9 znajdzie błąd w najbliższych 15 min, slot LIVE bez sygnału, emisja kanału zatrzymana, grafika zdjęta > N min. Webhook (poza przeglądarką) – w CG Playout, który ma pętlę zdarzeń; opcja `VIZRS_ALERT_WEBHOOK` po stronie CG, źródło zdarzeń z K14.

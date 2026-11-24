@@ -225,6 +225,17 @@ pub(crate) fn route(app: &App, req: &Request) -> Response {
         ("GET", p) if p.starts_with("/api/cg/live/thumbs/") => {
             cg_thumb(app, &p["/api/cg/live/thumbs/".len()..])
         }
+        // K16: operator nie zatwierdza zdarzeń wtórnych – tylko administrator (token = administrator)
+        ("PUT", "/api/cg/live/graphics") if !who.admin() => guard_approvals(app, &req.body)
+            .unwrap_or_else(|| {
+                cg_proxy(
+                    app,
+                    "PUT",
+                    "live/graphics",
+                    &req.body,
+                    &operator_for(&who.user, req.header("x-operator")),
+                )
+            }),
         (m, p) if p.starts_with("/api/cg/") => cg_proxy(
             app,
             m,

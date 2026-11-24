@@ -1296,4 +1296,40 @@ mod tests {
         )
         .is_err());
     }
+
+    /// K16: operator nie dopisuje ani nie przenosi zatwierdzeń zdarzeń wtórnych; cofnąć i usunąć może.
+    #[test]
+    fn approvals_only_from_admin() {
+        let list = |t: &str| json::parse(t).unwrap().arr().to_vec();
+        let ok = r#"{"by":"ola","at":"2026-11-24T10:00:00Z"}"#;
+        let rule = |appr: &str, page: &str| {
+            format!(
+                r#"{{"name":"x","target":{{"title":"A"}},"events":[{{"page":"{page}","duration_s":5}}],"approved":{appr}}}"#
+            )
+        };
+        let old = list(&format!("[{}]", rule(ok, "1")));
+        // bez zmian, inna nazwa, cofnięcie, usunięcie – wolno
+        assert!(proxy::approvals_kept(&old, &old).is_ok());
+        assert!(proxy::approvals_kept(
+            &old,
+            &list(&format!("[{}]", rule(ok, "1").replace("\"x\"", "\"y\"")))
+        )
+        .is_ok());
+        assert!(proxy::approvals_kept(&old, &list(&format!("[{}]", rule("null", "1")))).is_ok());
+        assert!(proxy::approvals_kept(&old, &[]).is_ok());
+        // nowe zatwierdzenie, zmieniona treść zatwierdzonej reguły, podrobione „by” – nie
+        assert!(proxy::approvals_kept(&list(&format!("[{}]", rule("null", "1"))), &old).is_err());
+        assert!(proxy::approvals_kept(&old, &list(&format!("[{}]", rule(ok, "2")))).is_err());
+        assert!(proxy::approvals_kept(
+            &old,
+            &list(&format!("[{}]", rule(&ok.replace("ola", "jan"), "1")))
+        )
+        .is_err());
+        // zatwierdzenie pojedynczego zdarzenia też
+        let ev = list(
+            r#"[{"target":{"title":"A"},"events":[{"page":"1","duration_s":5,"approved":{"by":"x","at":""}}]}]"#,
+        );
+        assert!(proxy::approvals_kept(&[], &ev).is_err());
+        assert!(proxy::approvals_kept(&ev, &ev).is_ok());
+    }
 }

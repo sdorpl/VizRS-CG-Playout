@@ -787,7 +787,14 @@ impl ChannelEvents {
         }
         let start = time::parse_iso(&ctx.start).unwrap_or_else(time::now_ms);
         let day = crate::sys::local_date(start).unwrap_or_default();
-        for planned in rules.secondary.plan(&ctx.show_title, &ctx.title, &day) {
+        let item = crate::secondary::Item {
+            show_title: &ctx.show_title,
+            title: &ctx.title,
+            source: &ctx.source,
+            start: time::parse_iso(&ctx.start),
+            day: &day,
+        };
+        for planned in rules.secondary.plan(&item) {
             let key = format!("{}|{}|secondary|{}|{}", ctx.source, ctx.start, planned.rule, planned.event);
             if self.first(ctx, key).is_none() {
                 continue;

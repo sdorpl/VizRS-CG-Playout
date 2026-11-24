@@ -7,6 +7,7 @@
 // o najwyższym Index jako harmonogram główny. Panel pokazuje harmonogram główny jako osobne pole edytora.
 
 import { VIEWS, h, btn, panel, pill, cmd, pl, table, toast, confirmDlg, route, dateTime, isFiller, cmdNote, onChannel, S, api, has } from '../core.js';
+import { itemCard } from './zdarzenia.js';
 import { followTask } from '../tasks.js';
 import { checkItems, itemKey, missingTitles } from '../check.js';
 import { form } from '../form.js';
@@ -270,7 +271,8 @@ VIEWS.playouty = crudView({
         [(i) => (isFiller(i) ? h('span', { class: 'dim' }, FILLER_PL[i.FillerKind] || 'wypełniacz') : ''), 'Rodzaj'], ['Duration', 'Czas', { class: 'num' }],
         ...(blocks ? [[(i) => blocks[ctx.items.indexOf(i)], 'Blok']] : []),
         [(i) => { const e = ck.items.get(itemKey(i)); if (!e) return h('span'); const pp = pill('błąd', 'bad'); pp.title = e.join('\n'); return h('span', null, pp, ' ', h('span', { class: 'dim' }, e[0])); }, 'Kontrola']],
-      { empty: 'Brak przyszłych pozycji – przebuduj playout.' }),
+      // karta pozycji: zdarzenia wtórne (K15) na osi pozycji, „Zdarzenie: tylko ta pozycja / każda emisja”
+      { empty: 'Brak przyszłych pozycji – przebuduj playout.', onRow: (i) => { if (!isFiller(i)) itemCard(i, p.ChannelNumber); } }),
       cmdNote('GetFuturePlayoutItemsById', 'BuildPlayout', 'GetAllBlocks', 'CG Playout GET /api/live/state (audycje LIVE)'));
     return [alt, ...(ctx.cal ? calendarPanels(p, ctx) : []), items, p.ScheduleKind === 'Block' ? historyPanel(p) : null];
   },

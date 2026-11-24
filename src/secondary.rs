@@ -5,7 +5,8 @@
 //   "secondary": [{
 //     "name": "Za chwilę – Wiadomości",
 //     "channel": "1",                       // optional, every channel without it
-//     "target": {"show_title": "^Wiadomości"},   // or "title"; both = both must match
+//     "target": {"show_title": "^Wiadomości"},   // and/or "title", "path" (regexes), "start"
+//                                                 // (one item of the channel: its start, ISO)
 //     "events": [
 //       {"page": "7501", "anchor": "start", "offset_s": 10, "duration_s": 8},
 //       {"page": "7510", "anchor": "end", "offset_s": 30, "duration_s": 25,
@@ -27,7 +28,9 @@
 // from the same anchor are refused (the second TAKE would cut the first). The
 // sidecar does not know the layers of pages (VizRS does), nor the collection
 // or the playout item of a clip (ErsatzTV does not give them to the script),
-// so `target.collection` and `target.item_id` are refused with a message.
+// so `target.collection` and `target.item_id` are refused with a message; their
+// stand-ins are `path` (the media file's path, e.g. a collection's folder) and
+// `start` (one item of the schedule: the channel and the item's start, ±2 s).
 
 use regex::{Regex, RegexBuilder};
 
@@ -123,6 +126,10 @@ pub struct Rule {
     pub channel: Option<String>,
     pub show_title: String,
     pub title: String,
+    /// Regex of the media file's path (`{source}`).
+    pub path: String,
+    /// One item of the channel: its start (ISO, as in the schedule).
+    pub start: Option<String>,
     pub events: Vec<Event>,
     pub valid: Validity,
     pub approved: Approval,
@@ -268,20 +275,29 @@ pub fn parse(value: &Value, name: &str) -> Result<Vec<Rule>, String> {
         for unsupported in ["collection", "item_id"] {
             if target.and_then(|t| t.get(unsupported)).is_some_and(|v| !v.is_null()) {
                 return Err(format!(
-                    "{prefix}.target.{unsupported}: not supported – ErsatzTV does not give the sidecar the collection or the playout item of a clip; use show_title or title"
+                    "{prefix}.target.{unsupported}: not supported – ErsatzTV does not give the sidecar the collection or the playout item of a clip; use path (the file's folder) or start (one item of the channel)"
                 ));
             }
         }
         let show_title = text(target.and_then(|t| t.get("show_title")), &format!("{prefix}.target.show_title"))?;
         let title = text(target.and_then(|t| t.get("title")), &format!("{prefix}.target.title"))?;
-        if show_title.is_empty() && title.is_empty() {
-            return Err(format!("{prefix}.target: show_title or title is required"));
+        let path = text(target.and_then(|t| t.get("path")), &format!("{prefix}.target.path"))?;
+        let start = text(target.and_then(|t| t.get("start")), &format!("{prefix}.target.start"))?;
+        if show_title.is_empty() && title.is_empty() && path.is_empty() && start.is_empty() {
+            return Err(format!("{prefix}.target: show_title, title, path or start is required"));
         }
         pattern(&show_title, &format!("{prefix}.target.show_title"))?;
         pattern(&title, &format!("{prefix}.target.title"))?;
+        pattern(&path, &format!("{prefix}.target.path"))?;
+        if !start.is_empty() && crate::time::parse_iso(&start).is_none() {
+            return Err(format!("{prefix}.target.start: expected the item's start as an ISO time"));
+        }
         let channel = text(item.get("channel"), &format!("{prefix}.channel"))?;
         if channel.len() > 16 || channel.contains(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-') {
             return Err(format!("{prefix}.channel: a channel number"));
+        }
+        if !start.is_empty() && channel.is_empty() {
+            return Err(format!("{prefix}.target.start: one item needs its channel"));
         }
         let list = item.get("events").and_then(Value::as_array).ok_or(format!("{prefix}.events: expected an array"))?;
         if list.is_empty() || list.len() > MAX_EVENTS {
@@ -294,6 +310,8 @@ pub fn parse(value: &Value, name: &str) -> Result<Vec<Rule>, String> {
             channel: (!channel.is_empty()).then_some(channel),
             show_title,
             title,
+            path,
+            start: (!start.is_empty()).then_some(start),
             events,
             valid: validity(item, &prefix)?,
             approved: approval(item, &prefix)?,
@@ -325,6 +343,12 @@ pub fn to_json(rules: &[Rule]) -> Value {
                 }
                 if !r.title.is_empty() {
                     target.push(("title".to_owned(), Value::from(r.title.as_str())));
+                }
+                if !r.path.is_empty() {
+                    target.push(("path".to_owned(), Value::from(r.path.as_str())));
+                }
+                if let Some(start) = &r.start {
+                    target.push(("start".to_owned(), Value::from(start.as_str())));
                 }
                 let events = r
                     .events
@@ -367,7 +391,18 @@ pub struct Planned<'a> {
 /// The rules of one channel, compiled.
 #[derive(Debug, Default)]
 pub struct Compiled {
-    rules: Vec<(Rule, Option<Regex>, Option<Regex>)>,
+    rules: Vec<(Rule, [Option<Regex>; 3], Option<i64>)>,
+}
+
+/// The item an event plan is made for.
+pub struct Item<'a> {
+    pub show_title: &'a str,
+    pub title: &'a str,
+    pub source: &'a str,
+    /// The item's start (epoch ms), `None` without one.
+    pub start: Option<i64>,
+    /// Local date of the start (YYYY-MM-DD), for validity.
+    pub day: &'a str,
 }
 
 impl Compiled {
@@ -377,7 +412,10 @@ impl Compiled {
             rules: rules
                 .iter()
                 .filter(|r| r.channel.as_deref().is_none_or(|c| c == channel))
-                .map(|r| (r.clone(), pattern(&r.show_title, "").ok().flatten(), pattern(&r.title, "").ok().flatten()))
+                .map(|r| {
+                    let re = |t: &str| pattern(t, "").ok().flatten();
+                    (r.clone(), [re(&r.show_title), re(&r.title), re(&r.path)], r.start.as_deref().and_then(crate::time::parse_iso))
+                })
                 .collect(),
         }
     }
@@ -386,15 +424,20 @@ impl Compiled {
         self.rules.is_empty()
     }
 
-    /// Events on air in an item with `show_title` and `title` starting on `day`
-    /// (local YYYY-MM-DD): matching, valid and approved rules and events.
-    pub fn plan(&self, show_title: &str, title: &str, day: &str) -> Vec<Planned<'_>> {
+    /// Events on air in `item`: matching (every target given), valid on its day
+    /// and approved rules and events.
+    pub fn plan(&self, item: &Item) -> Vec<Planned<'_>> {
         let mut planned = Vec::new();
-        for (i, (rule, show, own)) in self.rules.iter().enumerate() {
+        for (i, (rule, [show, own, path], start)) in self.rules.iter().enumerate() {
             let fits = |p: &Option<Regex>, text: &str, source: &str| source.is_empty() || p.as_ref().is_some_and(|p| p.is_match(text));
-            if !fits(show, show_title, &rule.show_title) || !fits(own, title, &rule.title) {
+            if !fits(show, item.show_title, &rule.show_title)
+                || !fits(own, item.title, &rule.title)
+                || !fits(path, item.source, &rule.path)
+                || start.is_some_and(|s| item.start.is_none_or(|at| (at - s).abs() > 2000))
+            {
                 continue;
             }
+            let day = item.day;
             if !rule.valid.holds(day) || !rule.approved.on_air() {
                 continue;
             }
@@ -433,7 +476,10 @@ mod tests {
     #[test]
     fn refuses_bad_rules() {
         let bad = [
-            (r#"[{"events":[{"page":"1","duration_s":5}]}]"#, "show_title or title is required"),
+            (r#"[{"events":[{"page":"1","duration_s":5}]}]"#, "show_title, title, path or start is required"),
+            (r#"[{"target":{"start":"2026-11-24T20:00:00Z"},"events":[{"page":"1","duration_s":5}]}]"#, "one item needs its channel"),
+            (r#"[{"channel":"1","target":{"start":"jutro"},"events":[{"page":"1","duration_s":5}]}]"#, "ISO time"),
+            (r#"[{"target":{"path":"(["},"events":[{"page":"1","duration_s":5}]}]"#, "target.path"),
             (r#"[{"target":{"collection":"Filmy"},"events":[{"page":"1","duration_s":5}]}]"#, "target.collection: not supported"),
             (r#"[{"target":{"item_id":5},"events":[{"page":"1","duration_s":5}]}]"#, "target.item_id: not supported"),
             (r#"[{"target":{"title":"("},"events":[{"page":"1","duration_s":5}]}]"#, "not a valid regular expression"),
@@ -477,7 +523,7 @@ mod tests {
         )
         .unwrap();
         let pages = |c: &Compiled, show: &str, title: &str, day: &str| {
-            c.plan(show, title, day).iter().map(|p| p.item.page.clone()).collect::<Vec<_>>()
+            c.plan(&Item { show_title: show, title, source: "", start: None, day }).iter().map(|p| p.item.page.clone()).collect::<Vec<_>>()
         };
         let one = Compiled::new(&parsed, "1");
         let two = Compiled::new(&parsed, "2");
@@ -487,5 +533,22 @@ mod tests {
         assert_eq!(pages(&one, "", "Film tygodnia", "2026-11-24"), ["3", "8"]);
         assert_eq!(pages(&one, "", "Film tygodnia", "2026-11-25"), ["3", "5", "8"]);
         assert_eq!(pages(&one, "", "Film tygodnia", "2026-12-01"), ["8"]);
+    }
+
+    #[test]
+    fn plan_by_path_and_one_item() {
+        let parsed = rules(
+            r#"[{"target":{"path":"/media/seriale/"},"events":[{"page":"1","duration_s":5}]},
+                {"channel":"2","target":{"start":"2026-11-24T20:00:00+01:00"},"events":[{"page":"2","duration_s":5}]}]"#,
+        )
+        .unwrap();
+        let at = crate::time::parse_iso("2026-11-24T19:00:01Z");
+        let item = |source: &'static str, start| Item { show_title: "", title: "x", source, start, day: "2026-11-24" };
+        let pages = |c: &Compiled, i: Item| c.plan(&i).iter().map(|p| p.item.page.clone()).collect::<Vec<_>>();
+        let two = Compiled::new(&parsed, "2");
+        assert_eq!(pages(&two, item("/media/seriale/a.mkv", at)), ["1", "2"]);
+        assert_eq!(pages(&two, item("/media/filmy/b.mkv", at.map(|t| t + 5000))), Vec::<String>::new());
+        assert_eq!(pages(&Compiled::new(&parsed, "1"), item("/media/filmy/b.mkv", at)), Vec::<String>::new());
+        assert!(to_json(&parsed).to_string().contains(r#""start":"2026-11-24T20:00:00+01:00""#));
     }
 }

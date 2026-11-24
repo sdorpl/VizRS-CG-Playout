@@ -377,6 +377,103 @@ pub(crate) fn cg_proxy(
     }
 }
 
+/// Zatwierdzenia zdarzeń wtórnych (K16) w regułach `secondary` dokumentu `PUT live/graphics` od operatora
+/// (nie administratora): każde `approved: {by, at}` musi już być w CG Playout przy regule o tej samej treści
+/// (bez nazwy i zatwierdzeń) – operator nie zatwierdza ani nie przenosi zatwierdzenia na inną treść. Cofnąć
+/// zatwierdzenie (`null`) i usunąć regułę może. `Err` – komunikat odmowy.
+pub fn approvals_kept(old: &[json::Value], new: &[json::Value]) -> Result<(), String> {
+    fn strip(v: &json::Value) -> json::Value {
+        match v {
+            json::Value::Obj(m) => json::Value::Obj(
+                m.iter()
+                    .filter(|(k, _)| k != "approved" && k != "name")
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            if k == "events" {
+                                json::Value::Arr(v.arr().iter().map(strip).collect())
+                            } else {
+                                v.clone()
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    let approved = |v: &json::Value| {
+        v.get("approved")
+            .filter(|a| matches!(a, json::Value::Obj(_)))
+            .map(json::Value::canon)
+    };
+    for rule in new {
+        let key = strip(rule).canon();
+        let twin = old.iter().find(|o| strip(o).canon() == key);
+        let events = rule.get("events").map(json::Value::arr).unwrap_or(&[]);
+        let mut wanted = vec![(approved(rule), twin.and_then(&approved))];
+        for (i, e) in events.iter().enumerate() {
+            let before = twin
+                .and_then(|t| t.get("events"))
+                .and_then(|ev| ev.arr().get(i))
+                .and_then(&approved);
+            wanted.push((approved(e), before));
+        }
+        if wanted
+            .iter()
+            .any(|(now, before)| now.is_some() && now != before)
+        {
+            let name = rule
+                .get("name")
+                .and_then(json::Value::str)
+                .filter(|n| !n.is_empty())
+                .unwrap_or("bez nazwy");
+            return Err(format!(
+                "zatwierdza tylko administrator panelu (reguła „{name}”)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Strażnik K16 przed `PUT live/graphics`: dla operatora porównuje zatwierdzenia z bieżącymi w CG Playout.
+pub(crate) fn guard_approvals(app: &App, body: &[u8]) -> Option<Response> {
+    let new = json::parse(std::str::from_utf8(body).ok()?).ok()?;
+    let new_list = new.get("secondary").map(json::Value::arr).unwrap_or(&[]);
+    let has_approval = |list: &[json::Value]| {
+        list.iter().any(|r| {
+            matches!(r.get("approved"), Some(json::Value::Obj(_)))
+                || r.get("events")
+                    .map(json::Value::arr)
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|e| matches!(e.get("approved"), Some(json::Value::Obj(_))))
+        })
+    };
+    if !has_approval(new_list) {
+        return None;
+    }
+    let cg = app.cg.as_ref()?;
+    let old = match cg.send_as("GET", "/api/live/graphics", &[], "VizRS Live") {
+        Ok(r) if r.status == 200 => json::parse(&String::from_utf8_lossy(&r.body)).ok(),
+        _ => None,
+    };
+    let Some(old) = old else {
+        return Some(Response::error(
+            502,
+            "CG Playout: nie mogę sprawdzić zatwierdzeń (GET /api/live/graphics)",
+        ));
+    };
+    let old_list = old
+        .get("rules")
+        .and_then(|r| r.get("secondary"))
+        .map(json::Value::arr)
+        .unwrap_or(&[]);
+    approvals_kept(old_list, new_list)
+        .err()
+        .map(|e| Response::error(403, &e))
+}
+
 /// Numer strony z `<numer>.png` (miniatura strony VizRS); tylko cyfry, jak numery stron VizRS.
 pub fn thumb_page(file: &str) -> Option<&str> {
     let n = file.strip_suffix(".png")?;

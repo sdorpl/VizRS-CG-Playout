@@ -1721,6 +1721,8 @@ function check(cond, msg) {
     'zdarzenia wtórne: reguła czekająca na zatwierdzenie oznaczona w nagłówku');
   await page.$eval('[data-se-rule="0"]', (el) => { el.open = true; });
   check(await page.locator('[data-se-rule="0"] [data-se-axis] .se-ev').count() === 1, 'zdarzenia wtórne: oś pozycji z jednym zdarzeniem');
+  check(!!(await page.$('#se-0-path')) && !!(await page.$('#se-0-start')) && !!(await page.$('[data-se-rule="0"] button:has-text("Zatwierdź")')),
+    'zdarzenia wtórne: cel po ścieżce pliku i jednej pozycji; administrator (token) zatwierdza');
   await page.selectOption('#se-filter', 'expiring');
   check(await page.locator('[data-se-rules] > details:not([hidden])').count() === 0, 'zdarzenia wtórne: filtr „wygasają” bez reguł z datą');
   await page.selectOption('#se-filter', '');
