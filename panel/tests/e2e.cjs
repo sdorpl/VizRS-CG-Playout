@@ -39,7 +39,8 @@ function check(cond, msg) {
   const CG = {
     hold: false, anytime: true, library: null, operators: [],
     layers: [{ layer: 10, page: '1001', name: 'Belka tytułowa', scene: 'belka', since: T0 - 30000 }], asrun: [{ t: T0 - 60000, kind: 'item_start', title: 'Wiadomosci' }],
-    graphics: { rules: { on_clip: 'TAKE 4001 headline={title}', on_ad: '', ad_match: { path: '/reklamy/', title: '' }, on_end: '', end_seconds: 60, shows: [], channels: { 24: { on_end: '', shows: [{ show_title: 'x', on_clip: 'TAKE 9' }] } } }, source: 'config', store: true },
+    graphics: { rules: { on_clip: 'TAKE 4001 headline={title}', on_ad: '', ad_match: { path: '/reklamy/', title: '' }, on_end: '', end_seconds: 60, shows: [], channels: { 24: { on_end: '', shows: [{ show_title: 'x', on_clip: 'TAKE 9' }] } },
+      secondary: [{ name: 'E2E belki', target: { show_title: '^Wiadomo' }, events: [{ page: '1001', anchor: 'start', offset_s: 10, duration_s: 8 }], approved: null }] }, source: 'config', store: true },
     shows: [{ id: '24-poranek-na-zywo', channel: '24', title: 'Poranek na żywo', duration: '01:00:00', plot: '', collection: true, collection_name: 'LIVE · Poranek na żywo', next: null }],
   };
   const cgServer = require('http').createServer((q, r) => {
@@ -70,7 +71,7 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies'],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies', 'events', 'approval'],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
           input: CG.input || null,
@@ -1712,6 +1713,29 @@ function check(cond, msg) {
   if (Number.isInteger(liveMarkId)) await api('DeleteWatermark', { WatermarkId: liveMarkId });
   await page.click('#dlg-buttons button:has-text("Anuluj")');
   await page.waitForSelector('#overlay', { state: 'hidden' });
+  // K15/K16: zdarzenia wtórne – zapis reguł grafiki ich nie kasuje; zatwierdzenie, walidacja przed wysłaniem
+  check(CG.graphics.rules.secondary?.length === 1 && CG.graphics.rules.secondary[0].name === 'E2E belki', 'zdarzenia wtórne: zapis reguł grafiki zostawia listę secondary bez zmian');
+  await page.goto(`${BASE}/#grafika`);
+  await page.waitForSelector('[data-se-rule="0"]');
+  check(/czeka na zatwierdzenie/.test(await page.textContent('[data-se-rule="0"] summary')) && /nie wchodzi/.test(await page.textContent('[data-se-rule="0"] summary')),
+    'zdarzenia wtórne: reguła czekająca na zatwierdzenie oznaczona w nagłówku');
+  await page.$eval('[data-se-rule="0"]', (el) => { el.open = true; });
+  check(await page.locator('[data-se-rule="0"] [data-se-axis] .se-ev').count() === 1, 'zdarzenia wtórne: oś pozycji z jednym zdarzeniem');
+  await page.selectOption('#se-filter', 'expiring');
+  check(await page.locator('[data-se-rules] > details:not([hidden])').count() === 0, 'zdarzenia wtórne: filtr „wygasają” bez reguł z datą');
+  await page.selectOption('#se-filter', '');
+  await page.click('[data-se-rule="0"] button:has-text("Zatwierdź")');
+  await page.click('button:has-text("+ Reguła zdarzeń")');
+  await page.click('button:has-text("Zapisz zdarzenia wtórne")');
+  await page.waitForFunction(() => /tytuł audycji albo pozycji/.test(document.getElementById('toast').textContent));
+  check(CG.graphics.rules.secondary[0].approved === null, 'zdarzenia wtórne: reguła bez celu zatrzymuje zapis');
+  await page.click('[data-se-rules] > details:last-child button:has-text("Usuń")');
+  await page.click('button:has-text("Zapisz zdarzenia wtórne")');
+  await page.waitForFunction(() => /Zdarzenia wtórne zapisane/.test(document.getElementById('toast').textContent));
+  const secRules = CG.graphics.rules.secondary;
+  check(secRules.length === 1 && secRules[0].approved?.by && secRules[0].events[0].page === '1001' && secRules[0].events[0].duration_s === 8 && CG.graphics.rules.on_clip !== undefined,
+    'zdarzenia wtórne: zatwierdzenie zapisane w CG Playout (kto, kiedy), reszta reguł bez zmian');
+
   // ciasteczka YouTube dla yt-dlp (CG Playout z „youtube_cookies” w features)
   await page.click('button:has-text("Ciasteczka YouTube…")');
   await page.waitForSelector('[data-cookies] [data-cookies-state="none"]');

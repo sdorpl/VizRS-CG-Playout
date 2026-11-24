@@ -3,6 +3,7 @@
 import { openMonitor, Preview } from '../player.js';
 import { scheduleCheck, checkItems, missingTitles, itemKey } from '../check.js';
 import { S, VIEWS, h, btn, pill, head, panel, cmdNote, toast, confirmDlg, cmd, api, route, pl, hm, hms, dur, isFiller, trioLink, vizrsPreview, vizrsUrl, onChannel, dialog } from '../core.js';
+import { itemCard } from './zdarzenia.js';
 
 /** Przebudowa playoutu przez kolejkę legacy (też w widoku Playouty). */
 export async function build(p, mode) {
@@ -390,7 +391,7 @@ function epgBlocks(list, t0, t1, liveAt, errs = new Map()) {
       continue;
     }
     flush();
-    out.push({ s, e, label: it.Title, title: `${hm(new Date(s))}–${hm(new Date(e))} ${it.Title}`, fill: isFiller(it), live: liveAt(s), err: errs.get(itemKey(it)) || [] });
+    out.push({ s, e, it, label: it.Title, title: `${hm(new Date(s))}–${hm(new Date(e))} ${it.Title}`, fill: isFiller(it), live: liveAt(s), err: errs.get(itemKey(it)) || [] });
   }
   flush();
   return out;
@@ -442,6 +443,8 @@ VIEWS.epg = async () => {
       const el = h('div', { class: 'p' + (b.s <= now && now < b.e ? ' now' : '') + (b.fill ? ' fill' : '') + (b.grp ? ' grp' : '') + (b.live ? ' lv' : '') + (b.err.length ? ' err' : ''),
         title: b.title + (b.err.length ? '\n⚠ ' + b.err.join('\n⚠ ') : '') },
         b.live ? '● ' : '', b.err.length ? '⚠ ' : '', b.label);
+      // karta pozycji: zdarzenia wtórne (K15) na osi pozycji, „Dodaj zdarzenie”
+      if (b.it && !b.fill) { el.classList.add('click'); el.addEventListener('click', () => itemCard(b.it, c.Number)); }
       el.style.left = Math.max(0, x(b.s)) + '%';
       el.style.width = `calc(${Math.min(100, x(b.e)) - Math.max(0, x(b.s))}% - 2px)`;
       row.append(el);

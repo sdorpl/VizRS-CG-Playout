@@ -4,6 +4,7 @@
 import { VIEWS, S, h, head, panel, pill, btn, table, toast, api, cmd, cmdNote, confirmDlg, dialog, has, route, dateTime, vizrsPreview, onChannel } from '../core.js';
 import { cmdEditor, describe, fieldsUsed } from '../cmdedit.js';
 import { watermarkPicker } from './znaki.js';
+import { secondaryPanel } from './zdarzenia.js';
 
 /** Zapytanie do CG Playout przez serwer panelu; zwraca `result` albo rzuca ApiError. */
 export async function cg(path, method = 'GET', body) {
@@ -70,6 +71,7 @@ VIEWS.grafika = async () => {
     whenPanel,
     S.status.cg && !(health instanceof Error) ? rulesPanel(graphics, pages, channels, (live?.features || []).includes('on_live'),
       (live?.features || []).includes('live_watermark') ? watermarks || [] : null) : null,
+    S.status.cg && !(health instanceof Error) && graphics && !(graphics instanceof Error) ? secondaryPanel(graphics, pages, channels, live?.features || []) : null,
     h('div', { class: 'split wide' },
       h('div', { class: 'cols' }, cgPanel,
         panel('Elementy graficzne legacy', null,
@@ -347,6 +349,8 @@ function rulesPanel(doc, pages, cgChannels, onLive, watermarks) {
         shows: live('shows').map((c) => ({ show_title: c.key.value.trim(), ...scoped(c) })),
         channels: Object.fromEntries(live('channels').map((c) => [c.key.value, scoped(c)])),
       };
+      // zdarzenia wtórne (K15) edytuje osobny panel – tu zostają bez zmian
+      if (r.secondary !== undefined) body.secondary = r.secondary;
     } catch (e) { return toast(e.message, 'bad'); }
     try { await cg('live/graphics', 'PUT', body); toast('Reguły grafiki zapisane w CG Playout – działają od następnej pozycji'); route(true); } catch (e) { toast('CG Playout odrzucił reguły: ' + e.message, 'bad'); }
   };

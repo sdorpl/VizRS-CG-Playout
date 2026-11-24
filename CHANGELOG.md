@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Zdarzenia wtórne (K15) z ważnością i zatwierdzaniem (K16).** Nowa lista reguł `secondary` w regułach grafiki: strony VizRS w zaplanowanych chwilach pozycji wybranych po tytule audycji albo pozycji – kilka zdarzeń na pozycję (np. belka 10 s po starcie, „Za chwilę” 30 s przed końcem), każde z czasem na antenie i polami strony. Reguła i zdarzenie mogą mieć daty ważności i wymagać zatwierdzenia (promo) – niezatwierdzone i poza datami nie wchodzą. Panel: „Zdarzenia wtórne” w Grafice kanału (oś pozycji, zatwierdzanie, filtr czekających i wygasających) i karta pozycji w Przewodniku EPG z „Dodaj zdarzenie”. Cel `collection`/`item_id` z kontraktu odrzucany – ErsatzTV nie podaje ich sidecarowi. Cechy `events`, `approval` w `/api/live/state`. DOKUMENTACJA §3, §12; API.md §1.
+- **Zapis reguł grafiki z panelu nie kasuje zdarzeń wtórnych**, a linia „teraz” w Przewodniku EPG nie zasłania kliknięcia w bieżącą pozycję.
 - **Aplikacja okienna panelu logowana kontem (K20).** Okno „Połącz z panelem” nie wymaga już tokenu: przy panelu z kontami operatorów okno pokazuje ekran logowania panelu (login i hasło), jak przeglądarka. Sesję trzyma pośrednik programu – strona jej nie zna – i zapamiętuje jej identyfikator (nie hasło) w `live-connections.json`, więc po ponownym uruchomieniu logowanie nie wraca; „Wyloguj” w panelu albo wygaśnięcie sesji – znów ekran logowania. Token zostaje jako druga ścieżka (panele bez kont, awaryjnie). DOKUMENTACJA §11 (Aplikacja okienna panelu).
 
 ## 26.11.28 (2026-11-24)

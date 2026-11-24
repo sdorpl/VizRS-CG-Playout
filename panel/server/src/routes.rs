@@ -154,6 +154,11 @@ pub(crate) const STATIC: &[(&str, &str, &str)] = &[
         include_str!("../web/views/asrun.js"),
     ),
     (
+        "/views/zdarzenia.js",
+        "text/javascript; charset=utf-8",
+        include_str!("../web/views/zdarzenia.js"),
+    ),
+    (
         "/views/uzytkownicy.js",
         "text/javascript; charset=utf-8",
         include_str!("../web/views/uzytkownicy.js"),

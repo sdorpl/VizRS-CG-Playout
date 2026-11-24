@@ -93,6 +93,8 @@ pub struct Config {
     pub ad_match: AdMatch,
     /// Per-show overrides for `on_clip`, `on_ad` and `ad_match`.
     pub shows: Vec<ShowOverride>,
+    /// Secondary events (K15): pages at times of items chosen by title, with validity and approval (K16).
+    pub secondary: Vec<crate::secondary::Rule>,
     /// Per-channel overrides of the VizRS instance and its commands.
     pub channels: Vec<ChannelOverride>,
     /// Each ErsatzTV channel gets its own antenna in VizRS, without configuration.
@@ -198,6 +200,7 @@ impl Default for Config {
             on_ad: String::new(),
             ad_match: AdMatch::default(),
             shows: Vec::new(),
+            secondary: Vec::new(),
             channels: Vec::new(),
             channel_buses: false,
             etv_config: String::new(),
@@ -446,6 +449,7 @@ impl Config {
                 "shows" => {
                     config.shows = show_overrides(value, "shows")?;
                 }
+                "secondary" => config.secondary = crate::secondary::parse(value, key)?,
                 "channels" => config.channels = channel_overrides(value)?,
                 "channel_buses" => config.channel_buses = boolean(value, key)?,
                 "etv_config" => config.etv_config = string(value, key)?,

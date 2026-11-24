@@ -55,6 +55,9 @@ pub struct Timing {
     /// `OUT` this long before the end; `None` = no `OUT`.
     pub out: Option<f64>,
     pub end: End,
+    /// `OUT` this long after the `TAKE` (at the item's stop at the latest) instead of
+    /// `out` – secondary events (K15).
+    pub duration: Option<f64>,
 }
 
 impl Timing {
@@ -66,6 +69,7 @@ impl Timing {
             seconds: config.in_seconds,
             out: (config.out_seconds >= 0.0).then_some(config.out_seconds),
             end: End::Item,
+            duration: None,
         }
     }
 
@@ -76,6 +80,20 @@ impl Timing {
             seconds,
             out: Some(config.end_out_seconds.max(0.0)),
             end: End::parse(&config.end_ref).unwrap_or(End::Programme),
+            duration: None,
+        }
+    }
+
+    /// A secondary event (K15): `offset` after the item's start, or before the
+    /// end (the end of `on_end`), on air for `duration`.
+    pub fn of_event(config: &Config, anchor: crate::secondary::Anchor, offset: f64, duration: f64) -> Timing {
+        let from_end = anchor == crate::secondary::Anchor::End;
+        Timing {
+            from_end,
+            seconds: offset,
+            out: None,
+            end: if from_end { End::parse(&config.end_ref).unwrap_or(End::Programme) } else { End::Item },
+            duration: Some(duration),
         }
     }
 
@@ -564,7 +582,7 @@ impl ChannelEvents {
         if GRAPHICS_OFF.load(Ordering::Relaxed) {
             let _ = queue.send(Batch { ad: false, restore: false, commands: Vec::new(), switch: Some(Switch::Graphics(true)) });
         }
-        let rules = RwLock::new(Arc::new(ClipRules::of(&config, ads, shows)));
+        let rules = RwLock::new(Arc::new(ClipRules::of(&config, ads, shows, &channel)));
         let events = Arc::new(ChannelEvents {
             channel,
             config,
@@ -582,7 +600,7 @@ impl ChannelEvents {
 
     /// New graphics rules (the channel's configuration with them, and their matchers).
     pub fn set_rules(&self, config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) {
-        *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(ClipRules::of(config, ads, shows));
+        *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(ClipRules::of(config, ads, shows, &self.channel));
     }
 
     /// Pages a new piece may take back from a break: out for it now, or taken
@@ -746,6 +764,7 @@ impl ChannelEvents {
             let on_ad = show.and_then(|s| s.on_ad.as_deref()).unwrap_or(&rules.on_ad);
             return self.enqueue(Batch { ad: true, restore: false, commands: render_commands(on_ad, ctx), switch: None });
         }
+        self.secondary(ctx, &rules, generation);
         let Some(custom) = custom_commands else {
             let on_clip = render_commands(show.and_then(|s| s.on_clip.as_deref()).unwrap_or(&rules.on_clip), ctx);
             self.timed(ctx, on_clip, Timing::of_clip(&self.config), generation);
@@ -759,6 +778,25 @@ impl ChannelEvents {
         };
         let commands = custom.iter().flat_map(|c| render_commands(c, ctx)).collect();
         self.timed(ctx, commands, timing.unwrap_or_else(|| Timing::of_clip(&self.config)), generation);
+    }
+
+    /// Secondary events (K15) of the item: each once per item, at its own time.
+    fn secondary(&self, ctx: &ClipContext, rules: &ClipRules, generation: u64) {
+        if rules.secondary.is_empty() {
+            return;
+        }
+        let start = time::parse_iso(&ctx.start).unwrap_or_else(time::now_ms);
+        let day = crate::sys::local_date(start).unwrap_or_default();
+        for planned in rules.secondary.plan(&ctx.show_title, &ctx.title, &day) {
+            let key = format!("{}|{}|secondary|{}|{}", ctx.source, ctx.start, planned.rule, planned.event);
+            if self.first(ctx, key).is_none() {
+                continue;
+            }
+            let event = planned.item;
+            let commands = render_commands(&event.command(), ctx);
+            crate::debug!("channel {}: secondary event {} in {}", self.channel, event.page, ctx.title);
+            self.timed(ctx, commands, Timing::of_event(&self.config, event.anchor, event.offset_s, event.duration_s), generation);
+        }
     }
 
     /// The item's timeline follows its latest session: graphics planned by an
@@ -831,7 +869,10 @@ impl ChannelEvents {
         }
         let take_at = take_item.map(made_at);
         let pages = taken_pages(&commands);
-        let out_item = timing.out.filter(|_| !pages.is_empty()).and_then(|out| Some(end?.min(stop.unwrap_or(i64::MAX)) - ms(out)));
+        let out_item = match timing.duration {
+            Some(duration) => take_item.filter(|_| !pages.is_empty()).map(|take| (take + ms(duration)).min(stop.unwrap_or(i64::MAX))),
+            None => timing.out.filter(|_| !pages.is_empty()).and_then(|out| Some(end?.min(stop.unwrap_or(i64::MAX)) - ms(out))),
+        };
         let out_at = out_item.map(made_at);
         if let Some(out_at) = out_at {
             if now >= out_at || take_at.is_some_and(|take_at| take_at >= out_at) {
@@ -889,10 +930,12 @@ struct ClipRules {
     end_seconds: f64,
     ads: Arc<AdMatcher>,
     shows: Arc<ShowMatcher>,
+    /// Secondary events of the channel (K15/K16).
+    secondary: crate::secondary::Compiled,
 }
 
 impl ClipRules {
-    fn of(config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>) -> ClipRules {
+    fn of(config: &Config, ads: Arc<AdMatcher>, shows: Arc<ShowMatcher>, channel: &str) -> ClipRules {
         ClipRules {
             on_clip: config.on_clip.clone(),
             on_live: config.on_live.clone(),
@@ -901,6 +944,7 @@ impl ClipRules {
             end_seconds: config.end_seconds,
             ads,
             shows,
+            secondary: crate::secondary::Compiled::new(&config.secondary, channel),
         }
     }
 
@@ -1419,6 +1463,45 @@ mod tests {
     }
 
     #[test]
+    fn secondary_events_at_their_times() {
+        // K15: two events of a rule matching the show – after the start and before
+        // the end, each out after its duration; once per item; another show – nothing.
+        let (address, server) = fake_multi(4);
+        let mut config = Config::default();
+        config.vizrs.address = address;
+        config.in_seconds = 0.0;
+        config.lead_seconds = 0.0;
+        config.end_ref = "item".into();
+        config.secondary = crate::secondary::parse(
+            &json::parse(
+                r#"[{"target":{"show_title":"^Wiadomości"},"events":[
+                    {"page":"7501","offset_s":0.1,"duration_s":0.3},
+                    {"page":"7510","anchor":"end","offset_s":0.5,"duration_s":0.2,"values":{"f0":"{next_title}"}}]},
+                   {"target":{"show_title":"^Pogoda"},"events":[{"page":"9","duration_s":1}]}]"#,
+            )
+            .unwrap(),
+            "secondary",
+        )
+        .unwrap();
+        let events = events(config);
+        let now = time::now_ms();
+        let ctx = ClipContext {
+            show_title: "Wiadomości".into(),
+            source: "/m/a.mp4".into(),
+            next_title: "Pogoda \"na\" jutro".into(),
+            start: time::iso_time(now),
+            stop: time::iso_time(now + 1200),
+            ..ClipContext::default()
+        };
+        events.clip(&ctx, None, None);
+        events.clip(&ctx, None, None);
+        let received = server.join().unwrap();
+        let elapsed = time::now_ms() - now;
+        assert_eq!(received, ["TAKE 7501", "OUT 7501", "TAKE 7510 {\"f0\":\"Pogoda \\\"na\\\" jutro\"}", "OUT 7510"]);
+        assert!((800..1400).contains(&elapsed), "OUT 7510 0.2 s after 0.7 s: {elapsed} ms");
+    }
+
+    #[test]
     fn before_the_end_of_the_programme_only_in_its_last_part() {
         let (address, server) = fake_multi(2);
         let mut config = Config::default();
@@ -1452,14 +1535,17 @@ mod tests {
         let config = Config { in_seconds: 5.0, out_seconds: 5.0, end_out_seconds: 3.0, ..Config::default() };
         let timing = |at, out, end| Timing::from_params(at, out, end, &config);
         assert_eq!(timing(None, None, None), (None, vec![]));
-        assert_eq!(timing(Some("-60"), None, None).0, Some(Timing { from_end: true, seconds: 60.0, out: Some(3.0), end: End::Programme }));
+        assert_eq!(
+            timing(Some("-60"), None, None).0,
+            Some(Timing { from_end: true, seconds: 60.0, out: Some(3.0), end: End::Programme, duration: None })
+        );
         assert_eq!(
             timing(Some("10"), Some("-1"), Some("item")).0,
-            Some(Timing { from_end: false, seconds: 10.0, out: None, end: End::Item })
+            Some(Timing { from_end: false, seconds: 10.0, out: None, end: End::Item, duration: None })
         );
         assert_eq!(
             timing(Some("-0"), Some("2"), Some("item")).0,
-            Some(Timing { from_end: true, seconds: 0.0, out: Some(2.0), end: End::Item })
+            Some(Timing { from_end: true, seconds: 0.0, out: Some(2.0), end: End::Item, duration: None })
         );
         // Before the end without OUT: the break would bring it back.
         let (forced, warnings) = timing(Some("-30"), Some("-1"), None);
@@ -1487,7 +1573,7 @@ mod tests {
             stop: time::iso_time(now + 700),
             ..ClipContext::default()
         };
-        let timing = Timing { from_end: true, seconds: 60.0, out: Some(0.2), end: End::Item };
+        let timing = Timing { from_end: true, seconds: 60.0, out: Some(0.2), end: End::Item, duration: None };
         events.clip(&ctx, Some(&["TAKE 1405".into()]), Some(timing));
         assert_eq!(server.join().unwrap(), ["TAKE 1405", "OUT 1405"]);
         let elapsed = time::now_ms() - now;

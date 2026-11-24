@@ -33,6 +33,7 @@ pub mod panel;
 pub mod png;
 pub mod rects;
 pub mod scale;
+pub mod secondary;
 pub mod server;
 pub mod stream;
 pub mod sync;

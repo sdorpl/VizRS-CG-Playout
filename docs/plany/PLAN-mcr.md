@@ -88,8 +88,8 @@ Przebieg łączy [LUKI.md](../LUKI.md) i punkty z §2–§3 w jedną kolejkę: n
 | K12 | Warstwy i strony VizRS na antenie w karcie kanału (LUKI #22, Vizrt D; CG) | – | zrobione (panel + CG Playout 26.11.x) |
 | K13 | Ręczne TAKE / CONTINUE / OUT pojedynczej strony (Vizrt H; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
 | K14 | Dziennik emisji (as-run) z eksportem CSV (Vizrt C; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
-| K15 | Zdarzenia wtórne przypięte do audycji/kolekcji, oś pozycji z grafiką (Vizrt A; CG) | K12 | kontrakt opisany (2026-11-09); czeka na CG Playout |
-| K16 | Ważność (od–do) i zatwierdzanie stron promo (Vizrt G; CG) | K15 | kontrakt opisany (2026-11-09); czeka na CG Playout |
+| K15 | Zdarzenia wtórne przypięte do audycji/kolekcji, oś pozycji z grafiką (Vizrt A; CG) | K12 | zrobione (2026-11-24, gałąź `k15-k16-zdarzenia`; cel tylko po tytule – niżej) |
+| K16 | Ważność (od–do) i zatwierdzanie stron promo (Vizrt G; CG) | K15 | zrobione (2026-11-24, gałąź `k15-k16-zdarzenia`) |
 | K17 | Alarmy: banner, dźwięk, webhook (Vizrt I; webhook w CG) | K9, K14 | zrobione (panel + CG Playout 26.11.x) |
 | K18 | Podgląd kanału: HEVC w `mux.js`, dźwięk inny niż AAC – sprawdzić wykonalność (LUKI #21, G3) | – | zrobione (2026-11-09) |
 | K19 | Konta operatorów: login i hasło zamiast tokenu, konfiguracja z panelu (pierwsze konto kodem z logu, Użytkownicy, Moje konto, role admin/operator, sesje na wolumenie) | – | zrobione (2026-11-18, gałąź `live-ingest-new`) |
@@ -158,8 +158,12 @@ CG Playout zapisuje start i koniec każdej pozycji kanału (z danych szablonu Er
 ### K15 – zdarzenia wtórne (CG)
 Dziś reguły grafiki są ogólne (każda pozycja, przerwa, slot). Dodać regułę z celem: audycja (tytuł), kolekcja albo ID pozycji legacy, z listą zdarzeń `{page, offset_s od startu|końca, duration_s, values}` – kilka zdarzeń na pozycję („Za chwilę” 30 s przed końcem, belka tytułowa po 10 s). Walidacja w CG (nakładające się warstwy = błąd). Panel: w karcie pozycji (EPG, Playouty) oś pozycji z zaplanowanymi zdarzeniami i „Dodaj zdarzenie”.
 
+**Zrobione 2026-11-24:** CG Playout `src/secondary.rs` (planowanie przez `timed()` z czasem trwania), panel `views/zdarzenia.js` (Grafika kanału, karta pozycji w EPG). **Odstępstwo:** cel tylko `show_title`/`title` (regex) – ErsatzTV nie podaje elementowi „script” kolekcji ani ID pozycji playoutu, więc `collection`/`item_id` CG odrzuca z komunikatem; dałoby się je dodać zapytaniem mostu o pozycję (nowy kod C#) – osobna decyzja. Nakładanie sprawdzane dla tej samej strony (warstw stron sidecar nie zna). Oś pozycji w EPG, w Playoutach – nie (karta tylko w EPG).
+
 ### K16 – ważność i zatwierdzanie stron promo (CG)
 Reguła/zdarzenie dostaje `valid_from`, `valid_to` i `approved` (kto, kiedy); CG pomija niezatwierdzone i przeterminowane. Panel: pigułki „czeka na zatwierdzenie” / „wygasa jutro”, filtr. Wzór: VCB 5.4.
+
+**Zrobione 2026-11-24:** brak klucza `approved` = bez zatwierdzania (zwykłe zdarzenia nie wymagają klikania), `null` = czeka, `{by, at}` = zatwierdzone; daty – data lokalna startu pozycji. Panel: zatwierdza konto zalogowanego operatora; zmiana treści zatwierdzonej reguły cofa zatwierdzenie. Bez ról („kto może zatwierdzać”) – zatwierdza każdy operator.
 
 ### K17 – alarmy
 Panel (przeglądarka): banner i opcjonalny dźwięk, gdy K9 znajdzie błąd w najbliższych 15 min, slot LIVE bez sygnału, emisja kanału zatrzymana, grafika zdjęta > N min. Webhook (poza przeglądarką) – w CG Playout, który ma pętlę zdarzeń; opcja `VIZRS_ALERT_WEBHOOK` po stronie CG, źródło zdarzeń z K14.

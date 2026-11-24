@@ -1271,6 +1271,8 @@ impl Panel {
             Value::from("live_watermark"),
             Value::from("input_select"),
             Value::from("youtube_cookies"),
+            Value::from("events"),
+            Value::from("approval"),
         ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());

@@ -1,5 +1,6 @@
 // Graphics rules (on_clip, on_ad, ad_match, on_end, end_seconds, shows and
-// their per-channel overrides, and on_live – only per channel) that the live API
+// their per-channel overrides, on_live – only per channel – and the secondary
+// events of src/secondary.rs, K15/K16) that the live API
 // reads and replaces:
 //
 //   GET /api/live/graphics   {"rules": {…}, "source": "config"|"file", "store": bool}
@@ -20,6 +21,7 @@ use std::sync::{RwLock, RwLockReadGuard};
 use crate::config::{self, AdMatch, ChannelOverride, Config, ShowOverride};
 use crate::json::{self, Value};
 use crate::live_shows;
+use crate::secondary;
 use crate::template::{AdMatcher, ShowMatcher};
 
 /// Rules of one channel; `None` = the global value.
@@ -45,6 +47,7 @@ pub struct Rules {
     pub on_end: String,
     pub end_seconds: f64,
     pub shows: Vec<ShowOverride>,
+    pub secondary: Vec<secondary::Rule>,
     pub channels: Vec<ChannelRules>,
 }
 
@@ -58,6 +61,7 @@ impl Rules {
             on_end: config.on_end.clone(),
             end_seconds: config.end_seconds,
             shows: config.shows.clone(),
+            secondary: config.secondary.clone(),
             channels: config
                 .channels
                 .iter()
@@ -92,6 +96,7 @@ impl Rules {
         config.on_end.clone_from(&self.on_end);
         config.end_seconds = self.end_seconds;
         config.shows.clone_from(&self.shows);
+        config.secondary.clone_from(&self.secondary);
         for own in &mut config.channels {
             own.on_clip = None;
             own.on_ad = None;
@@ -139,6 +144,7 @@ impl Rules {
             on_end: text("on_end")?,
             end_seconds: value.get("end_seconds").map(|v| config::seconds(v, "end_seconds")).transpose()?.unwrap_or(60.0),
             shows: value.get("shows").map(|v| config::show_overrides(v, "shows")).transpose()?.unwrap_or_default(),
+            secondary: value.get("secondary").map(|v| secondary::parse(v, "secondary")).transpose()?.unwrap_or_default(),
             channels: Vec::new(),
         };
         match value.get("channels") {
@@ -233,6 +239,7 @@ impl Rules {
             ("on_end", self.on_end.as_str().into()),
             ("end_seconds", self.end_seconds.into()),
             ("shows", shows(&self.shows)),
+            ("secondary", secondary::to_json(&self.secondary)),
             ("channels", Value::Object(channels)),
         ])
     }

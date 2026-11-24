@@ -332,7 +332,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -431,7 +431,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

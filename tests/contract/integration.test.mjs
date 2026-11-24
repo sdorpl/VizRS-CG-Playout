@@ -1054,6 +1054,19 @@ test("graphics rules from the live API: validated, saved, in force from the next
   const bad = await api("PUT", { on_clip: "TAKE 9", shows: [{ show_title: "(" }] });
   assert.equal(bad.status, 400);
   assert.match(bad.body.error, /show_title/);
+  // K15/K16: secondary events – overlapping takes of a page and an unknown target are refused.
+  const ev = (extra) => ({ target: { show_title: "^News" }, events: [{ page: "7", offset_s: 10, duration_s: 10 }, ...extra] });
+  const overlap = await api("PUT", { on_clip: "TAKE 9", secondary: [ev([{ page: "7", offset_s: 15, duration_s: 3 }])] });
+  assert.equal(overlap.status, 400);
+  assert.match(overlap.body.error, /would cut it/);
+  const collection = await api("PUT", { secondary: [{ target: { collection: "Filmy" }, events: [{ page: "7", duration_s: 3 }] }] });
+  assert.equal(collection.status, 400);
+  assert.match(collection.body.error, /target\.collection: not supported/);
+  const sec = await api("PUT", { on_clip: "TAKE 1 headline={title}", secondary: [{ name: "x", ...ev([]), valid_to: "2026-12-31", approved: null }] });
+  assert.equal(sec.status, 200);
+  assert.deepEqual((await api("GET")).body.rules.secondary, [
+    { name: "x", target: { show_title: "^News" }, events: [{ page: "7", anchor: "start", offset_s: 10, duration_s: 10 }], valid_to: "2026-12-31", approved: null },
+  ]);
   const put = await api("PUT", { on_clip: "TAKE 2 headline={title}", channels: { 3: { on_clip: "TAKE 3" } } });
   assert.equal(put.status, 200);
   assert.equal(put.body.source, "file");

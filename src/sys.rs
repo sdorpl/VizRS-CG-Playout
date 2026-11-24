@@ -77,6 +77,15 @@ pub fn local_clock(epoch_ms: i64) -> Option<String> {
     (!result.is_null()).then(|| format!("{:02}:{:02}:{:02}", tm.hour, tm.min, tm.sec))
 }
 
+/// Local date `YYYY-MM-DD` of an epoch time in the process's time zone (validity of secondary events, K16).
+pub fn local_date(epoch_ms: i64) -> Option<String> {
+    let seconds = epoch_ms.div_euclid(1000);
+    let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() };
+    // SAFETY: both pointers are valid for the call; `localtime_r` is the reentrant form.
+    let result = unsafe { localtime_r(&seconds, &mut tm) };
+    (!result.is_null()).then(|| format!("{:04}-{:02}-{:02}", tm.year + 1900, tm.mon + 1, tm.mday))
+}
+
 /// A TCP connection whose peer vanished without closing it (its container gone
 /// with data still queued) fails after `idle` + `interval` * `count` seconds
 /// instead of blocking the reader for ever.
