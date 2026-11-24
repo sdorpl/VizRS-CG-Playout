@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Przebieg live w rozdzielczości kanału, nie 1920×1080.** Na S1 (2026-11-22, audycja LIVE na kanale 1600×900) studio szło w 1920×1080, a logo, znak wodny i grafika – zmniejszone i przyklejone do lewego górnego rogu. Przyczyna: nakładka brała rozmiar kanału z najnowszego segmentu, a po restarcie ErsatzTV segmentu nie było; w kawałku slotu nie było też `scale` (sygnał przy sondowaniu miał już rozmiar kanału), więc zostawało domyślne 1920×1080 – i każdy następny przebieg czytał je z segmentu poprzedniego. Teraz rozmiar pochodzi najpierw z profilu FFmpeg kanału w ErsatzTV (API legacy pod `VIZRS_BRIDGE_URL`), potem z `pad`/`crop`/`scale` kawałka i klatek grafiki, a segment jest tylko ostatnią deską ratunku; źródło rozmiaru trafia do śladu przejęć. Dotyczy każdego wejścia, także YouTube (1920×1080 na kanale innego rozmiaru). DOKUMENTACJA §1.
+
 ## 26.11.27 (2026-11-21)
 
 - **Mniej pracy nakładki przy studiu na pozycji bez elementu VizRS.** Własna sesja grafiki studia (26.11.26) brała strefę „cały kadr”: nakładka nie zgłaszała, że umie poszerzyć strefy w trakcie kawałka, więc sidecar obejmował wszystkie strony show. Teraz przejmuje ją z `follow=1` – grafika tylko w strefach stron przejęcia (np. logo NA ŻYWO), a nowa strona w innym miejscu restartuje przebieg live w poszerzonych strefach, jak przy pozycji z elementem. Pomiar lokalny (1600×900, 25 kl./s, x264 ultrafast): pełny kadr grafiki 15,1 s CPU na 20 s obrazu, sam obszar logo 10,9 s. DOKUMENTACJA §1 „Grafika podczas przejęcia”.

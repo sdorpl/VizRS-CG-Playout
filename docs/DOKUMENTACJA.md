@@ -1368,9 +1368,18 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    Kawałek, który zaczyna się w trakcie live, od razu idzie
    z sygnału.
 
-Rozmiar kanału dla przebiegu live: najnowszy segment w katalogu playlisty
-(`ffprobe`), klatki grafiki całego kanału, `pad`/`scale` z filtrów ErsatzTV,
-w ostateczności 1920×1080; klatkaż: `VIZRS_FFMPEG_FPS`, `-r` wyjścia, klatki
+Rozmiar kanału dla przebiegu live, po kolei: rozdzielczość profilu FFmpeg
+kanału w ErsatzTV (`GET /api/channels` → `ffmpegProfile`, `GET /api/ffmpeg/profiles`
+→ `resolution`; pod `VIZRS_BRIDGE_URL`, klucz z `api-secrets.json`, raz na proces,
+najwyżej 1,5 s), `pad`/`crop`, a potem `scale` z filtrów ErsatzTV, klatki grafiki
+całego kanału, najnowszy segment w katalogu playlisty (`ffprobe`),
+w ostateczności 1920×1080. Segment jest na końcu, bo to wynik poprzedniego
+przebiegu: przebieg live w złym rozmiarze utrwalał go w kolejnych. ErsatzTV nie
+skaluje kawałka, gdy materiał pozycji ma rozmiar kanału – tak bywa w slocie
+audycji LIVE, którego sygnał przy sondowaniu miał rozmiar kanału; po restarcie
+ErsatzTV nie było jeszcze segmentu i przebieg wychodził w 1920×1080 z grafiką
+1600×900 w lewym górnym rogu (S1, 2026-11-22). Wybrany rozmiar i jego źródło
+są w śladzie przejęć kanału (`channel N: live picture SZERxWYS from …`). Klatkaż: `VIZRS_FFMPEG_FPS`, `-r` wyjścia, klatki
 grafiki, 25. Przy koderze VAAPI i Vulkan obraz jest wysyłany do karty
 (`format=nv12,hwupload` z urządzeniem z komendy ErsatzTV), przy QSV podany
 w NV12; NVENC i kodery programowe biorą go wprost. Opcje dekodera materiału

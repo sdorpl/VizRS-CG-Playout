@@ -198,7 +198,7 @@ pub(crate) fn live_command(
 ) -> Vec<OsString> {
     let full = graphics.filter(|(f, _)| f.areas.is_empty()).map(|(f, _)| (f.width, f.height));
     let rate = graphics.map_or("", |(f, _)| f.rate.as_str());
-    let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, full, rate);
+    let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, &settings.bridge_url, full, rate);
     let input = graphics.map(|(frames, fd)| takeover::Graphics { input: raw_input(frames, fd), areas: &frames.areas });
     let picture = match source {
         Some(source) => takeover::Picture::Live(source),
@@ -405,7 +405,7 @@ fn without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio
     let takeover_marks = |source: &takeover::Source| {
         marks_of
             .get_or_init(|| {
-                let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, None, "");
+                let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, &settings.bridge_url, None, "");
                 TakeoverMarks::new(&format.rate, crate::yuva::ffmpeg_matrix(format.height))
             })
             .of(settings, &job.channel, source)
@@ -500,7 +500,7 @@ fn programme_watermarks(settings: &Settings, args: &[OsString], job: &Job) -> Op
         return None;
     }
     log(format_args!("{} ErsatzTV watermark(s) of the live programme on its live runs", marks.list.len()));
-    let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, None, "");
+    let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, &settings.bridge_url, None, "");
     Some(live_marks(&marks, &format.rate, crate::yuva::ffmpeg_matrix(format.height)))
 }
 
@@ -569,7 +569,7 @@ impl PieceGraphics {
     /// The graphics when they are there; the first call starts setting them up.
     fn ready(&self, settings: &Settings, args: &[OsString], job: &Job) -> std::sync::MutexGuard<'_, Option<LiveGraphics>> {
         if !self.asked.swap(true, Ordering::Relaxed) {
-            let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, None, "");
+            let format = takeover::channel_format(&settings.ffmpeg, args, job, &settings.fps, &settings.bridge_url, None, "");
             let (sender, receiver) = mpsc::channel();
             let (settings, format, channel) = (settings.clone(), format, job.channel.clone());
             std::thread::spawn(move || {

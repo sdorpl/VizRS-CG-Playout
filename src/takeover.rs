@@ -296,13 +296,73 @@ pub enum Picture<'a> {
     Standby(Option<&'a str>),
 }
 
-/// Size from `pad=W:H` or `scale=W:H` in ErsatzTV's filters (the picture is
-/// scaled to the channel when it is not its size).
+/// Size from ErsatzTV's filters: `pad=W:H` or `crop=W:H` (the channel's frame
+/// around or out of a picture of another shape), else `scale=W:H` (the picture
+/// scaled to the channel). None when ErsatzTV does not scale: the item's media
+/// was probed at the channel's size – a live slot whose source happened to be
+/// that size (S1, 2026-11-22).
 pub fn filter_size(args: &[OsString]) -> Option<(u32, u32)> {
-    let pattern = Regex::new(r"(?:^|[,;\]])(?:pad|scale)\w*=(?:w=)?(\d+):(?:h=)?(\d+)").ok()?;
-    (0..args.len().saturating_sub(1)).filter(|&i| args[i] == "-filter_complex").find_map(|i| {
-        let found = pattern.captures(arg(args, i + 1))?;
-        Some((found[1].parse().ok()?, found[2].parse().ok()?))
+    let find = |filters: &str| {
+        let pattern = Regex::new(&format!(r"(?:^|[,;\]])(?:{filters})\w*=(?:w=|out_w=)?(\d+):(?:h=|out_h=)?(\d+)")).ok()?;
+        (0..args.len().saturating_sub(1)).filter(|&i| args[i] == "-filter_complex").find_map(|i| {
+            let found = pattern.captures(arg(args, i + 1))?;
+            Some((found[1].parse().ok()?, found[2].parse().ok()?))
+        })
+    };
+    find("pad|crop").or_else(|| find("scale"))
+}
+
+/// `WxH` of ErsatzTV (`1600x900`); none for nonsense.
+fn resolution(text: &str) -> Option<(u32, u32)> {
+    let (w, h) = text.trim().split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+        .filter(|&(w, h): &(u32, u32)| (16..=8192).contains(&w) && (16..=8192).contains(&h))
+}
+
+/// The resolution set for `channel` in ErsatzTV: `resolution` of the FFmpeg
+/// profile its entry of `GET /api/channels` names (`GET /api/ffmpeg/profiles`).
+pub fn profile_resolution(channels: &str, profiles: &str, channel: &str) -> Option<(u32, u32)> {
+    let channels = json::parse(channels).ok()?;
+    let profile = channels
+        .as_array()?
+        .iter()
+        .find(|c| c.get("number").and_then(json::Value::as_str) == Some(channel))?
+        .get("ffmpegProfile")?
+        .as_str()?
+        .to_owned();
+    let profiles = json::parse(profiles).ok()?;
+    let found = profiles.as_array()?.iter().find(|p| p.get("name").and_then(json::Value::as_str) == Some(profile.as_str()))?;
+    resolution(found.get("resolution")?.as_str()?)
+}
+
+/// How long the channel's profile may take to come from ErsatzTV.
+const PROFILE_WAIT: Duration = Duration::from_millis(1500);
+
+/// The channel's resolution from ErsatzTV's API at `etv_url` (its key from
+/// `$ETV_CONFIG_FOLDER/api-secrets.json`), asked once per process; none when
+/// ErsatzTV does not answer in `PROFILE_WAIT`.
+fn channel_profile(etv_url: &str, channel: &str) -> Option<(u32, u32)> {
+    static FOUND: std::sync::OnceLock<Option<(u32, u32)>> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        if etv_url.is_empty() || channel.is_empty() {
+            return None;
+        }
+        let key = std::env::var_os("ETV_CONFIG_FOLDER")
+            .and_then(|config| std::fs::read_to_string(Path::new(&config).join("api-secrets.json")).ok())
+            .and_then(|text| json::parse(&text).ok())
+            .and_then(|secrets| secrets.get("ApiKey").and_then(json::Value::as_str).map(str::to_owned))
+            .unwrap_or_default();
+        let headers = if key.is_empty() { String::new() } else { format!("X-Etv-Api-Key: {key}\r\n") };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (url, channel) = (etv_url.trim_end_matches('/').to_owned(), channel.to_owned());
+        std::thread::spawn(move || {
+            let found = net::get(&format!("{url}/api/channels"), &headers).and_then(|channels| {
+                let profiles = net::get(&format!("{url}/api/ffmpeg/profiles"), &headers)?;
+                Ok(profile_resolution(&channels, &profiles, &channel))
+            });
+            let _ = sender.send(found.ok().flatten());
+        });
+        receiver.recv_timeout(PROFILE_WAIT).ok().flatten()
     })
 }
 
@@ -553,18 +613,35 @@ fn segment_size(ffmpeg: &OsString, playlist: &Path) -> Option<(u32, u32)> {
     probed_size(&text)
 }
 
-/// The channel's size: its latest segment, the graphics frames when they are
-/// the whole channel (`full`), ErsatzTV's scaling, else 1920×1080. Its rate:
-/// forced, the output's `-r`, the graphics frames', else 25.
+/// The channel's size: the resolution of its FFmpeg profile in ErsatzTV (at
+/// `etv_url`), ErsatzTV's padding or scaling in the piece, the graphics frames
+/// when they are the whole channel (`full`), its latest segment, else 1920×1080.
+/// The segment comes last: it is what the run before made – a live run of a
+/// wrong size made every later one that size (S1, 2026-11-22: a live slot
+/// after ErsatzTV's restart, no segment yet and no scaling in the piece, went
+/// out at 1920×1080 with the graphics of 1600×900 small in the top left
+/// corner). The size and where it came from go to the trace, once a process.
+/// Its rate: forced, the output's `-r`, the graphics frames', else 25.
 pub fn channel_format(
     ffmpeg: &OsString,
     args: &[OsString],
     job: &Job,
     forced: &str,
+    etv_url: &str,
     full: Option<(u32, u32)>,
     graphics_rate: &str,
 ) -> Format {
-    let (width, height) = segment_size(ffmpeg, &job.playlist).or(full).or_else(|| filter_size(args)).unwrap_or((1920, 1080));
+    let found = [
+        (channel_profile(etv_url, &job.channel), "the channel's FFmpeg profile in ErsatzTV"),
+        (filter_size(args), "ErsatzTV's scaling of the piece"),
+        (full, "the graphics frames"),
+    ]
+    .into_iter()
+    .find_map(|(size, from)| Some((size?, from)))
+    .or_else(|| Some((segment_size(ffmpeg, &job.playlist)?, "the channel's latest segment (unsure)")));
+    let ((width, height), from) = found.unwrap_or(((1920, 1080), "nothing else known: the default (likely wrong)"));
+    static TRACED: std::sync::Once = std::sync::Once::new();
+    TRACED.call_once(|| trace(job, format_args!("channel {}: live picture {width}x{height} from {from}", job.channel)));
     let last = last_input(args).map_or(0, |i| i + 2);
     let output_rate = (last..args.len().saturating_sub(1)).rev().find(|&i| args[i] == "-r").map(|i| arg(args, i + 1).to_owned());
     let rate = [forced.to_owned(), output_rate.unwrap_or_default(), graphics_rate.to_owned()]
@@ -1678,6 +1755,25 @@ mod tests {
         assert_eq!(filter_size(&piece()), Some((1280, 720)));
         assert_eq!(filter_size(&args(&["-filter_complex", "[0:0]pad=1920:1080:-1:-1:color=black[v]"])), Some((1920, 1080)));
         assert_eq!(filter_size(&args(&["-filter_complex", "[0:0]fps=25[v]"])), None);
+        // A 4:3 picture on a 1600x900 channel: scaled to 1200x900, padded to the channel.
+        let padded = "[0:0]fps=25,scale=1200:900:flags=bicubic,setsar=1,pad=1600:900:-1:-1:color=black[v]";
+        assert_eq!(filter_size(&args(&["-filter_complex", padded])), Some((1600, 900)));
+        let cropped = "[0:0]scale=1600:1200,crop=1600:900[v]";
+        assert_eq!(filter_size(&args(&["-filter_complex", cropped])), Some((1600, 900)));
+        // The live slot of S1 (2026-11-22): its source probed at the channel's size, no scaling.
+        let slot =
+            "[0:0]fps=25,setsar=1[v_m0];[1:0]format=yuva420p,format=color_ranges=tv[v_s0];[v_m0][v_s0]overlay=x=0:y=0:format=0[v_o0]";
+        assert_eq!(filter_size(&args(&["-filter_complex", slot])), None);
+        let channels =
+            r#"[{"id":9,"number":"1","name":"BTB","ffmpegProfile":"1600x900 nofps"},{"id":10,"number":"2","ffmpegProfile":"720"}]"#;
+        let profiles = r#"[{"id":2,"name":"720","resolution":"1280x720"},{"id":5,"name":"1600x900 nofps","resolution":"1600x900"}]"#;
+        assert_eq!(profile_resolution(channels, profiles, "1"), Some((1600, 900)));
+        assert_eq!(profile_resolution(channels, profiles, "2"), Some((1280, 720)));
+        assert_eq!(profile_resolution(channels, profiles, "3"), None);
+        assert_eq!(profile_resolution(channels, r#"[{"name":"720","resolution":"0x0"}]"#, "2"), None);
+        assert_eq!(profile_resolution("<html>", profiles, "1"), None);
+        assert_eq!(resolution(" 1024x576 "), Some((1024, 576)));
+        assert_eq!(resolution("1080p"), None);
         assert_eq!(probed_size("width=1600\nheight=900\n"), Some((1600, 900)));
         let playlist = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.000000,\n#EXT-X-PROGRAM-DATE-TIME:x\nlive000000.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:1.52,\nlive000001.ts\n";
         assert_eq!(segments(playlist), [("live000000.ts".into(), 4.0), ("live000001.ts".into(), 1.52)]);

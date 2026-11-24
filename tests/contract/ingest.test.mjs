@@ -196,7 +196,17 @@ test("live takes a piece over: RTMP listener, overlay with graphics, live graphi
   // The takeover's ErsatzTV watermark (live_watermark "3") from a stand-in of VizRS Bridge.
   const mark = path.join(dir, "mark.png");
   execFileSync(FFMPEG, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=40x40", "-frames:v", "1", mark]);
+  // The same ErsatzTV answers its API: the channel's resolution is that of its FFmpeg profile.
+  const api = {
+    "/api/channels": [{ id: 9, number: "1", name: "News", ffmpegProfile: "small" }],
+    "/api/ffmpeg/profiles": [{ id: 2, name: "big", resolution: "1920x1080" }, { id: 3, name: "small", resolution: "320x180" }],
+  };
   const bridge = http.createServer((request, response) => {
+    if (api[request.url]) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(api[request.url]));
+      return;
+    }
     const ok = request.url === "/vizrs-bridge/watermarks/1?ids=3";
     response.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
     response.end(JSON.stringify(ok ? { ok: true, result: { width: 320, height: 180, time_of_day: 0, watermarks: [{ image: mark, x: 200, y: 100, width: 40, height: 40, opacity: 1 }] } } : { ok: false }));
@@ -292,6 +302,8 @@ test("live takes a piece over: RTMP listener, overlay with graphics, live graphi
   const log = Buffer.concat(pieceLog).toString();
   assert.equal(code, 0, log);
   assert.match(log, /channel 1: live from \d+\.\d s of the piece/);
+  // No scaling in the piece (its media is the channel's size): the size from the channel's profile, not a guess.
+  assert.match(log, /channel 1: live picture 320x180 from the channel's FFmpeg profile in ErsatzTV/);
 
   // One playlist of the whole piece: its length, the channel's size, timestamps going on.
   const playlist = readFileSync(path.join(out, "live.m3u8"), "utf8");
