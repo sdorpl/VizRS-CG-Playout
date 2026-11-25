@@ -215,11 +215,16 @@ jobs:
         with:
           node-version: 22
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file desktop-file-utils
+      # GStreamer z wtyczkami do paczki (bundleMediaFramework w tauri.conf.json): WebKitGTK dekoduje H.264/AAC
+      # podglądu strumienia przez GStreamer, a sam rdzeń 1.20 z paczki nie ładuje nowszych wtyczek systemu
+      - run: sudo apt-get install -y --no-install-recommends gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       - name: AppImage (bundler Tauri)
         working-directory: panel/desktop
         env:
           # linuxdeploy / appimagetool to AppImage – na runnerze bez FUSE rozpakowują się same
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          # h264parse (videoparsersbad) jest w plugins-bad – WebKit potrzebuje go do H.264 przez MSE
+          GSTREAMER_INCLUDE_BAD_PLUGINS: "1"
         run: npx --yes @tauri-apps/cli@2 build --ci --bundles appimage
       - name: Paczka
         env:
@@ -229,6 +234,12 @@ jobs:
           a=$(find desktop/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -1)
           [ -n "$a" ] || { echo "::error::brak AppImage"; exit 1; }
           cp "$a" "dist/VizRS-CG-Playout-$V-x86_64.AppImage"
+          # podgląd strumienia: demuxer MP4 (isomp4), dekodery H.264/AAC (libav), h264parse (videoparsersbad) muszą być w paczce
+          (cd dist && APPIMAGE_EXTRACT_AND_RUN=1 "./VizRS-CG-Playout-$V-x86_64.AppImage" --appimage-extract >/dev/null)
+          for w in libgstisomp4.so libgstlibav.so libgstvideoparsersbad.so libgstapp.so libgstplayback.so; do
+            find dist/squashfs-root -name "$w" | grep -q . || { echo "::error::AppImage bez wtyczki GStreamera $w"; exit 1; }
+          done
+          rm -rf dist/squashfs-root
           APPIMAGE_EXTRACT_AND_RUN=1 "dist/VizRS-CG-Playout-$V-x86_64.AppImage" --version
           ls -la dist
       - uses: actions/upload-artifact@v4

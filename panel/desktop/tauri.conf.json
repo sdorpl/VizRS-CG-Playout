@@ -27,6 +27,11 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "11.0"
     },
