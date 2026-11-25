@@ -13,7 +13,7 @@ Język pracy z użytkownikiem, dokumentacji, komentarzy, komunikatów i UI: **po
 
 ## Pakiet VizRS
 
-To repo jest częścią pakietu **VizRS**. Opis całego pakietu (mapa aplikacji, styki, stos, porty, plan porządków): [sdorpl/VizRS](https://github.com/sdorpl/VizRS) (lokalnie `../VizRS`).
+To repo jest częścią pakietu **VizRS**. **Centrum projektu (hub i wiki): [sdorpl/VizRS](https://github.com/sdorpl/VizRS)** (lokalnie `../VizRS`) – opis pakietu i każdej aplikacji, styki (`STYKI.md`), zgodność wydań (`ZGODNOSC.md`), stos, porty i spis całej dokumentacji. Co dotyczy więcej niż jednej aplikacji, opisuj tam; szczegóły aplikacji – w jej repozytorium.
 
 | Aplikacja (katalog obok, `../`) | Rola | Dostawca styku |
 |---|---|---|
@@ -27,6 +27,7 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 - **Styk zmienia się po obu stronach w tym samym cyklu.** Opis styku jest u dostawcy; klient opisuje tylko, jak z niego korzysta.
 - **Starsza wersja sąsiada nie psuje aplikacji ani emisji** – brak nowego pola lub ścieżki to „niedostępne w tej wersji”, nie błąd.
 - **Wydania razem:** przed wydaniem sprawdź z bieżącymi wersjami sąsiadów; zmianę wymagającą nowszego sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
+- **Po wydaniu – centrum projektu:** w sdorpl/VizRS wiersz w `ZGODNOSC.md` (wersja, data, pliki, nowe minimalne wersje sąsiadów); zmiana funkcji albo styku – także README (§1–§2) i `STYKI.md`; nowy dokument aplikacji – wiersz w spisie dokumentacji README.
 <!-- /pakiet:A -->
 
 ## Zacznij każdą sesję tutaj
