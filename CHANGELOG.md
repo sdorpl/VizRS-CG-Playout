@@ -4,6 +4,12 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.31 (2026-11-25)
+
+- **Okno panelu (AppImage): podgląd strumienia H.264/AAC.** Paczka ma GStreamera z wtyczkami (`bundleMediaFramework`); wcześniej rdzeń GStreamera 1.20 z paczki nie ładował nowszych wtyczek systemu i podgląd pokazywał „Ta przeglądarka nie odtworzy strumienia (avc1…, mp4a…)”. Paczka jest większa (wtyczki GStreamera).
+- **Okno panelu: podgląd grafiki VizRS (`/output`) na antenie.** Ramka idzie przez drugi port pośrednika okna – dla WebKitu ta sama witryna co strona, więc ciasteczko tokenu wyjścia VizRS działa (wcześniej pusta szachownica). `/api/status` w oknie podaje `vizrsOutputProxy`; w przeglądarce bez zmian. Okno nie odsyła już ramki do przeglądarki systemowej.
+- **Okno panelu: Trio i odnośniki zewnętrzne** otwierają się w przeglądarce systemowej bez środowiska paczki AppImage (biblioteki, moduły GTK/GIO/GStreamera, zmienne WebKitu okna).
+
 ## 26.11.30 (2026-11-24)
 
 - **Renderer natywny z VizRS CG System 26.11.13** (`VIZRS_REF`): strony z ruchem `node.motion` (presety wejścia i wyjścia 2D) i obrazami WebP rysuje `vizrs-render` zamiast Chromium – mniej CPU na kanale. Odwrócenia 3D, maska ukośna, żaluzja, glitch, RGB, efekty tekstu, pętle i tło – dalej Chromium (`renderer: auto`).
