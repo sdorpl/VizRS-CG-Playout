@@ -1,6 +1,7 @@
 # CI panelu VizRS CG Playout (dawny VizRS Live, katalog panel/): serwer (fmt, clippy, testy), oba obrazy, stos testowy z proxy, e2e z Playwright.
 # Te same kroki co panel/tests/gate.sh. Niczego nie publikuje (obrazy tylko lokalnie na maszynie CI), binarka panelu jako artefakt.
-# Obrazy na ghcr i wydanie: release.yml (znacznik v* albo ręcznie).
+# Obrazy na ghcr i wydanie: release.yml (znacznik v* albo ręcznie) wywołuje ten workflow (workflow_call), publikuje
+# dopiero po zielonym i wydaje AppImage z joba appimage (artefakt vizrs-cg-playout-appimage).
 name: CI panelu
 
 on:
@@ -8,12 +9,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
+# github.workflow rozdziela przebiegi z wypchnięcia i z wydania (wywołany workflow ma nazwę wywołującego) –
+# wydanie z main nie przerywa CI panelu na main ani odwrotnie
 concurrency:
-  group: panel-ci-${{ github.ref }}
+  group: panel-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -47,6 +51,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: panel/server
       - name: cargo fmt / clippy / test / build
         working-directory: panel/server
         run: |
@@ -75,22 +82,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: panel/server
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Playwright (Chromium)
-        run: |
-          # katalog poza repo; kontekst runner niedostępny w env joba – przez GITHUB_ENV dla kolejnych kroków
-          PLAYWRIGHT_DIR=$RUNNER_TEMP/pw; echo "PLAYWRIGHT_DIR=$PLAYWRIGHT_DIR" >> "$GITHUB_ENV"
-          mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR"
-          npm init -y >/dev/null
-          npm install --no-audit --no-fund playwright@1.58.2
-          npx playwright install --with-deps chromium
+      - uses: ./.github/actions/playwright
+      # ffmpeg z libx265 – próbka HEVC dla K18 (mux.js: HEVC i AC-3); bez niego test jest pomijany
+      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
       - name: obraz panelu
         working-directory: panel
         run: docker build -f docker/live.Dockerfile -t vizrs-live:ci .
-      - name: bramka (serwer, obraz legacy z mostem, stos z proxy, seed, e2e)
+      # krok serwera (fmt, clippy, test) zrobił job serwer – bramka bez niego
+      - name: bramka (obraz legacy z mostem, stos z proxy, seed, e2e)
         working-directory: panel
+        env:
+          GATE_BEZ_SERWERA: "1"
         run: tests/gate.sh
       - name: akceleracja sprzętowa w obrazie legacy (Intel VAAPI/QSV, AMD VAAPI, NVIDIA NVENC)
         working-directory: panel
@@ -113,6 +121,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            panel/desktop
+            panel/server
       - name: biblioteki okna (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev xvfb
@@ -130,3 +143,43 @@ jobs:
         run: |
           (cd server && cargo build --release --locked)
           xvfb-run -a node desktop/tests/okno.cjs
+
+  # AppImage okna panelu (Ubuntu 22.04 – starsza glibc = działa na większej liczbie dystrybucji) z GStreamerem
+  # dla podglądu strumienia; sprawdzenie wtyczek w paczce. Ten plik trafia do wydania (release.yml).
+  appimage:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: panel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: panel/desktop
+          key: appimage
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file desktop-file-utils
+      # GStreamer z wtyczkami do paczki (bundleMediaFramework w tauri.conf.json): WebKitGTK dekoduje H.264/AAC
+      # podglądu strumienia przez GStreamer, a sam rdzeń 1.20 z paczki nie ładuje nowszych wtyczek systemu
+      - run: sudo apt-get install -y --no-install-recommends gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+      - name: AppImage (bundler Tauri)
+        working-directory: panel/desktop
+        env:
+          # linuxdeploy / appimagetool to AppImage – na runnerze bez FUSE rozpakowują się same
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          # h264parse (videoparsersbad) jest w plugins-bad – WebKit potrzebuje go do H.264 przez MSE
+          GSTREAMER_INCLUDE_BAD_PLUGINS: "1"
+        run: npx --yes @tauri-apps/cli@2 build --ci --bundles appimage
+      - name: wtyczki GStreamera w paczce, --version
+        run: |
+          a=$(find desktop/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -1)
+          [ -n "$a" ] || { echo "::error::brak AppImage"; exit 1; }
+          scripts/check-appimage.sh "$a"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vizrs-cg-playout-appimage
+          path: panel/desktop/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

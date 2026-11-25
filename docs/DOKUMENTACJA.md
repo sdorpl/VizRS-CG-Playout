@@ -2718,11 +2718,14 @@ artefakt przebiegu.
 
 Wydanie (`.github/workflows/release.yml`) rusza po znaczniku `v*`
 (`git tag v26.11.11 && git push origin v26.11.11`) albo ręcznie (Actions → Release
-→ Run workflow, z wersją; powstaje wtedy szkic wydania). Workflow sprawdza
+→ Run workflow, z wersją; bez `publish` powstaje szkic wydania, z `publish` – wydanie i znacznik
+na wybranym commicie). Workflow sprawdza
 jedną wspólną wersję produktu (`Cargo.toml` sidecara, `panel/server/Cargo.toml`,
-`panel/desktop/Cargo.toml`, `panel/desktop/tauri.conf.json` oraz `panel/bridge/VizRS.Bridge.csproj`)
-i uruchamia pełną bramkę panelu (`panel/tests/gate.sh` oraz weryfikację akceleracji sprzętowej
-`panel/tests/hwaccel.sh` na obrazie legacy). Buduje:
+`panel/desktop/Cargo.toml`, `panel/desktop/tauri.conf.json`, `panel/bridge/VizRS.Bridge.csproj`
+i stała `Version` w `panel/bridge/Bridge.cs`) i wywołuje oba CI tego commita (`ci.yml` – sidecar z testami
+kontraktu, `panel-ci.yml` – serwer panelu, okno na trzech systemach, pełna bramka `panel/tests/gate.sh`,
+weryfikacja akceleracji sprzętowej `panel/tests/hwaccel.sh` na obrazie legacy, AppImage). Obrazy i wydanie
+powstają dopiero po zielonym CI; znaczniki nie uruchamiają CI osobno. Znacznik zawsze `v<wersja>`. Buduje:
 
 - archiwa sidecara `VizRS-CG-Playout-<wersja>-linux-x86_64.tar.gz` i `…-linux-arm64.tar.gz`
   (binarka `vizrs-cg`, `client/` z `vizrs-etv-client` i `vizrs-ffmpeg` –
@@ -2731,12 +2734,13 @@ i uruchamia pełną bramkę panelu (`panel/tests/gate.sh` oraz weryfikację akce
   (statyczna binarka `vizrs-live` z `panel/server`),
 - obrazy `ghcr.io/<właściciel>/vizrs-cg:<wersja>`, `vizrs-seed:<wersja>`,
   `vizrs-live:<wersja>` oraz `vizrs-live-legacy:<wersja>[-legacy<wersja>]` (amd64 i arm64),
-- aplikację okienną: AppImage natywnego klienta panelu `VizRS-CG-Playout-<wersja>-x86_64.AppImage`,
+- aplikację okienną: AppImage natywnego klienta panelu `VizRS-CG-Playout-<wersja>-x86_64.AppImage`
+  (z joba `appimage` CI panelu – wtyczki GStreamera podglądu sprawdzone przez `panel/scripts/check-appimage.sh`),
 - wydanie na GitHubie z archiwami i `SHA256SUMS.txt`.
 
-Wydanie z tagu bez łącznika przesuwa tag `:latest` (dla obrazów `vizrs-cg`, `vizrs-seed`, `vizrs-live`
-oraz `vizrs-live-legacy`). Wersja z łącznikiem (`v26.11.11-rc1`) to wydanie wstępne: obrazy dostają tylko
-swój znacznik wersji, a `:latest` zostaje bez zmian. Nazwy obrazów oraz zmienne środowiskowe `VIZRS_LIVE_*`
+Publikacja wersji bez łącznika (znacznik albo ręcznie z `publish`) przesuwa tag `:latest` (dla obrazów `vizrs-cg`,
+`vizrs-seed`, `vizrs-live` oraz `vizrs-live-legacy`). Wersja z łącznikiem (`v26.11.11-rc1`) to wydanie wstępne, a szkic
+(ręcznie bez `publish`) – próba: obrazy dostają tylko swój znacznik wersji, a `:latest` zostaje bez zmian. Nazwy obrazów oraz zmienne środowiskowe `VIZRS_LIVE_*`
 pozostają bez zmian (stosy produkcyjne ich używają).
 
 ### Testy panelu
@@ -2750,9 +2754,9 @@ pozostają bez zmian (stosy produkcyjne ich używają).
 | ramówka przez panel | `panel/tests/stack.sh seed` (drugi raz nic nie dubluje; od zera: `panel/tests/stack.sh reset`) |
 | e2e UI | `panel/tests/stack.sh test` (Playwright: `PLAYWRIGHT_DIR` albo `panel/tests/local.env`; zrzuty nowych widoków: `E2E_SHOTS=<katalog poza repo>`) |
 | proxy (smoke) | w `panel/tests/stack.sh up`: proxy na 127.0.0.1:18410 (`panel/docker/proxy.Caddyfile`, sieć `vizrs-live-test-net`): `/`, `/channels`, `/api/…`, `/vizrs-bridge/…`, `POST` = 403; M3U, XMLTV, `discover.json` = 200. Panel testowy podaje widzom adres proxy (`--stream-url http://127.0.0.1:18410`) |
-| **pełna bramka (CI)** | `panel/tests/gate.sh` – wszystko poniżej „lokalnie” po kolei, ze stosem testowym; uruchamia ją `ci.yml` po pushu, lokalnie tylko na prośbę; stos, który sama uruchomiła, po zielonym przebiegu zatrzymuje (`GATE_KEEP_STACK=1` – zostaw), przy błędzie zostawia do debugowania |
+| **pełna bramka (CI)** | `panel/tests/gate.sh` – wszystko poniżej „lokalnie” po kolei, ze stosem testowym; uruchamia ją `panel-ci.yml` po pushu (z `GATE_BEZ_SERWERA=1` – krok serwera robi tam job `serwer`), lokalnie tylko na prośbę; stos, który sama uruchomiła, po zielonym przebiegu zatrzymuje (`GATE_KEEP_STACK=1` – zostaw), przy błędzie zostawia do debugowania |
 | pamięć | `panel/tests/stack.sh mem` – RAM kontenerów stosu, paneli i Chromium z Playwright, katalog danych i jego system plików. Dane domyślnie w `~/.cache/vizrs-live-test` (dysk; `/tmp` bywa tmpfs = RAM). Legacy w stosie z `DOTNET_gcServer=0` (obraz ma w runtimeconfig Server GC – sterta na każdy rdzeń; workstation GC to ok. połowa RAM) i limitem `VIZRS_LIVE_TEST_MEM` (domyślnie `1536m`, `0` – bez limitu; e2e ogląda kanał 24 w podglądzie, a ffmpeg legacy kodujący 1080p zajmuje ok. 775 MB – razem z legacy ok. 1,12 GB, w limicie 1 GB jądro ubija ffmpeg i sesja kanału nie startuje), proxy 128 MB; `panel/tests/real.sh` – Jellyfin, Emby, Plex po `VIZRS_LIVE_REAL_MEM` (domyślnie `1g`). Pomiar 2026-11-07 (up + seed + e2e): legacy ok. 850 → 420–480 MB bez oglądania kanału, dane w tmpfs 300 MB → 0. Produkcji to nie dotyczy (`docker-compose.live.yml` bez zmian) |
-| CI | `.github/workflows/panel-ci.yml` (push na `main`, PR, ręcznie): serwer (`--locked`, binarka jako artefakt `vizrs-live-linux-x86_64`), krzyżowa budowa obu obrazów na arm64, obraz panelu, `panel/tests/gate.sh` z Playwright 1.58.2 (`PLAYWRIGHT_DIR` = `$RUNNER_TEMP/pw` przez `GITHUB_ENV`), po bramce krok `panel/tests/hwaccel.sh` (sprawdzenie akceleracji Intel/AMD/NVIDIA w obrazie legacy; ten sam krok wykonuje `.github/workflows/release.yml`); `panel-legacy-latest.yml` (poniedziałek 04:17 UTC i ręcznie): stos na `ghcr.io/ersatztv/legacy:latest` + seed + e2e |
+| CI | `.github/workflows/panel-ci.yml` (push na `main`, PR, ręcznie; wywoływany też przez `release.yml`): serwer (`--locked`, binarka jako artefakt `vizrs-live-linux-x86_64`), krzyżowa budowa obu obrazów na arm64, obraz panelu, `panel/tests/gate.sh` z Playwright 1.58.2 (akcja `.github/actions/playwright`: `PLAYWRIGHT_DIR` = `$RUNNER_TEMP/pw` przez `GITHUB_ENV`) i ffmpeg z libx265 (K18), po bramce krok `panel/tests/hwaccel.sh` (sprawdzenie akceleracji Intel/AMD/NVIDIA w obrazie legacy); okno na trzech systemach; AppImage z GStreamerem (`panel/scripts/check-appimage.sh`, artefakt `vizrs-cg-playout-appimage` dla wydania); `panel-legacy-latest.yml` (poniedziałek 04:17 UTC i ręcznie): stos na `ghcr.io/ersatztv/legacy:latest` + seed + e2e |
 
 **Prawdziwe usługi zamiast atrap (`panel/tests/real.sh`, ręcznie, poza bramką).** e2e testuje Jellyfin i CG Playout na atrapach; `panel/tests/real.sh up` stawia obok stosu testowego prawdziwe: **Jellyfin** (127.0.0.1:18196), **Emby** (18896), **Plex** (18324) – w sieci `vizrs-live-test-net`, z wideo testowym seeda pod `/media/info24` – oraz **VizRS CG Playout** (binarka, 127.0.0.1:18701, live API na danych stosu) i drugi panel (**127.0.0.1:18092**) podłączony do niego (panel 18090 zostaje na atrapie e2e). Jellyfin i Emby konfiguruje sam (konto `vizrs`, biblioteka „Filmy E2E”, klucz API w `$VIZRS_LIVE_TEST_DIR/real/*.key`); `panel/tests/real.sh connect` łączy z nimi legacy przez panel; `status`, `down` (najpierw odłącza legacy od Jellyfin i Emby – ich pozycje zmieniają liczby, których oczekuje e2e, więc przed `panel/tests/stack.sh test` zawsze `down`), `reset` (usuwa też dane usług). Plex: logowanie PIN przez plex.tv – ręcznie w panelu (Źródła zewnętrzne → Plex), opcjonalnie `PLEX_CLAIM`. Sprawdzone 2026-11-07: legacy ↔ Jellyfin 10.10.7 i Emby 4.8.11 (połączenie, klucz zamaskowany, biblioteki, zamiana ścieżki `/media/info24` → `/config/media/info24`, synchronizacja – film „Pogoda” w indeksie legacy); reguły grafiki na prawdziwym CG Playout (odczyt, błędny regex odrzucony, zapis `graphics.json`). Bez silnika VizRS (komendy grafiki idą w próżnię) i bez Plex z kontem.
 

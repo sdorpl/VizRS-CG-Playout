@@ -258,13 +258,13 @@ W Portainerze obowiązują wartości domyślne `docker-compose.live.yml`: panel 
    - `panel/bridge/VizRS.Bridge.csproj` i stała `Version` w `panel/bridge/Bridge.cs`;
    - wpis w `CHANGELOG.md` w sekcji z numerem wersji.
 2. `git tag v<wersja> && git push origin main v<wersja>` – workflow `.github/workflows/release.yml`:
-   - sprawdza zgodność jednej wersji produktu we wszystkich manifestach;
-   - uruchamia bramkę panelu `panel/tests/gate.sh` oraz weryfikację akceleracji sprzętowej `panel/tests/hwaccel.sh`;
+   - sprawdza zgodność jednej wersji produktu we wszystkich manifestach (także `Version` w `Bridge.cs`);
+   - wywołuje CI tego commita (`ci.yml` i `panel-ci.yml`: testy sidecara, bramka panelu `panel/tests/gate.sh`, weryfikacja akceleracji sprzętowej `panel/tests/hwaccel.sh`, okno, AppImage) – obrazy i wydanie powstają dopiero po zielonym CI;
    - buduje binarki panelu `VizRS-CG-Playout-panel-<wersja>-linux-{x86_64,arm64}.tar.gz` (statyczne musl) oraz sidecara;
    - buduje obrazy Dockera (`vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy`) na amd64 i arm64;
-   - buduje aplikację okienną (Tauri 2): `VizRS-CG-Playout-<wersja>-x86_64.AppImage` (natywny klient panelu na serwerze; wydania: https://github.com/sdorpl/VizRS-CG-Playout/releases);
+   - dołącza aplikację okienną (Tauri 2) z CI panelu: `VizRS-CG-Playout-<wersja>-x86_64.AppImage` (natywny klient panelu na serwerze; wydania: https://github.com/sdorpl/VizRS-CG-Playout/releases);
    - zakłada wydanie na GitHubie z plikami i sumami `SHA256SUMS.txt`.
-   Próba bez znacznika: Actions → Release → Run workflow z wersją – szkic wydania.
+   Próba bez znacznika: Actions → Release → Run workflow z wersją – szkic wydania (obrazy tylko z numerem, bez `:latest`); z `publish` – od razu wydanie i znacznik `v<wersja>` na wybranym commicie.
 3. Pakiety `vizrs-live` i `vizrs-live-legacy` na GitHubie ustawione jako publiczne.
 4. Bez dostępu do Actions – ręczna budowa:
    ```bash

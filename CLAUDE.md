@@ -173,7 +173,7 @@ Po testach na stosie Dockera zawsze sprzątaj to, co powstało na potrzeby testu
 tests/deploy.sh   # lokalnie, po każdej zmianie (ok. 20–60 s): cargo fmt/clippy/test, node --check, obraz panelu,
                   # podmiana `live` w stosie CG Playout, tests/prod-smoke.cjs (wszystkie ekrany, tylko odczyt), przy błędzie powrót
 DEPLOY_SHOTS=<katalog poza repo> tests/deploy.sh   # to samo + zrzut każdego ekranu (przy pracy nad UI – obejrzyj)
-tests/gate.sh     # pełna bramka ze stosem testowym i e2e – uruchamia ją CI (ci.yml) po pushu; lokalnie tylko na prośbę
+tests/gate.sh     # pełna bramka ze stosem testowym i e2e – uruchamia ją CI panelu (panel-ci.yml) po pushu; lokalnie tylko na prośbę
 tools/sync-zasady.sh --check   # zasady pakietu = CG System (wersja w docs/ZASADY_CG_SYSTEM)
 ```
 

@@ -1,12 +1,13 @@
 name: CI
-# Testy przy każdym wypchnięciu i PR, binarka jako artefakt.
-# Obraz sidecara i wydanie: release.yml (znacznik v* albo ręcznie).
+# Testy przy każdym wypchnięciu na main, PR i ręcznie, binarka jako artefakt.
+# Obraz sidecara i wydanie: release.yml (znacznik v* albo ręcznie) wywołuje ten workflow (workflow_call) i publikuje
+# dopiero po zielonym – znaczniki nie uruchamiają CI osobno.
 on:
   push:
-    branches: [main, rust-edit]
-    tags: ['v*']
+    branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -37,6 +38,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Zasady pakietu zgodne z CG System
         run: tools/sync-zasady.sh --check cg-zasady
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
@@ -51,7 +53,7 @@ jobs:
       # Testy kontraktu: binarki jako czarne skrzynki, udawany VizRS.
       - uses: actions/setup-node@v4
         with:
-          node-version: current
+          node-version: 22
       # ffmpeg dla testów live ingest (bez niego są pomijane: odbiornik RTMP, przejęcie, slot live).
       - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
       - run: npm test

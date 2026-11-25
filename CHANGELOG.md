@@ -4,6 +4,9 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Wydanie z bramką CI:** `release.yml` wywołuje `ci.yml` i `panel-ci.yml` tego commita; obrazy (`vizrs-cg`, `vizrs-seed`, `vizrs-live`, `vizrs-live-legacy`) i wydanie powstają dopiero po zielonym CI. Dotąd obrazy sidecara i seeda szły na ghcr bez żadnego testu i bez sprawdzenia wersji, a v26.11.31 wyszło przy czerwonym CI panelu. Wersja sprawdzana także ze stałą `Version` w `panel/bridge/Bridge.cs`. Znacznik zawsze `v<wersja>`; ręcznie z `publish` – wydanie i znacznik na wybranym commicie (jak w CG System i Artist). `:latest` wszystkich obrazów tylko przy publikacji wersji bez łącznika – szkic nie przesuwa już `vizrs-cg:latest` i `vizrs-seed:latest`.
+- **CI:** AppImage okna z GStreamerem budowany i sprawdzany w CI panelu (`panel/scripts/check-appimage.sh`) – ten plik trafia do wydania (bez drugiej budowy); bramka w CI bez ponownego fmt/clippy/test serwera (`GATE_BEZ_SERWERA=1`), znaczniki bez osobnego przebiegu CI, ffmpeg z libx265 w CI panelu (K18 nie jest już pomijany), Playwright we wspólnej akcji, Node 22 w `ci.yml`, pamięć podręczna Cargo, bez martwej gałęzi `rust-edit`; `drafts.yml` wywołuje wspólny workflow z CG System. Test podglądu („gra dalej po zmianie ekranu”) czeka na postęp obrazu do 15 s zamiast stałych 5 s.
+
 ## 26.11.31 (2026-11-25)
 
 - **Okno panelu (AppImage): podgląd strumienia H.264/AAC.** Paczka ma GStreamera z wtyczkami (`bundleMediaFramework`); wcześniej rdzeń GStreamera 1.20 z paczki nie ładował nowszych wtyczek systemu i podgląd pokazywał „Ta przeglądarka nie odtworzy strumienia (avc1…, mp4a…)”. Paczka jest większa (wtyczki GStreamera).

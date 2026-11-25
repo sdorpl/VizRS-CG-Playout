@@ -31,14 +31,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Playwright (Chromium)
-        run: |
-          # katalog poza repo; kontekst runner niedostępny w env joba – przez GITHUB_ENV dla kolejnych kroków
-          PLAYWRIGHT_DIR=$RUNNER_TEMP/pw; echo "PLAYWRIGHT_DIR=$PLAYWRIGHT_DIR" >> "$GITHUB_ENV"
-          mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR"
-          npm init -y >/dev/null
-          npm install --no-audit --no-fund playwright@1.58.2
-          npx playwright install --with-deps chromium
+      - uses: ./.github/actions/playwright
       - name: pobierz najnowsze legacy
         run: docker pull "$LEGACY_IMAGE"
       - name: stos z najnowszym legacy, seed, e2e

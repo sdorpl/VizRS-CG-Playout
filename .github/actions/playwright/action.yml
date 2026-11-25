@@ -1,0 +1,21 @@
+# Playwright z Chromium w katalogu poza repo; PLAYWRIGHT_DIR dla kolejnych kroków przez GITHUB_ENV
+# (kontekst runner niedostępny w env joba). Wspólne dla panel-ci.yml i panel-legacy-latest.yml.
+name: Playwright (Chromium)
+description: Instaluje Playwright i Chromium, ustawia PLAYWRIGHT_DIR
+inputs:
+  version:
+    description: Wersja pakietu playwright
+    required: false
+    default: 1.58.2
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PW_VERSION: ${{ inputs.version }}
+      run: |
+        PLAYWRIGHT_DIR=$RUNNER_TEMP/pw; echo "PLAYWRIGHT_DIR=$PLAYWRIGHT_DIR" >> "$GITHUB_ENV"
+        mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR"
+        npm init -y >/dev/null
+        npm install --no-audit --no-fund "playwright@$PW_VERSION"
+        npx playwright install --with-deps chromium

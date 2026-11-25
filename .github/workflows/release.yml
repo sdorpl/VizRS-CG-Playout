@@ -3,19 +3,26 @@ name: Release
 #   binarka vizrs-cg (Rust) z client/ (vizrs-etv-client i vizrs-ffmpeg, statyczne musl) i etv/: Linux x86_64 i arm64 (.tar.gz)
 #   obraz Docker ghcr.io/<właściciel>/vizrs-cg:<wersja> i :latest (amd64 + arm64)
 #   obraz ghcr.io/<właściciel>/vizrs-seed:<wersja> i :latest (dane startowe i programy ErsatzTV; stosy s1 i s2)
-#   panel (panel/, dawny VizRS Live): bramka panel/tests/gate.sh, binarka vizrs-live (musl, x86_64 i arm64), obrazy
+#   panel (panel/, dawny VizRS Live): binarka vizrs-live (musl, x86_64 i arm64), obrazy
 #   ghcr.io/<właściciel>/vizrs-live:<wersja> i vizrs-live-legacy:<wersja>[-legacy<wersja>] (amd64 + arm64), AppImage okna panelu
 #   VizRS-CG-Playout-<wersja>-x86_64.AppImage; jedna wersja produktu: Cargo.toml = panel/server = panel/desktop = tauri.conf.json = most
-#   wydanie na GitHubie z sumami SHA256SUMS.txt (ręcznie: szkic)
-# Wersja z łącznikiem (v2.1.0-rc1) = wydanie wstępne, bez przesuwania :latest.
+#   wydanie na GitHubie z sumami SHA256SUMS.txt (ręcznie bez `publish`: szkic)
+# Bramka: CI sidecara (ci.yml) i CI panelu (panel-ci.yml: serwer, okno na 3 systemach, gate.sh, hwaccel, AppImage)
+# przez workflow_call – obrazy i wydanie powstają dopiero po zielonym CI tego commita; AppImage z joba appimage CI panelu.
+# Znacznik zawsze v<wersja>. :latest wszystkich obrazów tylko przy publikacji (znacznik albo ręcznie z `publish`)
+# wersji bez łącznika; wersja z łącznikiem (v26.12.1-rc1) = wydanie wstępne, szkic – same obrazy z numerem.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Wersja (np. 2.0.6) – bez znacznika powstaje tylko szkic wydania'
+        description: 'Wersja (np. 26.11.32) – bez znacznika powstaje tylko szkic wydania'
         required: true
+      publish:
+        description: 'Opublikuj od razu: znacznik powstaje na tym commicie, szkic tej wersji jest zastępowany'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -25,7 +32,57 @@ env:
   VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
 jobs:
+  panel_wersja:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: panel
+    outputs:
+      v: ${{ steps.w.outputs.v }}
+      tag: ${{ steps.w.outputs.tag }}
+      pre: ${{ steps.w.outputs.pre }}
+      lv: ${{ steps.w.outputs.lv }}
+      legacy: ${{ steps.w.outputs.legacy }}
+      owner: ${{ steps.w.outputs.owner }}
+      latest: ${{ steps.w.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wersje
+        id: w
+        env:
+          INPUT: ${{ inputs.version }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then R=$GITHUB_REF_NAME; else R=$INPUT; fi
+          V=${R#v}
+          # jedna wersja produktu: sidecar, panel, okno, most (wydanie wstępne v26.11.11-test.1 → porównanie z 26.11.11)
+          VB=${V%%-*}
+          for f in ../Cargo.toml server/Cargo.toml desktop/Cargo.toml; do
+            C=$(sed -n 's/^version = "\(.*\)"/\1/p' "$f" | head -1)
+            [ "$VB" = "$C" ] || { echo "wersja $R ≠ $C z $f"; exit 1; }
+          done
+          T=$(sed -n 's/^ *"version": *"\(.*\)".*/\1/p' desktop/tauri.conf.json | head -1)
+          B=$(sed -n 's#.*<Version>\(.*\)</Version>.*#\1#p' bridge/VizRS.Bridge.csproj | head -1)
+          [ "$VB" = "$T" ] && [ "$VB" = "$B" ] || { echo "wersja $R ≠ tauri.conf.json $T / VizRS.Bridge.csproj $B"; exit 1; }
+          BC=$(sed -n 's#.*const string Version = "\(.*\)";.*#\1#p' bridge/Bridge.cs | head -1)
+          [ "$VB" = "$BC" ] || { echo "wersja $R ≠ Version $BC z bridge/Bridge.cs"; exit 1; }
+          L=$(sed -n 's#^LEGACY_IMAGE=##p' .env.example)
+          case "$L" in *:v*) LV="-legacy${L##*:v}";; *) LV="";; esac
+          pre=false; case "$V" in *-*) pre=true;; esac
+          latest=false; [ "$PUBLISH" = true ] && [ "$pre" = false ] && latest=true
+          {
+            echo "v=$V"; echo "tag=v$V"; echo "pre=$pre"; echo "lv=$LV"; echo "legacy=$L"
+            echo "owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"; echo "latest=$latest"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  panel_ci:
+    uses: ./.github/workflows/panel-ci.yml
+
   bin:
+    needs: panel_wersja
     strategy:
       fail-fast: false
       matrix:
@@ -56,7 +113,12 @@ jobs:
           path: dist/*
 
   docker:
+    # publikuje obrazy – dopiero po zielonym CI sidecara
+    needs: [panel_wersja, ci]
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.panel_wersja.outputs.tag }}
+      LATEST: ${{ needs.panel_wersja.outputs.latest }}
     env:
       # bez artefaktu „*.dockerbuild” (zapis budowy) – download-artifact w jobie release nie umiał go pobrać
       DOCKER_BUILD_RECORD_UPLOAD: false
@@ -81,8 +143,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
-            ${{ steps.img.outputs.name }}:${{ env.VERSION }}
-            ${{ !contains(env.VERSION, '-') && format('{0}:latest', steps.img.outputs.name) || '' }}
+            ${{ steps.img.outputs.name }}:${{ env.TAG }}
+            ${{ env.LATEST == 'true' && format('{0}:latest', steps.img.outputs.name) || '' }}
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -92,82 +154,8 @@ jobs:
           cache-from: type=gha,scope=seed
           cache-to: type=gha,mode=max,scope=seed
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vizrs-seed:${{ env.VERSION }}
-            ${{ !contains(env.VERSION, '-') && format('ghcr.io/{0}/vizrs-seed:latest', github.repository_owner) || '' }}
-
-  panel_wersja:
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: panel
-    outputs:
-      v: ${{ steps.w.outputs.v }}
-      tag: ${{ steps.w.outputs.tag }}
-      lv: ${{ steps.w.outputs.lv }}
-      legacy: ${{ steps.w.outputs.legacy }}
-      owner: ${{ steps.w.outputs.owner }}
-      latest: ${{ steps.w.outputs.latest }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Wersje
-        id: w
-        env:
-          INPUT: ${{ inputs.version }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = push ]; then R=$GITHUB_REF_NAME; else R=$INPUT; fi
-          V=${R#v}
-          # jedna wersja produktu: sidecar, panel, okno, most (wydanie wstępne v26.11.11-test.1 → porównanie z 26.11.11)
-          VB=${V%%-*}
-          for f in ../Cargo.toml server/Cargo.toml desktop/Cargo.toml; do
-            C=$(sed -n 's/^version = "\(.*\)"/\1/p' "$f" | head -1)
-            [ "$VB" = "$C" ] || { echo "wersja $R ≠ $C z $f"; exit 1; }
-          done
-          T=$(sed -n 's/^ *"version": *"\(.*\)".*/\1/p' desktop/tauri.conf.json | head -1)
-          B=$(sed -n 's#.*<Version>\(.*\)</Version>.*#\1#p' bridge/VizRS.Bridge.csproj | head -1)
-          [ "$VB" = "$T" ] && [ "$VB" = "$B" ] || { echo "wersja $R ≠ tauri.conf.json $T / VizRS.Bridge.csproj $B"; exit 1; }
-          L=$(sed -n 's#^LEGACY_IMAGE=##p' .env.example)
-          case "$L" in *:v*) LV="-legacy${L##*:v}";; *) LV="";; esac
-          latest=false
-          [ "$GITHUB_EVENT_NAME" = push ] && case "$V" in *-*) ;; *) latest=true;; esac
-          {
-            echo "v=$V"; echo "tag=v$V"; echo "lv=$LV"; echo "legacy=$L"
-            echo "owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"; echo "latest=$latest"
-          } | tee -a "$GITHUB_OUTPUT"
-
-  panel_bramka:
-    needs: panel_wersja
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: panel
-    timeout-minutes: 60
-    env:
-      LEGACY_IMAGE: ${{ needs.panel_wersja.outputs.legacy }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Playwright (Chromium)
-        run: |
-          # katalog poza repo; kontekst runner niedostępny w env joba – przez GITHUB_ENV dla kolejnych kroków
-          PLAYWRIGHT_DIR=$RUNNER_TEMP/pw; echo "PLAYWRIGHT_DIR=$PLAYWRIGHT_DIR" >> "$GITHUB_ENV"
-          mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR"
-          npm init -y >/dev/null
-          npm install --no-audit --no-fund playwright@1.58.2
-          npx playwright install --with-deps chromium
-      - name: bramka na wersji legacy z .env.example
-        run: tests/gate.sh
-      - name: akceleracja sprzętowa w obrazie legacy (Intel VAAPI/QSV, AMD VAAPI, NVIDIA NVENC)
-        run: tests/hwaccel.sh vizrs-live-legacy:dev
-      - name: dziennik przy błędzie
-        if: failure()
-        run: |
-          docker logs vizrs-live-test-legacy 2>&1 | tail -200 || true
-          cat "${VIZRS_LIVE_TEST_DIR:-$HOME/.cache/vizrs-live-test}/panel.log" || true
+            ghcr.io/${{ github.repository_owner }}/vizrs-seed:${{ env.TAG }}
+            ${{ env.LATEST == 'true' && format('ghcr.io/{0}/vizrs-seed:latest', github.repository_owner) || '' }}
 
   panel_bin:
     needs: panel_wersja
@@ -202,53 +190,9 @@ jobs:
           name: panel-bin-${{ matrix.name }}
           path: panel/dist/*
 
-  panel_appimage:
-    needs: panel_wersja
-    runs-on: ubuntu-22.04   # starsza glibc = AppImage działa na większej liczbie dystrybucji
-    defaults:
-      run:
-        working-directory: panel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file desktop-file-utils
-      # GStreamer z wtyczkami do paczki (bundleMediaFramework w tauri.conf.json): WebKitGTK dekoduje H.264/AAC
-      # podglądu strumienia przez GStreamer, a sam rdzeń 1.20 z paczki nie ładuje nowszych wtyczek systemu
-      - run: sudo apt-get install -y --no-install-recommends gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
-      - name: AppImage (bundler Tauri)
-        working-directory: panel/desktop
-        env:
-          # linuxdeploy / appimagetool to AppImage – na runnerze bez FUSE rozpakowują się same
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          # h264parse (videoparsersbad) jest w plugins-bad – WebKit potrzebuje go do H.264 przez MSE
-          GSTREAMER_INCLUDE_BAD_PLUGINS: "1"
-        run: npx --yes @tauri-apps/cli@2 build --ci --bundles appimage
-      - name: Paczka
-        env:
-          V: ${{ needs.panel_wersja.outputs.v }}
-        run: |
-          mkdir -p dist
-          a=$(find desktop/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -1)
-          [ -n "$a" ] || { echo "::error::brak AppImage"; exit 1; }
-          cp "$a" "dist/VizRS-CG-Playout-$V-x86_64.AppImage"
-          # podgląd strumienia: demuxer MP4 (isomp4), dekodery H.264/AAC (libav), h264parse (videoparsersbad) muszą być w paczce
-          (cd dist && APPIMAGE_EXTRACT_AND_RUN=1 "./VizRS-CG-Playout-$V-x86_64.AppImage" --appimage-extract >/dev/null)
-          for w in libgstisomp4.so libgstlibav.so libgstvideoparsersbad.so libgstapp.so libgstplayback.so; do
-            find dist/squashfs-root -name "$w" | grep -q . || { echo "::error::AppImage bez wtyczki GStreamera $w"; exit 1; }
-          done
-          rm -rf dist/squashfs-root
-          APPIMAGE_EXTRACT_AND_RUN=1 "dist/VizRS-CG-Playout-$V-x86_64.AppImage" --version
-          ls -la dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: panel-appimage
-          path: panel/dist/*
-
   panel_docker:
-    needs: [panel_wersja, panel_bramka]
+    # publikuje obrazy – dopiero po zielonym CI panelu (w tym gate.sh i hwaccel.sh)
+    needs: [panel_wersja, panel_ci]
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -293,8 +237,11 @@ jobs:
             ${{ env.LATEST == 'true' && format('{0}/vizrs-live-legacy:latest', env.IMG) || '' }}
 
   release:
-    needs: [bin, docker, panel_wersja, panel_bin, panel_appimage, panel_docker]
+    needs: [panel_wersja, ci, panel_ci, bin, docker, panel_bin, panel_docker]
     runs-on: ubuntu-latest
+    env:
+      V: ${{ needs.panel_wersja.outputs.v }}
+      TAG: ${{ needs.panel_wersja.outputs.tag }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -306,17 +253,37 @@ jobs:
           path: dist
           pattern: 'panel-*'
           merge-multiple: true
+      # AppImage okna z CI panelu (job appimage: GStreamer w paczce sprawdzony)
+      - uses: actions/download-artifact@v4
+        with:
+          name: vizrs-cg-playout-appimage
+          path: appimage
+      - name: AppImage okna panelu
+        run: |
+          a=$(find appimage -maxdepth 1 -name '*.AppImage' | head -1)
+          [ -n "$a" ] || { echo "::error::brak AppImage z CI panelu"; exit 1; }
+          cp "$a" "dist/VizRS-CG-Playout-$V-x86_64.AppImage" && chmod +x dist/*.AppImage && ls -la dist
       - name: Sumy kontrolne
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Usuń szkic tej wersji (publikacja ręczna)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.draft and .name == \"$TAG\") | .id" |
+            xargs -r -I{} gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/{}"
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION }}
-          draft: ${{ github.event_name == 'workflow_dispatch' }}
-          prerelease: ${{ contains(env.VERSION, '-') }}
+          tag_name: ${{ needs.panel_wersja.outputs.tag }}
+          # znacznik tworzony przy publikacji wskazuje zbudowany commit, nie gałąź domyślną
+          target_commitish: ${{ github.sha }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish }}
+          prerelease: ${{ needs.panel_wersja.outputs.pre == 'true' }}
+          make_latest: ${{ needs.panel_wersja.outputs.latest }}
           generate_release_notes: true
           files: dist/*
           body: |
-            **Docker (amd64 / arm64):** `ghcr.io/${{ github.repository_owner }}/vizrs-cg:${{ env.VERSION }}` – stos: `docker compose pull && docker compose up -d` (docs/DOKUMENTACJA.md §4).
+            **Docker (amd64 / arm64):** `ghcr.io/${{ github.repository_owner }}/vizrs-cg:${{ needs.panel_wersja.outputs.tag }}` – stos: `docker compose pull && docker compose up -d` (docs/DOKUMENTACJA.md §4).
             **Panel (amd64 / arm64):** `ghcr.io/${{ needs.panel_wersja.outputs.owner }}/vizrs-live:${{ needs.panel_wersja.outputs.v }}` i `ghcr.io/${{ needs.panel_wersja.outputs.owner }}/vizrs-live-legacy:${{ needs.panel_wersja.outputs.v }}${{ needs.panel_wersja.outputs.lv }}` (ErsatzTV legacy `${{ needs.panel_wersja.outputs.legacy }}` z mostem; powered by ErsatzTV) – nakładka `docker-compose.live.yml`, `COMPOSE_PROFILES=grafika,ingest`.
             **Linux – okno panelu:** `VizRS-CG-Playout-*-x86_64.AppImage` – natywny klient panelu na serwerze (adres panelu, np. przez proxy z TLS, i token; wymaga WebKitGTK 4.1).
             **Linux x86_64 / arm64:** archiwum z `vizrs-cg` (wymaga Chromium w PATH albo `VIZRS_BROWSER`), programami ErsatzTV (`client/`: klient elementu `vizrs-etv-client` i nakładka ffmpeg `vizrs-ffmpeg`, statyczne) i elementem grafiki (`etv/`).

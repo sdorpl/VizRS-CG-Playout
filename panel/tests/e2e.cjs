@@ -1993,7 +1993,9 @@ function check(cond, msg) {
     check(await page.inputValue('#mon-ch') === '24', 'podgląd: wybrany kanał z karty Na antenie');
     const t1 = await page.evaluate(() => document.querySelector('#mon-video').currentTime);
     await tab('kanaly');
-    await page.waitForTimeout(5000);
+    // odtwarzacz wyrównuje się do zegara anteny także tempem (wolniej niż 1×), a runner CI bywa wolny: zamiast stałych 5 s
+    // czekamy, aż obraz przejdzie ponad 4 s (granice segmentów), najdłużej 15 s
+    await page.waitForFunction((t0) => document.querySelector('#mon-video').currentTime - t0 > 4, t1, { timeout: 15000 }).catch(() => {});
     const st = await page.evaluate(() => {
       const v = document.querySelector('#mon-video');
       return { t: v.currentTime, w: v.videoWidth, h: v.videoHeight, dropped: v.getVideoPlaybackQuality().droppedVideoFrames, info: document.querySelector('#mon-info').textContent };
