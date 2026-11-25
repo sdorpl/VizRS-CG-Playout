@@ -40,6 +40,12 @@ pub(crate) fn use_remote(
 }
 
 /// Strona bieżącego panelu może wołać komendę `ipc` (adres zna dopiero program – uprawnienie w działaniu).
+/// Ramka podglądu anteny VizRS (`<VizRS>/output` w widokach Na antenie i Grafika). WebKitGTK zgłasza
+/// nawigację ramki tak samo jak strony – bez tego wyjątku podgląd szedłby do przeglądarki systemowej.
+pub(crate) fn vizrs_output(u: &tauri::Url) -> bool {
+    matches!(u.scheme(), "http" | "https") && u.path() == "/output"
+}
+
 pub(crate) fn allow_page(app: &AppHandle, base: &str) {
     let n = {
         let mut a = state(app);
@@ -163,6 +169,7 @@ pub(crate) fn open_panel(app: &AppHandle) {
     .on_navigation(move |u| {
         let base = state(&app_nav).page().map(|p| p.0).unwrap_or_default();
         let ok = u.as_str().starts_with(&format!("{base}/"))
+            || vizrs_output(u)
             || u.scheme() == "about"
             || u.scheme() == "blob"
             || u.scheme() == "data";

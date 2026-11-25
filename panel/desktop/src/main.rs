@@ -199,6 +199,62 @@ fn error(app: &AppHandle, msg: &str) {
         .show(|_| {});
 }
 
+/// Zmienne WebKitGTK ustawione przez `gpu::prepare` (nie przez użytkownika) – tylko dla tego okna.
+static GPU_SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Zmienne, które hooki AppImage (linuxdeploy: gtk, gstreamer) i jego środowisko uruchomieniowe ustawiają
+/// dla bibliotek z paczki – przeglądarka systemowa z nimi ładowałaby moduły GTK/GIO/GStreamera z paczki.
+const APPIMAGE_VARS: &[&str] = &[
+    "APPDIR",
+    "APPIMAGE",
+    "ARGV0",
+    "OWD",
+    "GTK_DATA_PREFIX",
+    "GTK_THEME",
+    "GTK_EXE_PREFIX",
+    "GTK_PATH",
+    "GTK_IM_MODULE_FILE",
+    "GSETTINGS_SCHEMA_DIR",
+    "GI_TYPELIB_PATH",
+    "GIO_MODULE_DIR",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GST_REGISTRY_REUSE_PLUGIN_SCANNER",
+    "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "GST_PLUGIN_PATH",
+    "GST_PLUGIN_PATH_1_0",
+    "GST_PLUGIN_SCANNER",
+    "GST_PLUGIN_SCANNER_1_0",
+    "GST_PTP_HELPER",
+    "GST_PTP_HELPER_1_0",
+];
+/// Listy ścieżek, z których usuwamy wpisy wewnątrz paczki (reszta – systemu – zostaje).
+const APPIMAGE_LISTS: &[&str] = &["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS"];
+
+/// Środowisko programu zewnętrznego (`xdg-open` → przeglądarka): bez zmian paczki AppImage i bez
+/// zmiennych WebKitGTK okna. `get` – bieżące środowisko; wynik: (nazwa, Some(nowa) | None = usuń).
+fn external_env(
+    get: &dyn Fn(&str) -> Option<String>,
+    gpu_set: &[String],
+) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> =
+        gpu_set.iter().map(|k| (k.clone(), None)).collect();
+    let Some(appdir) = get("APPDIR").filter(|d| !d.is_empty()) else {
+        return out;
+    };
+    let appdir = appdir.trim_end_matches('/').to_string();
+    out.extend(APPIMAGE_VARS.iter().map(|k| (k.to_string(), None)));
+    for k in APPIMAGE_LISTS {
+        let Some(v) = get(k) else { continue };
+        let kept: Vec<&str> = v
+            .split(':')
+            .filter(|p| !p.is_empty() && !p.starts_with(&appdir))
+            .collect();
+        out.push((k.to_string(), (!kept.is_empty()).then(|| kept.join(":"))));
+    }
+    out
+}
+
 fn open_external(target: &str) {
     #[cfg(target_os = "windows")]
     let r = Command::new("rundll32")
@@ -207,7 +263,17 @@ fn open_external(target: &str) {
     #[cfg(target_os = "macos")]
     let r = Command::new("open").arg(target).spawn();
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let r = Command::new("xdg-open").arg(target).spawn();
+    let r = {
+        let mut c = Command::new("xdg-open");
+        let gpu = GPU_SET.get().map(Vec::as_slice).unwrap_or_default();
+        for (k, v) in external_env(&|k| std::env::var(k).ok(), gpu) {
+            match v {
+                Some(v) => c.env(k, v),
+                None => c.env_remove(k),
+            };
+        }
+        c.arg(target).spawn()
+    };
     if let Err(e) = r {
         eprintln!("nie mogę otworzyć {target}: {e}");
     }
@@ -221,7 +287,29 @@ type Zooms = Mutex<HashMap<String, f64>>;
 
 fn main() {
     // akceleracja WebKitGTK: zmienne środowiska przed startem GTK i przed powstaniem wątków (gpu.rs)
+    const GPU_VARS: &[&str] = &[
+        "GDK_BACKEND",
+        "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "WEBKIT_DISABLE_COMPOSITING_MODE",
+        "WEBKIT_FORCE_DMABUF_RENDERER",
+        "WEBKIT_SKIA_ENABLE_CPU_RENDERING",
+        "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
+        "WEBKIT_FORCE_COMPOSITING_MODE",
+        "__NV_DISABLE_EXPLICIT_SYNC",
+    ];
+    let before: Vec<bool> = GPU_VARS
+        .iter()
+        .map(|k| std::env::var_os(k).is_some())
+        .collect();
     let gpu_note = gpu::prepare(None);
+    let _ = GPU_SET.set(
+        GPU_VARS
+            .iter()
+            .zip(before)
+            .filter(|(k, had)| !had && std::env::var_os(k).is_some())
+            .map(|(k, _)| k.to_string())
+            .collect(),
+    );
     if !gpu_note.is_empty() {
         eprintln!("GPU: {gpu_note}");
     }
@@ -363,5 +451,57 @@ mod tests {
         assert!(args(&["--probe", "a.js"]).is_err());
         assert!(args(&["--nieznana"]).is_err());
         assert!(args(&["-psn_0_1"]).is_ok());
+    }
+
+    #[test]
+    fn external_env_without_appimage() {
+        let env = |k: &str| (k == "PATH").then(|| "/usr/bin".to_string());
+        let gpu = vec!["GDK_BACKEND".to_string()];
+        assert_eq!(
+            external_env(&env, &gpu),
+            vec![("GDK_BACKEND".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn external_env_in_appimage() {
+        let env = |k: &str| match k {
+            "APPDIR" => Some("/tmp/.mount_X/".to_string()),
+            "PATH" => Some("/tmp/.mount_X/usr/bin:/usr/bin".to_string()),
+            "LD_LIBRARY_PATH" => Some("/tmp/.mount_X/usr/lib/:/tmp/.mount_X/lib64/:".to_string()),
+            "XDG_DATA_DIRS" => Some(
+                "/tmp/.mount_X//usr/share:/usr/share:/var/lib/flatpak/exports/share".to_string(),
+            ),
+            _ => None,
+        };
+        let e = external_env(&env, &[]);
+        let get = |k: &str| e.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!(get("PATH"), Some(Some("/usr/bin".into())));
+        assert_eq!(get("LD_LIBRARY_PATH"), Some(None));
+        assert_eq!(
+            get("XDG_DATA_DIRS"),
+            Some(Some("/usr/share:/var/lib/flatpak/exports/share".into()))
+        );
+        for k in [
+            "APPDIR",
+            "GIO_MODULE_DIR",
+            "GTK_PATH",
+            "GST_PLUGIN_SYSTEM_PATH_1_0",
+            "GTK_THEME",
+        ] {
+            assert_eq!(get(k), Some(None), "{k}");
+        }
+    }
+
+    #[test]
+    fn vizrs_output_frame() {
+        let u = |s: &str| s.parse::<tauri::Url>().unwrap();
+        assert!(vizrs_output(&u(
+            "https://s1.btb.j00r.us/output?token=x&bus=ch-1"
+        )));
+        assert!(vizrs_output(&u("http://tv.lan:8788/output")));
+        assert!(!vizrs_output(&u("https://s1.btb.j00r.us/trio?channel=1")));
+        assert!(!vizrs_output(&u("https://example.com/output/inne")));
+        assert!(!vizrs_output(&u("file:///output")));
     }
 }
