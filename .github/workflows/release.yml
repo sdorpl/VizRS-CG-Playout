@@ -119,7 +119,6 @@ jobs:
     env:
       TAG: ${{ needs.panel_wersja.outputs.tag }}
       LATEST: ${{ needs.panel_wersja.outputs.latest }}
-    env:
       # bez artefaktu „*.dockerbuild” (zapis budowy) – download-artifact w jobie release nie umiał go pobrać
       DOCKER_BUILD_RECORD_UPLOAD: false
     steps:
