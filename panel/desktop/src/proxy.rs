@@ -6,6 +6,12 @@
 //! wylogowanie) zgłasza programowi, który zapamiętuje sesję w `live-connections.json`. Dostęp tylko dla okna: sekret w pierwszym adresie → ciasteczko
 //! `HttpOnly`, kontrola `Host` (ochrona przed DNS rebinding) i `Origin`. Odpowiedzi idą strumieniem (podgląd HLS,
 //! odtwarzanie pliku z `Range`), bez buforowania całości.
+//!
+//! Drugi port – **pośrednik podglądu VizRS** (`Proxy::output`): ramka `<VizRS>/output` w panelu. VizRS po wejściu na
+//! `/output?token=…` autoryzuje skrypty i `/events` ciasteczkiem `vizrs_token` (`SameSite=Strict`); strona okna ma
+//! adres `127.0.0.1`, więc ramka z adresu VizRS byłaby obcą witryną i WebKit nie wysłałby ciasteczka (pusta ramka).
+//! Przez ten port ramka jest tą samą witryną co panel (`127.0.0.1`, port nie zmienia witryny). Adres VizRS pośrednik
+//! bierze z `/api/status` panelu (`vizrsUrl`); niczego od siebie nie dokleja – uprawnienia daje token wyjścia strony.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -51,6 +57,8 @@ const FORWARD_RES: &[&str] = &[
 pub struct Proxy {
     /// `http://127.0.0.1:<port>`
     pub base: String,
+    /// `http://127.0.0.1:<port>` pośrednika podglądu VizRS (`/output`)
+    pub output: String,
     pub secret: String,
     stop: Arc<AtomicBool>,
 }
@@ -58,8 +66,9 @@ pub struct Proxy {
 impl Drop for Proxy {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // obudź pętlę accept
+        // obudź pętle accept
         let _ = TcpStream::connect(self.base.trim_start_matches("http://"));
+        let _ = TcpStream::connect(self.output.trim_start_matches("http://"));
     }
 }
 
@@ -233,6 +242,13 @@ pub fn start(
         .map_err(|e| format!("pośrednik: {e}"))?
         .port();
     let base = format!("http://127.0.0.1:{port}");
+    let out_listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|e| format!("pośrednik podglądu: {e}"))?;
+    let out_port = out_listener
+        .local_addr()
+        .map_err(|e| format!("pośrednik podglądu: {e}"))?
+        .port();
+    let output = format!("http://127.0.0.1:{out_port}");
     let secret = secret()?;
     let stop = Arc::new(AtomicBool::new(false));
     let ctx = Arc::new(Ctx {
@@ -242,24 +258,40 @@ pub fn start(
         on_session,
         secret: secret.clone(),
         host: format!("127.0.0.1:{port}"),
+        out_host: format!("127.0.0.1:{out_port}"),
+        vizrs: Mutex::new(None),
         agent: agent(None),
     });
-    let st = stop.clone();
+    serve(listener, stop.clone(), ctx.clone(), handle);
+    serve(out_listener, stop.clone(), ctx, handle_output);
+    Ok(Proxy {
+        base,
+        output,
+        secret,
+        stop,
+    })
+}
+
+fn serve(
+    listener: TcpListener,
+    stop: Arc<AtomicBool>,
+    ctx: Arc<Ctx>,
+    handler: fn(&Ctx, TcpStream) -> Result<(), String>,
+) {
     std::thread::spawn(move || {
         for conn in listener.incoming() {
-            if st.load(Ordering::Relaxed) {
+            if stop.load(Ordering::Relaxed) {
                 break;
             }
             let Ok(s) = conn else { continue };
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                if let Err(e) = handle(&ctx, s) {
+                if let Err(e) = handler(&ctx, s) {
                     eprintln!("pośrednik: {e}");
                 }
             });
         }
     });
-    Ok(Proxy { base, secret, stop })
 }
 
 struct Ctx {
@@ -269,6 +301,10 @@ struct Ctx {
     on_session: Option<OnSession>,
     secret: String,
     host: String,
+    /// `127.0.0.1:<port>` pośrednika podglądu VizRS
+    out_host: String,
+    /// adres VizRS z `/api/status` panelu (`None` – jeszcze nieznany albo panel bez VizRS)
+    vizrs: Mutex<Option<String>>,
     agent: ureq::Agent,
 }
 
@@ -473,12 +509,38 @@ fn forward(ctx: &Ctx, req: &Req, s: &mut TcpStream) -> Result<(), String> {
         "HTTP/1.1 {status} {}\r\nConnection: close\r\n",
         reason(status)
     );
+    let output = format!("http://{}", ctx.out_host);
     for name in FORWARD_RES {
         for v in res.headers().get_all(*name) {
             if let Ok(v) = v.to_str() {
+                // ramka podglądu VizRS idzie przez pośrednika podglądu – jego adres w frame-src
+                let v = if *name == "content-security-policy" {
+                    add_frame_src(v, &output)
+                } else {
+                    v.to_string()
+                };
                 head.push_str(&format!("{name}: {v}\r\n"));
             }
         }
+    }
+    // adres VizRS dla pośrednika podglądu: z odpowiedzi /api/status (mała, JSON); strona dostaje w niej
+    // adres pośrednika podglądu (`vizrsOutputProxy`, core.js `vizrsUrl`)
+    if status == 200 && req.method == "GET" && req.target.split('?').next() == Some("/api/status") {
+        let body = res
+            .into_body()
+            .with_config()
+            .limit(1024 * 1024)
+            .read_to_vec()
+            .map_err(|e| e.to_string())?;
+        let body = status_with_output(ctx, &body, &output).unwrap_or(body);
+        let head = head
+            .lines()
+            .filter(|l| !l.to_ascii_lowercase().starts_with("content-length:"))
+            .map(|l| format!("{l}\r\n"))
+            .collect::<String>();
+        s.write_all(format!("{head}content-length: {}\r\n\r\n", body.len()).as_bytes())
+            .map_err(|e| e.to_string())?;
+        return s.write_all(&body).map_err(|e| e.to_string());
     }
     head.push_str("\r\n");
     s.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
@@ -488,6 +550,200 @@ fn forward(ctx: &Ctx, req: &Req, s: &mut TcpStream) -> Result<(), String> {
     let mut body = res.into_body().into_reader();
     // strumień: plik wideo, segmenty HLS – kopiowanie porcjami do zamknięcia (Connection: close)
     std::io::copy(&mut body, s).map(|_| ()).or_else(|e| {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            Ok(())
+        } else {
+            Err(e.to_string())
+        }
+    })
+}
+
+/// Nagłówki żądania ramki podglądu przekazywane do VizRS (ciasteczka – tylko `vizrs_token`).
+const OUTPUT_REQ: &[&str] = &[
+    "accept",
+    "content-type",
+    "range",
+    "if-none-match",
+    "if-modified-since",
+    "accept-language",
+    "last-event-id",
+];
+/// Ciasteczko tokenu VizRS (`VizRS CG System`, `guard.rs`).
+const VIZRS_COOKIE: &str = "vizrs_token";
+
+/// `/api/status` panelu: zapamiętuje adres VizRS (`result.vizrsUrl`) i dopisuje `result.vizrsOutputProxy`
+/// (tylko gdy VizRS jest znany); `None` – treść nie jest takim obiektem JSON.
+fn status_with_output(ctx: &Ctx, body: &[u8], output: &str) -> Option<Vec<u8>> {
+    let mut v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let target = v["result"]["vizrsUrl"]
+        .as_str()
+        .and_then(|u| vizrs_target(&ctx.target, u));
+    *ctx.vizrs.lock().unwrap_or_else(|e| e.into_inner()) = target.clone();
+    let r = v.get_mut("result")?.as_object_mut()?;
+    if target.is_some() {
+        r.insert("vizrsOutputProxy".into(), output.into());
+    }
+    serde_json::to_vec(&v).ok()
+}
+
+/// Adres VizRS dla pośrednika: `http(s)://host[:port]` z `vizrsUrl` panelu; sam port (`:8788`) – host panelu.
+pub(crate) fn vizrs_target(panel: &str, vizrs: &str) -> Option<String> {
+    let v = vizrs.trim();
+    if let Some(port) = v.strip_prefix(':') {
+        port.parse::<u16>().ok().filter(|p| *p > 0)?;
+        let (scheme, rest) = panel.split_once("://")?;
+        let host = rest.split('/').next()?;
+        // host bez portu (IPv6 w nawiasach zostaje w całości)
+        let host = match host.rfind(':') {
+            Some(i) if !host[i..].contains(']') => &host[..i],
+            _ => host,
+        };
+        return Some(format!("{scheme}://{host}:{port}"));
+    }
+    let (scheme, rest) = v.split_once("://")?;
+    if !matches!(scheme, "http" | "https") {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next()?;
+    (!host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-.:[]".contains(c)))
+    .then(|| format!("{scheme}://{host}"))
+}
+
+/// CSP panelu z dopisanym `origin` w `frame-src` (`'none'` zastąpione).
+pub(crate) fn add_frame_src(csp: &str, origin: &str) -> String {
+    let mut found = false;
+    let parts: Vec<String> = csp
+        .split(';')
+        .map(|d| {
+            let t = d.trim();
+            match t.strip_prefix("frame-src") {
+                Some(rest) if rest.is_empty() || rest.starts_with(' ') => {
+                    found = true;
+                    let rest = rest.trim();
+                    if rest.is_empty() || rest == "'none'" {
+                        format!("frame-src {origin}")
+                    } else {
+                        format!("frame-src {rest} {origin}")
+                    }
+                }
+                _ => t.to_string(),
+            }
+        })
+        .filter(|d| !d.is_empty())
+        .collect();
+    let mut out = parts.join("; ");
+    if !found {
+        out.push_str(&format!("; frame-src {origin}"));
+    }
+    out
+}
+
+/// `Cookie` strony → tylko `vizrs_token` (ciasteczko okna i inne zostają w pośredniku).
+fn output_cookie(header: Option<&str>) -> Option<String> {
+    header?
+        .split(';')
+        .map(str::trim)
+        .find(|c| c.split_once('=').is_some_and(|(k, _)| k == VIZRS_COOKIE))
+        .map(str::to_string)
+}
+
+/// `Set-Cookie` VizRS → tylko `vizrs_token`, bez `Domain` i `Secure` (pośrednik jest na `http://127.0.0.1`).
+fn output_set_cookie(v: &str) -> Option<String> {
+    let mut parts = v.split(';').map(str::trim);
+    let first = parts.next()?;
+    if first.split_once('=')?.0 != VIZRS_COOKIE {
+        return None;
+    }
+    let mut out = vec![first.to_string()];
+    for a in parts {
+        let k = a
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if !matches!(k.as_str(), "domain" | "secure" | "") {
+            out.push(a.to_string());
+        }
+    }
+    Some(out.join("; "))
+}
+
+/// Pośrednik podglądu VizRS: tylko ramka strony okna (ciasteczko okna – wspólne dla `127.0.0.1`), tylko odczyt
+/// i zgłoszenia błędów scen (`GET`, `HEAD`, `POST`).
+fn handle_output(ctx: &Ctx, mut s: TcpStream) -> Result<(), String> {
+    let req = match read_request(&mut s) {
+        Ok(r) => r,
+        Err((code, msg)) => return reply(&mut s, code, &[], msg).map_err(|e| e.to_string()),
+    };
+    if req.header("host") != Some(ctx.out_host.as_str()) {
+        return reply(&mut s, 403, &[], "zły Host").map_err(|e| e.to_string());
+    }
+    if let Some(o) = req.header("origin") {
+        if o != format!("http://{}", ctx.out_host) && o != format!("http://{}", ctx.host) {
+            return reply(&mut s, 403, &[], "obca strona").map_err(|e| e.to_string());
+        }
+    }
+    if !req.cookie(COOKIE).is_some_and(|c| eq_ct(c, &ctx.secret)) {
+        return reply(&mut s, 403, &[], "tylko okno VizRS CG Playout").map_err(|e| e.to_string());
+    }
+    if !matches!(req.method.as_str(), "GET" | "HEAD" | "POST") {
+        return reply(&mut s, 405, &[], "podgląd VizRS – tylko odczyt").map_err(|e| e.to_string());
+    }
+    let Some(target) = ctx.vizrs.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return reply(&mut s, 503, &[], "panel nie podał adresu VizRS").map_err(|e| e.to_string());
+    };
+    let mut b = http::Request::builder()
+        .method(req.method.as_str())
+        .uri(format!("{target}{}", req.target));
+    for name in OUTPUT_REQ {
+        if let Some(v) = req.header(name) {
+            b = b.header(*name, v);
+        }
+    }
+    if let Some(c) = output_cookie(req.header("cookie")) {
+        b = b.header("Cookie", c);
+    }
+    let r = b.body(req.body.clone()).map_err(|e| e.to_string())?;
+    let res = match ctx.agent.run(r) {
+        Ok(res) => res,
+        Err(e) => {
+            return reply(&mut s, 502, &[], &format!("VizRS nie odpowiada: {e}"))
+                .map_err(|e| e.to_string())
+        }
+    };
+    let status = res.status().as_u16();
+    let mut head = format!(
+        "HTTP/1.1 {status} {}\r\nConnection: close\r\n",
+        reason(status)
+    );
+    for name in FORWARD_RES {
+        // ramka w oknie: X-Frame-Options / frame-ancestors VizRS liczą się względem adresu VizRS, nie pośrednika
+        if *name == "x-frame-options" {
+            continue;
+        }
+        for v in res.headers().get_all(*name) {
+            if let Ok(v) = v.to_str() {
+                head.push_str(&format!("{name}: {v}\r\n"));
+            }
+        }
+    }
+    for v in res.headers().get_all("set-cookie") {
+        if let Some(c) = v.to_str().ok().and_then(output_set_cookie) {
+            head.push_str(&format!("set-cookie: {c}\r\n"));
+        }
+    }
+    head.push_str("\r\n");
+    s.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
+    if req.method == "HEAD" {
+        return Ok(());
+    }
+    let mut body = res.into_body().into_reader();
+    // strumień zdarzeń /events – kopiowanie porcjami do zamknięcia
+    std::io::copy(&mut body, &mut s).map(|_| ()).or_else(|e| {
         if e.kind() == std::io::ErrorKind::BrokenPipe {
             Ok(())
         } else {
@@ -513,6 +769,54 @@ fn set_session(ctx: &Ctx, new: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vizrs_target_from_status() {
+        assert_eq!(
+            vizrs_target("https://emisja.btb.j00r.us", "https://s1.btb.j00r.us/").as_deref(),
+            Some("https://s1.btb.j00r.us")
+        );
+        assert_eq!(
+            vizrs_target("http://tv.lan:8090", ":8788").as_deref(),
+            Some("http://tv.lan:8788")
+        );
+        assert_eq!(
+            vizrs_target("http://[::1]:8090/p", ":8788").as_deref(),
+            Some("http://[::1]:8788")
+        );
+        assert_eq!(vizrs_target("https://e.pl", "").as_deref(), None);
+        assert_eq!(vizrs_target("https://e.pl", "ftp://x").as_deref(), None);
+        assert_eq!(vizrs_target("https://e.pl", "http://a b").as_deref(), None);
+        assert_eq!(vizrs_target("https://e.pl", ":0").as_deref(), None);
+    }
+
+    #[test]
+    fn csp_frame_src() {
+        let o = "http://127.0.0.1:5";
+        assert_eq!(
+            add_frame_src("default-src 'self'; frame-src 'none'; img-src 'self'", o),
+            "default-src 'self'; frame-src http://127.0.0.1:5; img-src 'self'"
+        );
+        assert_eq!(
+            add_frame_src("frame-src https://s1.pl; script-src 'self'", o),
+            "frame-src https://s1.pl http://127.0.0.1:5; script-src 'self'"
+        );
+        assert_eq!(
+            add_frame_src("default-src 'self'", o),
+            "default-src 'self'; frame-src http://127.0.0.1:5"
+        );
+    }
+
+    #[test]
+    fn output_cookies() {
+        assert_eq!(
+            output_cookie(Some("vizrs_desktop=s; vizrs_token=t1; x=1")).as_deref(),
+            Some("vizrs_token=t1")
+        );
+        assert_eq!(output_cookie(Some("vizrs_desktop=s")), None);
+        assert_eq!(output_set_cookie("vizrs_token=t1; Path=/; SameSite=Strict; HttpOnly; Secure; Domain=s1.pl; Max-Age=9").as_deref(), Some("vizrs_token=t1; Path=/; SameSite=Strict; HttpOnly; Max-Age=9"));
+        assert_eq!(output_set_cookie("vizrs_session=a; Path=/"), None);
+    }
 
     #[test]
     fn targets() {

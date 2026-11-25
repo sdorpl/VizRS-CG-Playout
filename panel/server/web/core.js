@@ -184,7 +184,10 @@ const vizrsCh = (channel) => (S.status?.vizrsChannels && channel != null && chan
 export function vizrsUrl(path, channel) {
   const base = S.status?.vizrsUrl;
   if (!base) return null;
-  const root = base.startsWith(':') ? `${location.protocol}//${location.hostname}${base}` : base;
+  // okno AppImage: ramka /output przez pośrednika podglądu okna (ta sama witryna co strona – ciasteczko tokenu
+  // wyjścia VizRS działa); Trio idzie do przeglądarki systemowej, więc pod prawdziwym adresem
+  const proxy = path === '/output' && S.status.vizrsOutputProxy;
+  const root = proxy || (base.startsWith(':') ? `${location.protocol}//${location.hostname}${base}` : base);
   const q = new URLSearchParams();
   const ch = vizrsCh(channel);
   if (path === '/output') {
