@@ -204,6 +204,7 @@ static GPU_SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
 /// Zmienne, które hooki AppImage (linuxdeploy: gtk, gstreamer) i jego środowisko uruchomieniowe ustawiają
 /// dla bibliotek z paczki – przeglądarka systemowa z nimi ładowałaby moduły GTK/GIO/GStreamera z paczki.
+#[cfg_attr(any(target_os = "windows", target_os = "macos"), allow(dead_code))] // tylko Linux (AppImage, xdg-open)
 const APPIMAGE_VARS: &[&str] = &[
     "APPDIR",
     "APPIMAGE",
@@ -229,10 +230,12 @@ const APPIMAGE_VARS: &[&str] = &[
     "GST_PTP_HELPER_1_0",
 ];
 /// Listy ścieżek, z których usuwamy wpisy wewnątrz paczki (reszta – systemu – zostaje).
+#[cfg_attr(any(target_os = "windows", target_os = "macos"), allow(dead_code))] // tylko Linux (AppImage, xdg-open)
 const APPIMAGE_LISTS: &[&str] = &["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS"];
 
 /// Środowisko programu zewnętrznego (`xdg-open` → przeglądarka): bez zmian paczki AppImage i bez
 /// zmiennych WebKitGTK okna. `get` – bieżące środowisko; wynik: (nazwa, Some(nowa) | None = usuń).
+#[cfg_attr(any(target_os = "windows", target_os = "macos"), allow(dead_code))] // tylko Linux (AppImage, xdg-open)
 fn external_env(
     get: &dyn Fn(&str) -> Option<String>,
     gpu_set: &[String],
