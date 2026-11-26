@@ -663,6 +663,9 @@ pub struct State {
     pub fps: Option<f64>,
     /// ErsatzTV watermarks (ids, `3,5`) of a takeover now; empty = none (an older sidecar too).
     pub live_watermark: String,
+    /// VizRS graphics on the channel's antenna now; none = not known (an older
+    /// sidecar, live API off): a piece without a VizRS element stays plain.
+    pub graphics: Option<bool>,
 }
 
 pub fn state(sidecar: &str, channel: &str) -> Option<State> {
@@ -676,6 +679,7 @@ pub fn state(sidecar: &str, channel: &str) -> Option<State> {
         audio: flag("audio", false),
         fps: value.get("fps").and_then(json::Value::as_f64).filter(|f| *f > 0.0),
         live_watermark: value.get("live_watermark").and_then(json::Value::as_str).unwrap_or_default().to_owned(),
+        graphics: value.get("graphics").and_then(json::Value::as_bool),
     })
 }
 

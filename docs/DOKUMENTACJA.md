@@ -749,6 +749,36 @@ ingest, audycje LIVE) – bez znaków wodnych.
   więcej.
 - Pozycja z innymi elementami grafiki, ale bez elementu VizRS, startuje
   o 2 s później (nakładka czeka na sesję) i leci ścieżką ErsatzTV.
+- **Grafika na pozycji bez elementu VizRS** (od wydania po 26.11.31): bez
+  elementu ErsatzTV nie daje płótna grafiki, więc wcześniej nakładka puszczała
+  komendę bez zmian i grafika wprowadzona na kanale (ręcznie w panelu –
+  „Wprowadź stronę…” na ekranie Na antenie – albo z Trio) szła do VizRS, ale
+  nie na obraz (S1 2026-11-26: ramówka kanału 1 tylko ze znakiem wodnym).
+  Teraz, z `VIZRS_FFMPEG_INGEST=1` i sidecarem, który zna grafikę kanału
+  (`graphics` w `/ingest/state`), taki kawałek idzie przebiegami: póki na
+  antenie kanału nie ma grafiki – komenda ErsatzTV jak jest; gdy się pojawi
+  (sprawdzane co sekundę, warstwy w sidecarze co 2 s – razem do kilku sekund),
+  nakładka zakłada własną sesję grafiki kanału (`POST /etv?…&live=1`, jak przy
+  przejęciu przez studio; bez reguł ramówki) i restartuje przebieg od miejsca,
+  w którym jest (jak przy poszerzeniu stref – nowy przebieg tej samej
+  playlisty), z klatkami grafiki jako dodatkowym wejściem nałożonym na obraz
+  **pod** znakami wodnymi ErsatzTV (wejścia obrazów nakładane na końcu łańcucha
+  obrazu zostają na wierzchu), w strefach stron jak przy elemencie. Grafika
+  zostaje do końca kawałka także po zdjęciu stron; następny kawałek bez
+  grafiki na antenie rusza zwykłą komendą. Kawałek, który zaczyna się przy
+  grafice już na antenie, czeka na sesję najwyżej 1,5 s i ma ją od początku.
+  Bez pola `graphics` (starszy sidecar, live API wyłączone, kanał nieznany),
+  bez `VIZRS_FFMPEG_INGEST`, przy audycji LIVE z ramówki (ma własną ścieżkę)
+  i przy przejęciu przez studio (wyżej) – jak dotąd. Komenda, na którą grafiki
+  nie da się bezpiecznie nałożyć (klatki sprzętowe w grafie: `hwupload`,
+  filtry `_cuda`/`_vaapi`/`_qsv`; obraz nie z grafu filtrów; strefy nie do
+  rozmieszczenia), idzie bez grafiki do końca kawałka (log nakładki „the
+  graphics cannot go over this piece's command; the piece goes without
+  them”); udane nałożenie – „channel N: VizRS graphics over the piece from
+  X s (no VizRS element on the item)”, sidecar: „ffmpeg overlay took over the
+  graphics of live ingest”. Koszt jak przy pozycji z elementem, tylko gdy
+  grafika jest na antenie. Trwała grafika (logo, reguły `on_clip`) nadal
+  wymaga elementu „VizRS” na pozycjach ramówki.
 - Na wejściu surowe klatki kosztują pasmo, ale nie CPU: 1080p to ok. 5 MB
   na klatkę, ok. 130 MB/s przy 25 kl./s. Idą lokalnie przez sieć Dockera.
 
@@ -1279,7 +1309,12 @@ ErsatzTV ── ffmpeg kawałka ──► vizrs-ffmpeg ── GET /ingest/state,
    `GET /ingest/state?channel=N` → `{"enabled":true,"anytime":true,"hold":false,
    "live":true,"audio":true,"video":"h264","fps":60,"seconds":12}` (`fps` –
    klatkaż sygnału z PTS ostatnich 64 obrazów: mediana kroku po posortowaniu,
-   więc klatki B nie przeszkadzają; `null` przed 16 obrazami i bez sygnału),
+   więc klatki B nie przeszkadzają; `null` przed 16 obrazami i bez sygnału;
+   `live_watermark` – znaki wodne ErsatzTV przejęcia; `graphics` – czy na
+   antenie kanału jest teraz grafika VizRS (warstwy `STATE` czytane przez live
+   API co 2 s), dla nakładki pozycji bez elementu VizRS (niżej „Grafika na
+   pozycji bez elementu VizRS”); pola nie ma, gdy nikt warstw nie czyta: live
+   API wyłączone, brak adresu VizRS albo kanał nieznany sidecarowi),
    `/health` → `ingest`
    (lista kanałów z sygnałem, `null` przy wyłączonym ingest). Kanał wstrzymany
    w live API (niżej) ma `"hold":true` i `"live":false` mimo sygnału, a jego
@@ -1497,10 +1532,10 @@ wprowadza dedykowaną grafikę kanału zdefiniowaną w polu `on_live`
   ramówki (bez `on_clip`, końca pozycji i wykrywania reklam), a zwykła
   nakładka jej nie przejmie (i odwrotnie: nakładka live nie weźmie sesji
   pozycji ErsatzTV). Kończy się z kawałkiem. Błąd sesji = przebieg live bez
-  grafiki, jak wcześniej (log nakładki: „live graphics of channel N: …; the
-  live runs without graphics”); udana – „live graphics of channel N on the
-  live runs (no VizRS element on the item)”, sidecar: „ffmpeg overlay took
-  over the graphics of live ingest”.
+  grafiki, jak wcześniej (log nakładki: „graphics of channel N for the runs
+  of the piece: …; the runs without them”); udana – „graphics of channel N
+  for the runs of the piece (no VizRS element on the item)”, sidecar: „ffmpeg
+  overlay took over the graphics of live ingest”.
 - **Logi sidecara**: zdarzenia odnotowywane są wpisami `channel N: live takeover:
   schedule graphics held, live graphics: TAKE 7510`, `channel N: live takeover
   over: schedule graphics back`, a odpowiedzi VizRS na komendy przejęcia mają

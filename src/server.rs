@@ -873,7 +873,8 @@ impl Server {
                 // The overlay draws these ErsatzTV watermarks over a takeover (the input's own, else the channel's).
                 let channel = request.param("channel").unwrap_or("");
                 let marks = self.panel.live_watermark(channel, self.ingest.input_of(channel).as_deref());
-                self.ingest.state_request(&request, stream, &marks)
+                // A piece without a VizRS element takes graphics in when the channel has some on air.
+                self.ingest.state_request(&request, stream, &marks, self.panel.graphics_on_air(channel))
             }
             ("GET", "/ingest") => self.ingest.read_request(&request, stream),
             ("POST", "/ingest") => self.ingest.source_request(&request, stream),

@@ -548,6 +548,119 @@ mod tests {
         assert_eq!(overlay_args(&input, &canvas, 5, &frames, &Watermarks::default()), args(&[&raw[..], &tail].concat()));
     }
 
+    /// ErsatzTV Next's command of a piece with no graphics element, only a watermark (S1, channel 1, 2026-11-26).
+    fn piece_with_watermark() -> Vec<OsString> {
+        args(&[
+            "-threads",
+            "0",
+            "-nostdin",
+            "-readrate",
+            "1.0",
+            "-i",
+            "http://localhost:8409/internal/media/jellyfin/79?exp=1&sig=x",
+            "-loop",
+            "1",
+            "-framerate",
+            "25",
+            "-t",
+            "773340ms",
+            "-f",
+            "image2",
+            "-pixel_format",
+            "yuva420p",
+            "-video_size",
+            "76x76",
+            "-i",
+            "/config/cache/next/still-images/b_76x76_yuva420p.raw",
+            "-filter_complex",
+            "[0:1]loudnorm=I=-23:TP=-1.5:LRA=11,aresample=48000,aresample=async=1,apad[a]",
+            "-filter_complex",
+            "[0:0]fps=25,scale=1600:900:flags=bicubic,setsar=1[v_m0];[v_m0][1:0]overlay=x=1444:y=45:format=0[v_o0]",
+            "-map",
+            "[v_o0]",
+            "-map",
+            "[a]",
+            "-vcodec",
+            "libx264",
+            "-t",
+            "773340ms",
+            "-f",
+            "hls",
+            "/transcode/1/ffmpeg.m3u8",
+        ])
+    }
+
+    fn piece_frames(areas: Vec<(Area, u32)>) -> Frames {
+        Frames {
+            width: 1600,
+            height: 900,
+            rate: "25".into(),
+            matrix: String::new(),
+            areas,
+            resume: String::new(),
+            session: "1".into(),
+            ahead: None,
+            zones_rev: None,
+        }
+    }
+
+    #[test]
+    fn graphics_go_over_a_piece_without_element_under_its_watermark() {
+        let out = piece_overlay_args(&piece_with_watermark(), 7, &piece_frames(vec![])).unwrap();
+        let text: Vec<&str> = out.iter().map(|a| a.to_str().unwrap()).collect();
+        // The frames are the third input, right after the watermark.
+        let at = text.iter().position(|a| *a == "pipe:7").unwrap();
+        assert_eq!(text[at - 1], "-i");
+        assert_eq!(text[at - 3..at - 1], ["-framerate", "25"]);
+        assert_eq!(text[at - 10], "/config/cache/next/still-images/b_76x76_yuva420p.raw");
+        // The graphics over the picture, the watermark over them; the sound and the maps as they were.
+        assert!(text.contains(&"[0:1]loudnorm=I=-23:TP=-1.5:LRA=11,aresample=48000,aresample=async=1,apad[a]"));
+        assert!(text.contains(
+            &"[0:0]fps=25,scale=1600:900:flags=bicubic,setsar=1[v_m0];[vz_pv][1:0]overlay=x=1444:y=45:format=0[v_o0];\
+              [2:0]format=yuva420p[vz_gfx];[v_m0][vz_gfx]overlay=x=0:y=0:format=auto:shortest=1[vz_pv]"
+        ));
+        assert_eq!(text.iter().filter(|a| **a == "[v_o0]").count(), 1, "the map of the picture stays");
+    }
+
+    #[test]
+    fn graphics_go_over_a_piece_without_watermark_and_in_their_zones() {
+        let piece = args(&[
+            "-i",
+            "/m/a.mp4",
+            "-filter_complex",
+            "[0:0]fps=25,scale=1600:900,setsar=1[v_m0]",
+            "-map",
+            "[v_m0]",
+            "-map",
+            "0:a",
+            "-t",
+            "10s",
+            "-f",
+            "hls",
+            "o.m3u8",
+        ]);
+        let out = piece_overlay_args(&piece, 4, &piece_frames(vec![])).unwrap();
+        let graph = "[0:0]fps=25,scale=1600:900,setsar=1[v_m0];[1:0]format=yuva420p[vz_gfx];[v_m0][vz_gfx]overlay=x=0:y=0:format=auto:shortest=1[vz_pv]";
+        assert!(out.iter().any(|a| a == graph));
+        assert!(out.windows(2).any(|w| w[0] == "-map" && w[1] == "[vz_pv]"));
+        // A zone of the channel: overlaid at its place.
+        let zone = vec![(Area { x: 1360, y: 16, w: 144, h: 144 }, 0)];
+        let out = piece_overlay_args(&piece, 4, &piece_frames(zone)).unwrap();
+        assert!(out.iter().any(|a| a.to_str().unwrap().ends_with("[v_m0][vz_gfx]overlay=format=auto:shortest=1:x=1360:y=16[vz_pv]")));
+    }
+
+    #[test]
+    fn no_graphics_over_a_piece_they_cannot_go_over() {
+        // Hardware frames in the graph.
+        let mut cuda = piece_with_watermark();
+        let graph = cuda.iter().position(|a| a.to_str().unwrap().starts_with("[0:0]fps")).unwrap();
+        cuda[graph] = "[0:0]hwupload_cuda,scale_cuda=1600:900[v_m0];[v_m0][1:0]overlay_cuda=x=1444:y=45[v_o0]".into();
+        assert!(piece_overlay_args(&cuda, 7, &piece_frames(vec![])).is_none());
+        // No picture of a filter graph mapped out.
+        let copied = args(&["-i", "/m/a.mp4", "-map", "0:v", "-t", "10s", "-f", "hls", "o.m3u8"]);
+        assert!(piece_overlay_args(&copied, 7, &piece_frames(vec![])).is_none());
+    }
+
     #[test]
     fn canvas_input() {
         let list = args(&["-i", "/m/a.mp4", "-headers", "h", "-i", "http://x:1/internal/graphics/2%2E1/28750?exp=1", "-f", "null", "-"]);

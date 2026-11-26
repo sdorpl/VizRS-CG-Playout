@@ -792,8 +792,9 @@ impl Ingest {
         )
     }
 
-    /// `GET /ingest/state`; `live_watermark` – the ErsatzTV watermarks (ids) of a takeover of the channel now.
-    pub fn state_request(&self, request: &Request, mut stream: TcpStream, live_watermark: &str) -> io::Result<()> {
+    /// `GET /ingest/state`; `live_watermark` – the ErsatzTV watermarks (ids) of a takeover of the channel now;
+    /// `graphics` – VizRS graphics on the channel's antenna now (none = not known, the field left out).
+    pub fn state_request(&self, request: &Request, mut stream: TcpStream, live_watermark: &str, graphics: Option<bool>) -> io::Result<()> {
         let channel = request.param("channel").unwrap_or("");
         let mut state = match self.feed(channel) {
             Some(feed) => feed.state(),
@@ -819,6 +820,9 @@ impl Ingest {
             members.insert(1, ("anytime".into(), self.anytime_of(channel).into()));
             members.insert(2, ("hold".into(), hold.into()));
             members.push(("live_watermark".into(), live_watermark.into()));
+            if let Some(graphics) = graphics {
+                members.push(("graphics".into(), graphics.into()));
+            }
         }
         http::respond(&mut stream, 200, Some("application/json"), state.to_string().as_bytes())
     }

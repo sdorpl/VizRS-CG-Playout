@@ -421,7 +421,7 @@ test("live takes over a piece without a VizRS element: the overlay's own live se
   const code = await pieceExit;
   const log = Buffer.concat(pieceLog).toString();
   assert.equal(code, 0, log);
-  assert.match(log, /live graphics of channel 1 on the live runs \(no VizRS element on the item\)/, `${log}\n${cg.logs()}`);
+  assert.match(log, /graphics of channel 1 for the runs of the piece \(no VizRS element on the item\)/, `${log}\n${cg.logs()}`);
   assert.match(log, /channel 1: live from \d+\.\d s of the piece/);
   assert.ok(logo >= 0, `on_live on air with the studio: ${JSON.stringify(vizrs.received)}\n${cg.logs()}`);
   assert.match(cg.logs(), /ffmpeg overlay took over the graphics of live ingest/);
@@ -443,6 +443,71 @@ test("live takes over a piece without a VizRS element: the overlay's own live se
   assert.ok(gone, `the live logo out after the takeover: ${JSON.stringify(vizrs.received)}`);
   const after = vizrs.received.slice(vizrs.received.indexOf("OUT 7510"));
   assert.ok(after.filter((l) => l === "TAKE 4001").length <= 1, `only the page held by the takeover comes back: ${JSON.stringify(vizrs.received)}`);
+});
+
+test("a piece without a VizRS element takes the channel's graphics in when they come on air: the run starts again with them, under the ErsatzTV watermark", { skip: !FFMPEG && "no ffmpeg" }, async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "vizrs-piece-graphics-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const media = path.join(dir, "show.mp4");
+  execFileSync(FFMPEG, [
+    "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25", "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000",
+    "-t", "30", "-c:v", "libx264", "-preset", "ultrafast", "-g", "25", "-c:a", "aac", "-shortest", media,
+  ]);
+  const mark = path.join(dir, "mark.png");
+  execFileSync(FFMPEG, ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=40x40", "-frames:v", "1", mark]);
+  const out = path.join(dir, "transcode", "1");
+  mkdirSync(out, { recursive: true });
+  // Nothing on the channel's antenna at first; a page taken in by hand a few seconds into the piece.
+  const layers = [];
+  const vizrs = await fakeVizrs(layers);
+  t.after(vizrs.close);
+  // As S1's channel 1: an input of live ingest, but live takes over only live programmes (no `anytime`).
+  const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
+  const cg = await sidecar(
+    t,
+    {
+      ingest_token: TOKEN, ingest_anytime: false, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1,
+      vizrs: { address: vizrs.address, token: "" }, panel_token: "panel-test",
+    },
+    { VIZRS_INGEST: `1=${rtmp}` },
+  );
+  const before = await state(cg, "1");
+  assert.equal(before.anytime, false);
+  assert.equal(before.graphics, false, "the state says the channel has no graphics on air");
+  assert.equal((await state(cg, "2")).graphics, undefined, "a channel the sidecar does not know: not known");
+
+  // An item with no graphics element, only ErsatzTV's watermark (an image input overlaid last).
+  const piece = spawn(WRAPPER, [
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-readrate", "1.0", "-i", media,
+    "-loop", "1", "-framerate", "25", "-t", "12000ms", "-i", mark,
+    "-filter_complex", "[0:0]fps=25,setsar=1[v_m0];[v_m0][1:0]overlay=x=200:y=100:format=0[v_o0]",
+    "-map", "[v_o0]", "-map", "0:1", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-ac", "2", "-t", "12000ms", "-g", "50",
+    "-f", "hls", "-hls_time", "2", "-hls_list_size", "0", "-hls_segment_filename", path.join(out, "live%06d.ts"), "-hls_segment_type", "mpegts",
+    "-hls_flags", "program_date_time+omit_endlist+append_list+independent_segments", "-hls_segment_options", "mpegts_flags=+initial_discontinuity",
+    path.join(out, "live.m3u8"),
+  ], {
+    env: { PATH: process.env.PATH, VIZRS_FFMPEG: FFMPEG, VIZRS_CG_URL: cg.url, VIZRS_FFMPEG_INGEST: "1" },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  const pieceLog = [];
+  piece.stderr.on("data", (chunk) => pieceLog.push(chunk));
+  const pieceExit = new Promise((resolve) => piece.once("exit", resolve));
+  await sleep(3000);
+  assert.ok(!cg.logs().includes("ffmpeg overlay took over"), `no graphics session while the channel has none: ${cg.logs()}`);
+  layers.push({ layer: "main", page: { number: 4001 } });
+  const code = await pieceExit;
+  const log = Buffer.concat(pieceLog).toString();
+  assert.equal(code, 0, log);
+  const from = log.match(/channel 1: VizRS graphics over the piece from (\d+\.\d) s \(no VizRS element on the item\)/);
+  assert.ok(from && Number(from[1]) > 0, `the run starts again with the graphics: ${log}\n${cg.logs()}`);
+  assert.match(cg.logs(), /ffmpeg overlay took over the graphics of live ingest/);
+  assert.doesNotMatch(log, /cannot go over/);
+  const segments = playlistSegments(out);
+  const total = segments.reduce((sum, s) => sum + s.length, 0);
+  assert.ok(Math.abs(total - 12) < 0.5, `the whole piece in the playlist: ${JSON.stringify(segments)}`);
+  // ErsatzTV's watermark stays on air through both runs.
+  const red = segments.map(({ name }) => { const [r, g, b] = pixel(path.join(out, name), 220, 120); return r > 180 && g < 70 && b < 70; });
+  assert.ok(red.every(Boolean), `the watermark on every segment: ${JSON.stringify(red)}`);
 });
 
 /** Segments of a playlist: names, lengths and the colour at 10,10 of their first frame. */

@@ -569,6 +569,15 @@ impl Panel {
         own.unwrap_or_else(|| self.graphics.applied(&self.config).for_channel(channel).live_watermark)
     }
 
+    /// VizRS graphics on the channel's antenna now (layers of `STATE`, read
+    /// every `LAYERS_EVERY`), for the overlay of a piece whose item has no
+    /// VizRS element (`/ingest/state`); None when nothing reads them (live API
+    /// off, no VizRS address, a channel not known) – the overlay then leaves such pieces alone.
+    pub fn graphics_on_air(&self, channel: &str) -> Option<bool> {
+        let read = self.enabled() && !self.config.vizrs.address.is_empty() && self.known_channels().iter().any(|c| c == channel);
+        read.then(|| !self.layers_of(channel).is_empty())
+    }
+
     /// The channel has the input `id` (`listener::input_id`) on its list.
     fn has_input(&self, channel: &str, id: &str) -> bool {
         lock(&self.listeners).0.iter().any(|l| l.channel == channel && crate::listener::input_id(l) == id)

@@ -551,6 +551,120 @@ impl TakeoverMarks {
 /// How long a piece starting with the studio on air waits for its live graphics.
 const LIVE_GRAPHICS_WAIT: Duration = Duration::from_millis(1500);
 
+/// How often a piece without a VizRS element asks whether its channel has VizRS graphics on air.
+const GRAPHICS_EVERY: Duration = Duration::from_secs(1);
+
+/// VizRS graphics on the channel's antenna (`graphics` of `/ingest/state`),
+/// asked every `GRAPHICS_EVERY` in the background; not known = none.
+struct GraphicsWatch {
+    on: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl GraphicsWatch {
+    fn start(sidecar: &str, channel: &str, on: bool) -> GraphicsWatch {
+        let watch = GraphicsWatch { on: Arc::new(AtomicBool::new(on)), stop: Arc::default() };
+        let (on, stop) = (Arc::clone(&watch.on), Arc::clone(&watch.stop));
+        let (sidecar, channel) = (sidecar.to_owned(), channel.to_owned());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(GRAPHICS_EVERY);
+                on.store(takeover::state(&sidecar, &channel).and_then(|s| s.graphics).unwrap_or(false), Ordering::Relaxed);
+            }
+        });
+        watch
+    }
+
+    fn on(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for GraphicsWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The piece runs that can take graphics in: a transcode to HLS that is no
+/// live programme, with the runs allowed (`VIZRS_FFMPEG_INGEST`) and a sidecar.
+fn graphics_job(settings: &Settings, args: &[OsString]) -> Option<Job> {
+    if !settings.ingest || settings.sidecar.is_empty() {
+        return None;
+    }
+    Job::of(args, None).filter(|job| !job.slot)
+}
+
+/// A piece whose item has no VizRS element, live not taking it over: ErsatzTV's
+/// command as it is while the channel has no VizRS graphics on air. Graphics
+/// taken in on the channel (by hand in VizRS Live, from Trio) restart the run
+/// from where it is, with the channel's graphics (the overlay's own session,
+/// `LiveGraphics`) over the picture and under ErsatzTV's watermarks, to the
+/// end of the piece; a piece starting with them on air has them from its
+/// start. Graphics not known (an older sidecar, live API off): plain ffmpeg.
+fn piece_without_element(settings: &Settings, args: Vec<OsString>, job: Job) -> i32 {
+    let Some(on) = takeover::state(&settings.sidecar, &job.channel).and_then(|s| s.graphics) else { plain(settings, args) };
+    let watch = GraphicsWatch::start(&settings.sidecar, &job.channel, on);
+    let graphics = PieceGraphics::default();
+    // Graphics that cannot go over this command (hardware frames, areas not to be placed): given up once.
+    let refused = AtomicBool::new(false);
+    let wanted = || watch.on() && !refused.load(Ordering::Relaxed);
+    let run = |elapsed: f64, _: Option<&takeover::Source>| -> io::Result<Child> {
+        if wanted() {
+            let mut ready = graphics.ready(settings, &args, &job);
+            if let Some(live) = ready.as_mut() {
+                follow_zones(settings, live.watch.as_ref(), &mut live.feed, elapsed, true);
+                let (reader, writer) = frame_channel()?;
+                let fd = reader.as_raw_fd();
+                if let Some(command) = piece_overlay_args(&job.program(&args, elapsed), fd, &live.feed.frames) {
+                    graphics.bare.store(false, Ordering::Relaxed);
+                    graphics.drawn.store(true, Ordering::Relaxed);
+                    log(format_args!(
+                        "channel {}: VizRS graphics over the piece from {elapsed:.1} s (no VizRS element on the item)",
+                        job.channel
+                    ));
+                    let child = spawn(settings, adjusted(command, settings, None), Some(fd))?;
+                    drop(reader);
+                    live.feed.control.attach(writer);
+                    return Ok(child);
+                }
+                log(format_args!("channel {}: the graphics cannot go over this piece's command; the piece goes without them", job.channel));
+                refused.store(true, Ordering::Relaxed);
+            }
+        }
+        graphics.bare.store(true, Ordering::Relaxed);
+        graphics.drawn.store(false, Ordering::Relaxed);
+        spawn(settings, adjusted(job.program(&args, elapsed), settings, None), None)
+    };
+    // Graphics already on air: set up first, a short while at most, so that the first run has them.
+    if wanted() {
+        let until = std::time::Instant::now() + LIVE_GRAPHICS_WAIT;
+        while graphics.ready(settings, &args, &job).is_none() && graphics.setting_up() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    // A run without graphics stops for the graphics that came meanwhile, one
+    // with them for zones widened in the middle of the piece (its graphics end first).
+    let restart = || {
+        let drawn = graphics.drawn.load(Ordering::Relaxed);
+        if !drawn && !wanted() {
+            return false;
+        }
+        let ready = graphics.ready(settings, &args, &job);
+        match ready.as_ref() {
+            Some(_) if !drawn => true,
+            Some(live) if live.watch.as_ref().is_some_and(ZoneWatch::newer) => {
+                live.feed.control.cut();
+                true
+            }
+            _ => false,
+        }
+    };
+    let code = sequence(settings, &job, false, false, false, &run, &restart);
+    graphics.close();
+    code
+}
+
 /// The live graphics of one piece (`without_element`): asked for once, in the background.
 #[derive(Default)]
 struct PieceGraphics {
@@ -582,12 +696,12 @@ impl PieceGraphics {
         let answer = pending.as_ref().map(mpsc::Receiver::try_recv);
         match answer {
             Some(Ok(Ok(live))) => {
-                log(format_args!("live graphics of channel {} on the live runs (no VizRS element on the item)", job.channel));
+                log(format_args!("graphics of channel {} for the runs of the piece (no VizRS element on the item)", job.channel));
                 *graphics = Some(live);
                 *pending = None;
             }
             Some(Ok(Err(e))) => {
-                log(format_args!("live graphics of channel {}: {e}; the live runs without graphics", job.channel));
+                log(format_args!("graphics of channel {} for the runs of the piece: {e}; the runs without them", job.channel));
                 *pending = None;
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => *pending = None,
@@ -687,7 +801,10 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     let Some(canvas) = canvas else {
         return match live {
             Some((job, on, audio)) => without_element(settings, &args, &job, (on, audio)),
-            None => plain(settings, args),
+            None => match graphics_job(settings, &args) {
+                Some(job) => piece_without_element(settings, args, job),
+                None => plain(settings, args),
+            },
         };
     };
 

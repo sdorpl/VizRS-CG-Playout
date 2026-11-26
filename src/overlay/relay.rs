@@ -130,6 +130,97 @@ pub fn overlay_args(args: &[OsString], canvas: &Canvas, fd: i32, frames: &Frames
     shared_upload(out)
 }
 
+/// Filters of a graph that works on hardware frames: graphics frames of the
+/// overlay (system memory) cannot be overlaid there without an upload of their own.
+const HARDWARE_FILTERS: [&str; 6] = ["hwupload", "hwdownload", "hwmap", "_cuda", "_vaapi", "_qsv"];
+
+/// Filters of sound: a chain with one of them is no picture.
+const AUDIO_FILTERS: [&str; 9] = ["aresample", "apad", "loudnorm", "aformat", "anull", "volume", "amix", "afade", "pan="];
+
+/// The chain of `chains` that ends with the label `[label]`.
+fn producer(chains: &[String], label: &str) -> Option<usize> {
+    let end = format!("[{label}]");
+    chains.iter().position(|chain| chain.ends_with(&end))
+}
+
+/// The input number a label of a graph comes from: `[3:0]` itself, or the
+/// first input of the chain that makes it (`[3:0]format=yuva420p[wm]`).
+fn source_input(chains: &[String], label: &str) -> Option<usize> {
+    let number = |text: &str| text.split(':').next()?.parse::<usize>().ok();
+    if let Some(n) = number(label) {
+        return Some(n);
+    }
+    let chain = &chains[producer(chains, label)?];
+    let first = chain.strip_prefix('[')?.split(']').next()?;
+    number(first)
+}
+
+/// Options of the input number `n` of `args` (between the `-i` before it and its own).
+fn input_options(args: &[OsString], n: usize) -> Option<&[OsString]> {
+    let inputs: Vec<usize> = (0..args.len().saturating_sub(1)).filter(|&i| args[i] == "-i").collect();
+    let at = *inputs.get(n)?;
+    let start = if n == 0 { 0 } else { inputs[n - 1] + 2 };
+    Some(&args[start..at])
+}
+
+/// An image input – an ErsatzTV watermark: looped or read as `image2`.
+fn image_input(args: &[OsString], n: usize) -> bool {
+    input_options(args, n).is_some_and(|options| {
+        (0..options.len().saturating_sub(1)).any(|i| pair(options, i, "-loop", "1") || pair(options, i, "-f", "image2"))
+    })
+}
+
+/// The command of a piece whose item has no VizRS element (no graphics canvas)
+/// with the raw graphics frames from `pipe:<fd>` as one more input, overlaid
+/// on the picture under ErsatzTV's watermarks (the image inputs overlaid last
+/// in the chain of the picture stay on top), each graphics area at its place.
+/// None when that cannot be done safely: no picture of a filter graph mapped
+/// out, hardware frames in the graph, areas that cannot be placed.
+pub fn piece_overlay_args(args: &[OsString], fd: i32, frames: &Frames) -> Option<Vec<OsString>> {
+    let last = (0..args.len().saturating_sub(1)).rev().find(|&i| args[i] == "-i")?;
+    let number = input_number(args, last) + 1;
+    let mut out = args.to_vec();
+    // The picture: a `-map [label]` made by a chain of a `-filter_complex` that is no sound.
+    let (map, graph, mut chains, mapped) = (last + 2..out.len().saturating_sub(1)).filter(|&i| out[i] == "-map").find_map(|i| {
+        let label = out[i + 1].to_str()?.strip_prefix('[')?.strip_suffix(']')?.to_owned();
+        (0..out.len().saturating_sub(1)).filter(|&g| out[g] == "-filter_complex").find_map(|g| {
+            let chains: Vec<String> = out[g + 1].to_str()?.split(';').map(str::to_owned).collect();
+            let chain = &chains[producer(&chains, &label)?];
+            (!AUDIO_FILTERS.iter().any(|f| chain.contains(f))).then(|| (i + 1, g + 1, chains.clone(), label.clone()))
+        })
+    })?;
+    if chains.iter().any(|chain| HARDWARE_FILTERS.iter().any(|f| chain.contains(f))) {
+        return None;
+    }
+    // Back from the mapped label over the watermarks: `[main][wm]overlay…[label]` with `wm` an image input.
+    let mut label = mapped.clone();
+    let mut consumer = None;
+    let pattern = Regex::new(r"^\[([^\]]+)\]\[([^\]]+)\]overlay(=[^\[;]*)?\[([^\]]+)\]$").ok()?;
+    while let Some(at) = producer(&chains, &label) {
+        let Some(found) = pattern.captures(&chains[at]) else { break };
+        if !source_input(&chains, &found[2]).is_some_and(|n| image_input(args, n)) {
+            break;
+        }
+        label = found[1].to_owned();
+        consumer = Some(at);
+    }
+    // The graphics over the picture before the watermarks; what took the picture takes them.
+    match consumer {
+        Some(at) => chains[at] = format!("[vz_pv]{}", &chains[at][label.len() + 2..]),
+        None => out[map] = "[vz_pv]".into(),
+    }
+    chains.push(format!("[{number}:0]format=yuva420p[vz_gfx]"));
+    chains.push(format!("[{label}][vz_gfx]overlay=x=0:y=0:format=auto:shortest=1[vz_pv]"));
+    let mut filter = chains.join(";");
+    let at_origin = matches!(frames.areas.as_slice(), [(a, _)] if (a.x, a.y) == (0, 0));
+    if !frames.areas.is_empty() && !at_origin {
+        filter = placed_areas(&filter, number, &frames.areas)?;
+    }
+    out[graph] = filter.into();
+    out.splice(last + 2..last + 2, raw_input(frames, fd));
+    Some(out)
+}
+
 pub(crate) fn upload_filter() -> &'static Regex {
     static UPLOAD: OnceLock<Regex> = OnceLock::new();
     // `hwupload_cuda` without options, a whole filter of a chain.
