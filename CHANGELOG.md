@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.33 (2026-11-26)
+
 - **Grafika na pozycji bez elementu VizRS bez cofania się animacji.** W 26.11.32 po każdym restarcie kodowania (wejście grafiki, poszerzenie stref, granica kawałka) strumień klatek zaczynał od obrazu sprzed `lead_seconds` – ticker cofał się o kilka klatek do kilku sekund (S1, BTB, ticker R7). Teraz sesja nakładki ma czas anteny kawałka z playlisty ErsatzTV, a każdy przebieg bierze klatki od swojego miejsca w kawałku – grafika idzie ciągle. DOKUMENTACJA §1 „Grafika na pozycji bez elementu VizRS”.
 - **Okno panelu (AppImage): pełny ekran podglądu nie wyłącza programu.** WebKitGTK z paczki (budowanej na Ubuntu 22.04) przerywał proces przy pełnym ekranie wideo – także w 26.11.30, sprzed dołączenia GStreamera. W oknie „Pełny” rozciąga teraz podgląd na całe okno i przełącza okno na pełny ekran (most okna `{t:'fullscreen', on}`); Esc albo „Wyjdź” wraca. W przeglądarce bez zmian.
 ## 26.11.32 (2026-11-26)
