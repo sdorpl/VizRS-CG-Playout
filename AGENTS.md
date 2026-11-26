@@ -37,6 +37,7 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 - Przeczytaj [docs/LUKI.md](docs/LUKI.md): znane braki, uszeregowane G1 (niezawodność i bezpieczeństwo) → G2 (wierność) → G3 (funkcje).
 - Przy zmianie zachowania przeczytaj właściwą sekcję [docs/DOKUMENTACJA.md](docs/DOKUMENTACJA.md) – w tym samym commicie ją zaktualizujesz.
 - Zmiana dotyka styku z inną aplikacją pakietu – przeczytaj opis styku u dostawcy (tabela „Pakiet VizRS”) i sprawdź drugą stronę.
+- **Najpierw graf – `/graphify`.** Pytania o kod, architekturę, zależności plików i styki zadawaj najpierw grafowi wiedzy repozytorium: w Claude Code `/graphify query "<pytanie>"`, w innych agentach CLI `graphify query "<pytanie>"`, `graphify explain "<węzeł>"`, `graphify path "<A>" "<B>"` (graf: `graphify-out/graph.json`). Styki między aplikacjami – graf całego pakietu: `--graph "../graphify-vizrs/pakiet/graphify-out/graph.json"`. Graf jest skrótem do miejsc w kodzie, nie źródłem prawdy – przed zmianą przeczytaj wskazane pliki. `graphify-out/` to lokalne dowiązanie do `../graphify-vizrs/<repo>/` poza gitem (`.git/info/exclude`); gdy go nie ma (CI, świeży klon) – zwykłe wyszukiwanie. Po zmianach kodu odśwież graf: `../graphify-vizrs/odswiez.sh <fragment nazwy repo>`; ponowną ekstrakcję dokumentacji (`/graphify` z modelem, kosztowna) – tylko na prośbę użytkownika.
 <!-- /pakiet:S -->
 - Przy komendach VizRS sprawdź składnię w `../VizRS CG System/docs/API.md` (sekcja TCP).
 
