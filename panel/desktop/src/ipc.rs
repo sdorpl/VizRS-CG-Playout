@@ -108,8 +108,15 @@ pub(crate) fn ipc(app: AppHandle, webview: tauri::Webview, body: String) {
     if !label.starts_with("live-") || base.is_empty() || !from.starts_with(&format!("{base}/")) {
         return;
     }
-    let Some(bridge::Msg::State { title, alert }) = bridge::parse(rest) else {
-        return;
+    let (title, alert) = match bridge::parse(rest) {
+        Some(bridge::Msg::State { title, alert }) => (title, alert),
+        Some(bridge::Msg::Fullscreen(on)) => {
+            if let Some(w) = app.get_webview_window(&label) {
+                let _ = w.set_fullscreen(on);
+            }
+            return;
+        }
+        None => return,
     };
     let changed = {
         let mut a = state(&app);

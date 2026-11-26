@@ -1,8 +1,15 @@
 // Most panelu z aplikacją VizRS Live (desktop/, Tauri 2); w przeglądarce nic nie robi.
 // Protokół jak okna VizRS CG System i VizRS CG Artist: window.__vizrsPost('app:' + JSON) – aplikacja przyjmuje
-// tylko { t: 'state', title, alert } (biała lista: desktop/src/bridge.rs). Własny moduł zamiast native.js CG System:
+// tylko { t: 'state', title, alert } i { t: 'fullscreen', on } (biała lista: desktop/src/bridge.rs). Własny moduł zamiast native.js CG System:
 // tamten buduje okno pytania przez innerHTML i style w wierszu, czego panel nie robi (CSP, tekst przez textContent).
 const shell = window.__vizrsShell;
+
+/** W oknie aplikacji: pełny ekran okna (podgląd kanału) – true; w przeglądarce nic nie robi – false. */
+export function windowFullscreen(on) {
+  if (!shell || typeof window.__vizrsPost !== 'function') return false;
+  try { window.__vizrsPost('app:' + JSON.stringify({ t: 'fullscreen', on: !!on })); } catch { return false; }
+  return true;
+}
 
 export function desktopBridge() {
   if (!shell || typeof window.__vizrsPost !== 'function') return;

@@ -236,6 +236,8 @@ details.how[open] summary { margin-bottom: 8px; }
 /* Podgląd strumienia kanału (player.js): okno w rogu, zostaje przy zmianie ekranów. */
 .monitor { position: fixed; right: 16px; bottom: 16px; z-index: 40; width: 420px; max-width: calc(100vw - 32px); background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop 200ms var(--ease); }
 .monitor.big { width: 820px; }
+.monitor.full { inset: 0; width: auto; max-width: none; border: 0; border-radius: 0; display: flex; flex-direction: column; z-index: 200; animation: none; }
+.monitor.full video { flex: 1; min-height: 0; aspect-ratio: auto; height: auto; object-fit: contain; }
 .monitor header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; background: var(--bg-deep); border-bottom: 1px solid var(--line); }
 .monitor header select { width: auto; flex: 0 1 auto; min-width: 120px; max-width: 200px; }
 .monitor header button { padding: 2px 8px; }

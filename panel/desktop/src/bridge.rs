@@ -1,6 +1,6 @@
 //! Most strona → okno: komunikaty `app:` panelu (biała lista, limity) – ten sam protokół co okna VizRS CG System
-//! i VizRS CG Artist (`window.__vizrsPost('app:' + JSON)`). Panel może tylko zmienić tytuł własnego okna
-//! i poprosić system o uwagę (alarm); nic więcej nie przechodzi.
+//! i VizRS CG Artist (`window.__vizrsPost('app:' + JSON)`). Panel może tylko zmienić tytuł własnego okna,
+//! poprosić system o uwagę (alarm) i przełączyć własne okno na pełny ekran (podgląd kanału); nic więcej nie przechodzi.
 
 use serde_json::Value;
 
@@ -10,6 +10,9 @@ const MAX_TITLE: usize = 200;
 pub enum Msg {
     /// `alert` – alarm panelu: okno w tle miga w pasku zadań / podskakuje w Docku.
     State { title: String, alert: bool },
+    /// Pełny ekran okna dla podglądu kanału: WebKitGTK z paczki AppImage (Ubuntu 22.04) przerywa proces przy
+    /// `requestFullscreen()` na `<video>`, więc podgląd rozciąga się na całe okno, a pełny ekran daje okno.
+    Fullscreen(bool),
 }
 
 pub fn parse(body: &str) -> Option<Msg> {
@@ -30,6 +33,7 @@ pub fn parse(body: &str) -> Option<Msg> {
                 alert: v["alert"].as_bool().unwrap_or(false),
             })
         }
+        "fullscreen" => Some(Msg::Fullscreen(v["on"].as_bool()?)),
         _ => None,
     }
 }
@@ -58,6 +62,16 @@ mod tests {
         );
         assert_eq!(parse(r#"{"t":"draft","id":"x","data":"y"}"#), None);
         assert_eq!(parse(r#"{"t":"state"}"#), None);
+        assert_eq!(
+            parse(r#"{"t":"fullscreen","on":true}"#),
+            Some(Msg::Fullscreen(true))
+        );
+        assert_eq!(
+            parse(r#"{"t":"fullscreen","on":false}"#),
+            Some(Msg::Fullscreen(false))
+        );
+        assert_eq!(parse(r#"{"t":"fullscreen","on":"tak"}"#), None);
+        assert_eq!(parse(r#"{"t":"fullscreen"}"#), None);
         assert_eq!(parse("nie json"), None);
         assert_eq!(parse(&"x".repeat(5000)), None);
     }

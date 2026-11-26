@@ -7,6 +7,7 @@
 // minuty spóźnienie końca najnowszego segmentu względem zegara plus zapas (zwykle 3–5 s).
 
 import { h, btn, cmd } from './core.js';
+import { windowFullscreen } from './desktop.js';
 import { Transmuxer } from './mux.js';
 
 const AHEAD = 8;       // s bufora przed bieżącym obrazem (pobieramy najwyżej tyle naprzód)
@@ -281,11 +282,21 @@ function buildDock() {
   const sel = h('select', { id: 'mon-ch', 'aria-label': 'Kanał podglądu' });
   const sound = btn('Dźwięk: wył.', () => { video.muted = !video.muted; sound.textContent = video.muted ? 'Dźwięk: wył.' : 'Dźwięk: wł.'; });
   sound.id = 'mon-sound';
+  // Pełny ekran: w przeglądarce – pełny ekran wideo; w oknie AppImage podgląd wypełnia okno, a pełny ekran daje
+  // okno (WebKitGTK z paczki przerywa proces przy requestFullscreen() na <video>). Esc albo „Wyjdź” wraca.
+  const shown = (on) => { el.classList.toggle('full', on); full.textContent = on ? 'Wyjdź' : 'Pełny'; };
+  const setFull = (on) => { shown(on); windowFullscreen(on); };
+  const full = Object.assign(btn('Pełny', () => {
+    if (el.classList.contains('full')) return setFull(false);
+    if (windowFullscreen(true)) shown(true);
+    else video.requestFullscreen?.().catch(() => {});
+  }), { title: 'Pełny ekran', id: 'mon-full' });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && el.classList.contains('full')) setFull(false); });
   const el = h('div', { class: 'monitor', id: 'monitor', role: 'region', 'aria-label': 'Podgląd kanału' },
     h('header', null, sel, h('span', { class: 'grow' }),
       sound,
       btn('Większy', (e) => { el.classList.toggle('big'); e.target.textContent = el.classList.contains('big') ? 'Mniejszy' : 'Większy'; }),
-      Object.assign(btn('Pełny', () => video.requestFullscreen?.().catch(() => {})), { title: 'Pełny ekran' }),
+      full,
       Object.assign(btn('×', () => closeMonitor()), { title: 'Zamknij podgląd', id: 'mon-close' })),
     video,
     h('div', { class: 'mon-foot' }, state, info));
@@ -322,6 +333,7 @@ export async function openMonitor(number) {
 
 export function closeMonitor() {
   if (!dock) return;
+  if (dock.el.classList.contains('full')) document.getElementById('mon-full')?.click();
   dock.preview.stop();
   dock.el.hidden = true;
 }
