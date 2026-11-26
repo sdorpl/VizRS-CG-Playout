@@ -650,6 +650,15 @@ mod tests {
     }
 
     #[test]
+    fn zones_of_a_frame_stream_as_the_sidecar_names_them() {
+        assert_eq!(run::zones_of(&piece_frames(vec![])), "", "the whole channel");
+        let whole = vec![(Area { x: 0, y: 0, w: 1600, h: 900 }, 0)];
+        assert_eq!(run::zones_of(&piece_frames(whole)), "", "one area of the whole channel");
+        let two = vec![(Area { x: 0, y: 816, w: 1600, h: 84 }, 0), (Area { x: 1392, y: 16, w: 144, h: 192 }, 84)];
+        assert_eq!(run::zones_of(&piece_frames(two)), "1600x84+0+816,144x192+1392+16");
+    }
+
+    #[test]
     fn no_graphics_over_a_piece_they_cannot_go_over() {
         // Hardware frames in the graph.
         let mut cuda = piece_with_watermark();

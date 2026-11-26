@@ -1070,6 +1070,21 @@ fn pace(brought: f64, wall: f64) -> String {
 /// only (media sequence past 0, nothing listed): at least the 2 min ErsatzTV keeps.
 /// `None` for a new channel (nothing yet) or a playlist without dates.
 fn timeline_behind(text: &str, now_ms: i64) -> Option<f64> {
+    match timeline_end(text) {
+        Some(end) => Some((now_ms as f64 - end) / 1000.0),
+        None => {
+            // Everything trimmed on arrival: at least 2 min behind.
+            let sequence: u64 = text.lines().find_map(|l| l.trim().strip_prefix("#EXT-X-MEDIA-SEQUENCE:")?.trim().parse().ok())?;
+            (sequence > 0 && !text.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))).then_some(120.0)
+        }
+    }
+}
+
+/// Where the channel's timeline (ErsatzTV's `PROGRAM-DATE-TIME`) ends in a
+/// playlist, ms since the epoch: the end of its last segment. Before a piece
+/// ErsatzTV writes it with its own timeline, so at the start of a piece it is
+/// the air time of the piece's first frame. None without dated segments.
+pub fn timeline_end(text: &str) -> Option<f64> {
     let mut date = None;
     let mut length = 0.0;
     let mut end = None;
@@ -1085,11 +1100,7 @@ fn timeline_behind(text: &str, now_ms: i64) -> Option<f64> {
             date = None;
         }
     }
-    if listed == 0 {
-        let sequence: u64 = text.lines().find_map(|l| l.trim().strip_prefix("#EXT-X-MEDIA-SEQUENCE:")?.trim().parse().ok())?;
-        return (sequence > 0).then_some(120.0);
-    }
-    end.map(|end| (now_ms as f64 - end) / 1000.0)
+    end.filter(|_| listed > 0)
 }
 
 /// What a check of the channel's timeline does to the run.
@@ -1392,6 +1403,10 @@ mod tests {
         assert_eq!(timeline_behind("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:11716\n#EXT-X-INDEPENDENT-SEGMENTS\n", now), Some(120.0));
         // A new channel: nothing known.
         assert_eq!(timeline_behind("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n", now), None);
+        // The air time of a piece starting now: the end of the timeline (00:24:46.847 UTC).
+        assert_eq!(super::timeline_end(list), Some((now - 3153) as f64));
+        assert_eq!(super::timeline_end("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:11716\n"), None);
+        assert_eq!(super::timeline_end("#EXTM3U\n#EXTINF:4.0,\nlive000001.ts\n"), None, "segments without dates");
         assert_eq!(timeline_behind("", now), None);
         // A source at 0.4x: 20 s of the clock made 8 s, on top of 1 s behind at the start.
         assert!(behind_clock(1.0, 20.0, 8.0) - 1.0 > LIVE_LAG_MAX);

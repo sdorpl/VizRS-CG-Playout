@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -476,6 +476,8 @@ test("a piece without a VizRS element takes the channel's graphics in when they 
   assert.equal(before.graphics, false, "the state says the channel has no graphics on air");
   assert.equal((await state(cg, "2")).graphics, undefined, "a channel the sidecar does not know: not known");
 
+  // ErsatzTV writes the channel's timeline into the playlist before a piece: the piece starts now on it.
+  writeFileSync(path.join(out, "live.m3u8"), `#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.000000,\n#EXT-X-PROGRAM-DATE-TIME:${new Date(Date.now() - 4000).toISOString()}\nseed000000.ts\n`);
   // An item with no graphics element, only ErsatzTV's watermark (an image input overlaid last).
   const piece = spawn(WRAPPER, [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-readrate", "1.0", "-i", media,
@@ -502,7 +504,12 @@ test("a piece without a VizRS element takes the channel's graphics in when they 
   assert.ok(from && Number(from[1]) > 0, `the run starts again with the graphics: ${log}\n${cg.logs()}`);
   assert.match(cg.logs(), /ffmpeg overlay took over the graphics of live ingest/);
   assert.doesNotMatch(log, /cannot go over/);
-  const segments = playlistSegments(out);
+  // The run's graphics on the channel's timeline from where the run starts – not again from lead_seconds before now
+  // (a crawl jumping back on every restart: S1 2026-11-26).
+  assert.match(cg.logs(), new RegExp(`ffmpeg overlay run from ${from[1].replace(".", "\\.")}\\d* s`), cg.logs());
+  const streams = cg.logs().split("\n").filter((l) => l.includes("graphics stream: frame 0"));
+  assert.ok(streams.length >= 2 && !/no air time/.test(streams[streams.length - 1]), `the run's frames on the channel's timeline: ${streams.join("\n")}`);
+  const segments = playlistSegments(out, (name) => name !== "seed000000.ts");
   const total = segments.reduce((sum, s) => sum + s.length, 0);
   assert.ok(Math.abs(total - 12) < 0.5, `the whole piece in the playlist: ${JSON.stringify(segments)}`);
   // ErsatzTV's watermark stays on air through both runs.
@@ -511,9 +518,9 @@ test("a piece without a VizRS element takes the channel's graphics in when they 
 });
 
 /** Segments of a playlist: names, lengths and the colour at 10,10 of their first frame. */
-function playlistSegments(dir) {
+function playlistSegments(dir, keep = () => true) {
   const playlist = readFileSync(path.join(dir, "live.m3u8"), "utf8");
-  return [...playlist.matchAll(/#EXTINF:([\d.]+),\s*\n(?:#.*\n)*(live\d+\.ts)/g)].map((m) => ({
+  return [...playlist.matchAll(/#EXTINF:([\d.]+),\s*\n(?:#.*\n)*((?:live|seed)\d+\.ts)/g)].filter((m) => keep(m[2])).map((m) => ({
     name: m[2],
     length: Number(m[1]),
     colour: pixel(path.join(dir, m[2]), 10, 10),

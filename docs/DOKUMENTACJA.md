@@ -749,7 +749,7 @@ ingest, audycje LIVE) – bez znaków wodnych.
   więcej.
 - Pozycja z innymi elementami grafiki, ale bez elementu VizRS, startuje
   o 2 s później (nakładka czeka na sesję) i leci ścieżką ErsatzTV.
-- **Grafika na pozycji bez elementu VizRS** (od wydania po 26.11.31): bez
+- **Grafika na pozycji bez elementu VizRS** (od 26.11.32): bez
   elementu ErsatzTV nie daje płótna grafiki, więc wcześniej nakładka puszczała
   komendę bez zmian i grafika wprowadzona na kanale (ręcznie w panelu –
   „Wprowadź stronę…” na ekranie Na antenie – albo z Trio) szła do VizRS, ale
@@ -777,7 +777,21 @@ ingest, audycje LIVE) – bez znaków wodnych.
   them”); udane nałożenie – „channel N: VizRS graphics over the piece from
   X s (no VizRS element on the item)”, sidecar: „ffmpeg overlay took over the
   graphics of live ingest”. Koszt jak przy pozycji z elementem, tylko gdy
-  grafika jest na antenie. Trwała grafika (logo, reguły `on_clip`) nadal
+  grafika jest na antenie.
+  **Ciągłość grafiki (od 26.11.33):** sesja nakładki dostaje czas anteny
+  kawałka (`MediaItem_Start` = koniec osi ErsatzTV w playliście, czyli
+  `PROGRAM-DATE-TIME` + długość ostatniego segmentu, odczytany przed
+  pierwszym przebiegiem), a każdy przebieg z grafiką otwiera strumień klatek
+  od swojego miejsca w kawałku (`/ffmpeg/frames?…&rev=…&zones=…&at=<s>`, jak
+  przy poszerzeniu stref). Sidecar bierze wtedy obrazy osi czasu kanału z tego
+  miejsca (log „frame 0 on air … (air time)” albo „(the channel's timeline,
+  from the run before)”), więc po restarcie (wejście grafiki, poszerzenie
+  stref, granica kawałka) animacja idzie dalej. W 26.11.32 każdy nowy
+  strumień zaczynał od obrazu sprzed `lead_seconds` („no air time: from
+  now”): ticker cofał się o kilka klatek do kilku sekund przy każdym wejściu
+  grafiki (S1 2026-11-26). Playlista bez dat albo czas anteny poza osią
+  zegara – jak wcześniej, od teraz. To samo dotyczy grafiki przebiegów live
+  pozycji bez elementu (logo `on_live`). Trwała grafika (logo, reguły `on_clip`) nadal
   wymaga elementu „VizRS” na pozycjach ramówki.
 - Na wejściu surowe klatki kosztują pasmo, ale nie CPU: 1080p to ok. 5 MB
   na klatkę, ok. 130 MB/s przy 25 kl./s. Idą lokalnie przez sieć Dockera.
