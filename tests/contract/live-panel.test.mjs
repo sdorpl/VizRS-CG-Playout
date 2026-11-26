@@ -126,7 +126,10 @@ test("a live programme from the panel is a file, a scan and a smart collection i
 test("holding a channel keeps its studio off and survives a restart", async (t) => {
   const { cg, api, folder } = await setup(t, {}, { ingest_anytime: true });
   const ingestState = async (url, ch) => (await fetch(`${url}/ingest/state?channel=${ch}`)).json();
-  assert.deepEqual(await ingestState(cg.url, "4"), { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null, live_watermark: "" });
+  // `graphics` only once the sidecar knows the channel (ErsatzTV's channels read in the background).
+  const { graphics, ...first } = await ingestState(cg.url, "4");
+  assert.deepEqual(first, { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null, live_watermark: "" });
+  assert.ok(graphics === undefined || graphics === false, `no graphics on air: ${graphics}`);
 
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   assert.equal((await ingestState(cg.url, "4")).hold, true);
