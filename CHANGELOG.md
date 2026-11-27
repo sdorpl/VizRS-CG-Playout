@@ -4,6 +4,10 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.35 (2026-11-27)
+
+- **Wejście YouTube znowu działa: yt-dlp 2026.11.23** (było 2026.10.26) w obrazie `vizrs-cg`. YouTube zmienił skrypt odtwarzacza (player `b485e332`) i solver wyzwań yt-dlp 2026.10.26 (EJS 0.8.0) przestał go rozwiązywać – „n challenge solving failed”, „No video formats found!” mimo ważnych ciasteczek (S1 2026-11-27, kanał 1). Wersja 2026.11.23 z Deno i tymi samymi ciasteczkami znajduje transmisję (H.264 1080p + AAC).
+
 ## 26.11.34 (2026-11-27)
 
 - **Grafika na pozycji bez elementu VizRS także na kanale ze studiem gotowym w każdej chwili (`ingest_anytime`).** Na takim kanale każdy kawałek szedł ścieżką przejęcia przez studio, która bez studia puszczała komendę ErsatzTV bez zmian – strona wprowadzona z Trio albo z panelu szła do VizRS, ale nie na obraz (S1 2026-11-27, kanał 1 BTB). Teraz bez studia grafika kanału wchodzi na kawałek jak od 26.11.32 (restart przebiegu od bieżącego miejsca, pod znakami wodnymi ErsatzTV). Test kontraktu w obu wariantach. DOKUMENTACJA §1 „Grafika na pozycji bez elementu VizRS”.
