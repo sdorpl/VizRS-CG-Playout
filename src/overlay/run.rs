@@ -161,15 +161,27 @@ pub(crate) fn plain(settings: &Settings, args: Vec<OsString>) -> ! {
 /// the schedule while the sidecar takes over only live programmes
 /// (`ingest_anytime` off). A live programme (slot) always goes this way, even
 /// with the sidecar away: its media is the sidecar.
-pub(crate) fn live_job(settings: &Settings, args: &[OsString], channel: Option<&str>) -> Option<(Job, bool, bool)> {
+pub(crate) fn live_job(settings: &Settings, args: &[OsString], channel: Option<&str>) -> Option<(Job, LiveState)> {
     if !settings.ingest || settings.sidecar.is_empty() {
         return None;
     }
     let job = Job::of(args, channel)?;
     match takeover::state(&settings.sidecar, &job.channel) {
-        Some(state) => (state.enabled && (job.slot || state.anytime)).then_some((job, state.live, state.audio)),
-        None => job.slot.then_some((job, false, false)),
+        Some(state) => (state.enabled && (job.slot || state.anytime))
+            .then_some((job, LiveState { on: state.live, audio: state.audio, graphics: state.graphics })),
+        None => job.slot.then_some((job, LiveState::default())),
     }
+}
+
+/// The live ingest of a channel when its piece starts (`/ingest/state`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LiveState {
+    /// The studio on air.
+    pub(crate) on: bool,
+    /// Sound only.
+    pub(crate) audio: bool,
+    /// VizRS graphics on the channel's antenna; None = not known (an older sidecar, live API off).
+    pub(crate) graphics: Option<bool>,
 }
 
 /// The real ffmpeg with `args`, graphics at `fd`, the forwarded signals unblocked.
@@ -418,11 +430,20 @@ pub(crate) fn rate_number(rate: &str) -> f64 {
 /// first live run, which never waits for them: it starts without graphics and
 /// is restarted with them once they are there (as for widened zones). Not to
 /// be had (no sidecar session, an error): the live runs without graphics.
-fn without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio): (bool, bool)) -> i32 {
+fn without_element(settings: &Settings, args: &[OsString], job: &Job, state: LiveState) -> i32 {
+    let (on, audio) = (state.on, state.audio);
     if job.slot {
         return programme_without_element(settings, args, job, (on, audio));
     }
     let graphics = PieceGraphics::for_piece(job);
+    // The studio off: graphics taken in on the channel (Trio, VizRS Live) go over
+    // the piece as in `piece_without_element` – live ingest ready at any time
+    // (`anytime`) must not keep them off the air.
+    let watch = state.graphics.map(|on| GraphicsWatch::start(&settings.sidecar, &job.channel, on));
+    let refused = AtomicBool::new(false);
+    let piece_wanted = || watch.as_ref().is_some_and(GraphicsWatch::on) && !refused.load(Ordering::Relaxed);
+    // The run of the moment is a piece run (no studio) without the graphics.
+    let piece_bare = AtomicBool::new(false);
     let marks_of = OnceLock::new();
     let takeover_marks = |source: &takeover::Source| {
         marks_of
@@ -435,9 +456,36 @@ fn without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio
     let run = |elapsed: f64, source: Option<&takeover::Source>| -> io::Result<Child> {
         let Some(source) = source else {
             graphics.bare.store(false, Ordering::Relaxed);
+            if piece_wanted() {
+                let mut ready = graphics.ready(settings, args, job);
+                if let Some(live) = ready.as_mut() {
+                    live.follow(settings, elapsed);
+                    let (reader, writer) = frame_channel()?;
+                    let fd = reader.as_raw_fd();
+                    if let Some(command) = piece_overlay_args(&job.program(args, elapsed), fd, &live.feed.frames) {
+                        piece_bare.store(false, Ordering::Relaxed);
+                        graphics.drawn.store(true, Ordering::Relaxed);
+                        log(format_args!(
+                            "channel {}: VizRS graphics over the piece from {elapsed:.1} s (no VizRS element on the item)",
+                            job.channel
+                        ));
+                        let child = spawn(settings, adjusted(command, settings, None), Some(fd))?;
+                        drop(reader);
+                        live.feed.control.attach(writer);
+                        return Ok(child);
+                    }
+                    log(format_args!(
+                        "channel {}: the graphics cannot go over this piece's command; the piece goes without them",
+                        job.channel
+                    ));
+                    refused.store(true, Ordering::Relaxed);
+                }
+            }
+            piece_bare.store(true, Ordering::Relaxed);
             graphics.drawn.store(false, Ordering::Relaxed);
             return spawn(settings, adjusted(job.program(args, elapsed), settings, None), None);
         };
+        piece_bare.store(false, Ordering::Relaxed);
         let marks = takeover_marks(source);
         let mut ready = graphics.ready(settings, args, job);
         if let Some(live) = ready.as_mut() {
@@ -464,18 +512,21 @@ fn without_element(settings: &Settings, args: &[OsString], job: &Job, (on, audio
     // The studio already on air (a live going on from the piece before): the
     // graphics set up first, a short while at most, so that the piece's first
     // live run has them – not a restart (a blink of the logo) every piece.
-    if on {
+    // Graphics on the channel without the studio: the same, for the first piece run.
+    if on || piece_wanted() {
         let until = std::time::Instant::now() + LIVE_GRAPHICS_WAIT;
         while graphics.ready(settings, args, job).is_none() && graphics.setting_up() && std::time::Instant::now() < until {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    // A live run without graphics stops for the graphics that came meanwhile, one
-    // with them for zones widened in the middle of the piece (its graphics end first).
+    // A live run without graphics stops for the graphics that came meanwhile, a
+    // piece run without them for graphics taken in on the channel, one with them
+    // for zones widened in the middle of the piece (its graphics end first).
     let restart = || {
         let ready = graphics.ready(settings, args, job);
         match ready.as_ref() {
             Some(_) if graphics.bare.load(Ordering::Relaxed) => true,
+            Some(_) if piece_bare.load(Ordering::Relaxed) && piece_wanted() => true,
             Some(live) if graphics.drawn.load(Ordering::Relaxed) && live.watch.as_ref().is_some_and(ZoneWatch::newer) => {
                 live.feed.control.cut();
                 true
@@ -879,7 +930,7 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
     // Not a canvas transcode: plain ffmpeg, at the forced rate, preset and catch-up rate when set.
     let Some(canvas) = canvas else {
         return match live {
-            Some((job, on, audio)) => without_element(settings, &args, &job, (on, audio)),
+            Some((job, state)) => without_element(settings, &args, &job, state),
             None => match graphics_job(settings, &args) {
                 Some(job) => piece_without_element(settings, args, job),
                 None => plain(settings, args),
@@ -924,8 +975,8 @@ pub fn run(settings: &Settings, args: Vec<OsString>) -> i32 {
         None => Watermarks::default(),
     };
 
-    if let Some((job, on, audio)) = live {
-        return with_graphics(settings, &args, &canvas, &job, (on, audio), (frames, socket, place), drain, true, &marks);
+    if let Some((job, state)) = live {
+        return with_graphics(settings, &args, &canvas, &job, (state.on, state.audio), (frames, socket, place), drain, true, &marks);
     }
     // Zones that may widen in the middle of the piece (S3b): the piece as runs
     // too, with live left alone (VIZRS_FFMPEG_INGEST allows the runs).

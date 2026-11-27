@@ -445,7 +445,8 @@ test("live takes over a piece without a VizRS element: the overlay's own live se
   assert.ok(after.filter((l) => l === "TAKE 4001").length <= 1, `only the page held by the takeover comes back: ${JSON.stringify(vizrs.received)}`);
 });
 
-test("a piece without a VizRS element takes the channel's graphics in when they come on air: the run starts again with them, under the ErsatzTV watermark", { skip: !FFMPEG && "no ffmpeg" }, async (t) => {
+for (const anytime of [false, true]) {
+test(`a piece without a VizRS element takes the channel's graphics in when they come on air (live ingest ${anytime ? "at any time" : "only for live programmes"}): the run starts again with them, under the ErsatzTV watermark`, { skip: !FFMPEG && "no ffmpeg" }, async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "vizrs-piece-graphics-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const media = path.join(dir, "show.mp4");
@@ -461,18 +462,19 @@ test("a piece without a VizRS element takes the channel's graphics in when they 
   const layers = [];
   const vizrs = await fakeVizrs(layers);
   t.after(vizrs.close);
-  // As S1's channel 1: an input of live ingest, but live takes over only live programmes (no `anytime`).
+  // As S1's channel 1: an input of live ingest; live takes over only live programmes, or any piece
+  // (`anytime`, S1 2026-11-27: the studio off, a page taken in Trio did not go on air).
   const rtmp = `rtmp://127.0.0.1:${await freePort()}/live/key`;
   const cg = await sidecar(
     t,
     {
-      ingest_token: TOKEN, ingest_anytime: false, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1,
+      ingest_token: TOKEN, ingest_anytime: anytime, output_url: "http://127.0.0.1:9/output", lead_seconds: 0.4, in_seconds: 0, out_seconds: -1,
       vizrs: { address: vizrs.address, token: "" }, panel_token: "panel-test",
     },
     { VIZRS_INGEST: `1=${rtmp}` },
   );
   const before = await state(cg, "1");
-  assert.equal(before.anytime, false);
+  assert.equal(before.anytime, anytime);
   assert.equal(before.graphics, false, "the state says the channel has no graphics on air");
   assert.equal((await state(cg, "2")).graphics, undefined, "a channel the sidecar does not know: not known");
 
@@ -495,7 +497,8 @@ test("a piece without a VizRS element takes the channel's graphics in when they 
   piece.stderr.on("data", (chunk) => pieceLog.push(chunk));
   const pieceExit = new Promise((resolve) => piece.once("exit", resolve));
   await sleep(3000);
-  assert.ok(!cg.logs().includes("ffmpeg overlay took over"), `no graphics session while the channel has none: ${cg.logs()}`);
+  // Ready for the studio at any time, the piece sets its live graphics up at once; otherwise only when they come.
+  if (!anytime) assert.ok(!cg.logs().includes("ffmpeg overlay took over"), `no graphics session while the channel has none: ${cg.logs()}`);
   layers.push({ layer: "main", page: { number: 4001 } });
   const code = await pieceExit;
   const log = Buffer.concat(pieceLog).toString();
@@ -516,6 +519,7 @@ test("a piece without a VizRS element takes the channel's graphics in when they 
   const red = segments.map(({ name }) => { const [r, g, b] = pixel(path.join(out, name), 220, 120); return r > 180 && g < 70 && b < 70; });
   assert.ok(red.every(Boolean), `the watermark on every segment: ${JSON.stringify(red)}`);
 });
+}
 
 /** Segments of a playlist: names, lengths and the colour at 10,10 of their first frame. */
 function playlistSegments(dir, keep = () => true) {

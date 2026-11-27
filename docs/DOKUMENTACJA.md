@@ -778,6 +778,14 @@ ingest, audycje LIVE) – bez znaków wodnych.
   X s (no VizRS element on the item)”, sidecar: „ffmpeg overlay took over the
   graphics of live ingest”. Koszt jak przy pozycji z elementem, tylko gdy
   grafika jest na antenie.
+  **Studio gotowe w każdej chwili (`ingest_anytime`, od 26.11.34):** kawałek
+  takiego kanału idzie ścieżką przejęcia przez studio; dopóki studio nie
+  nadaje, grafika kanału wchodzi na niego tak samo jak wyżej (restart przebiegu
+  od bieżącego miejsca, pod znakami wodnymi), a gdy studio wejdzie – przejęcie
+  jak dotąd. Do 26.11.33 grafika wprowadzona na takim kanale bez studia nie
+  trafiała na obraz (S1 2026-11-27, kanał 1 BTB). Sesję grafiki kanału taki
+  kawałek zakłada od razu (gotowość na studio), więc „ffmpeg overlay took
+  over the graphics of live ingest” w logu sidecara jest przy każdym kawałku.
   **Ciągłość grafiki (od 26.11.33):** sesja nakładki dostaje czas anteny
   kawałka (`MediaItem_Start` = koniec osi ErsatzTV w playliście, czyli
   `PROGRAM-DATE-TIME` + długość ostatniego segmentu, odczytany przed

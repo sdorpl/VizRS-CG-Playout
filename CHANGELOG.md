@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Grafika na pozycji bez elementu VizRS także na kanale ze studiem gotowym w każdej chwili (`ingest_anytime`).** Na takim kanale każdy kawałek szedł ścieżką przejęcia przez studio, która bez studia puszczała komendę ErsatzTV bez zmian – strona wprowadzona z Trio albo z panelu szła do VizRS, ale nie na obraz (S1 2026-11-27, kanał 1 BTB). Teraz bez studia grafika kanału wchodzi na kawałek jak od 26.11.32 (restart przebiegu od bieżącego miejsca, pod znakami wodnymi ErsatzTV). Test kontraktu w obu wariantach. DOKUMENTACJA §1 „Grafika na pozycji bez elementu VizRS”.
+
 ## 26.11.33 (2026-11-26)
 
 - **Grafika na pozycji bez elementu VizRS bez cofania się animacji.** W 26.11.32 po każdym restarcie kodowania (wejście grafiki, poszerzenie stref, granica kawałka) strumień klatek zaczynał od obrazu sprzed `lead_seconds` – ticker cofał się o kilka klatek do kilku sekund (S1, BTB, ticker R7). Teraz sesja nakładki ma czas anteny kawałka z playlisty ErsatzTV, a każdy przebieg bierze klatki od swojego miejsca w kawałku – grafika idzie ciągle. DOKUMENTACJA §1 „Grafika na pozycji bez elementu VizRS”.
