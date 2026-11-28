@@ -14,13 +14,12 @@ Ostatnie wydania (szczegóły w CHANGELOG):
 - 26.11.34–26.11.35 – grafika na pozycji bez elementu także przy `ingest_anytime`, yt-dlp 2026.11.23 dla wejścia YouTube;
 - 26.11.36 – nagła emisja live: przebudowa Refresh zamiast Reset (K22), okno przejęcia kanału z datą (K23), „zachowaj odcinek” (K24).
 
-**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K24 zrobione i wydane (K22–K24 – nagła emisja live, w 26.11.36; K24 drogą W1); ręcznie na S1 z OBS – K23/K24 razem z Q1; otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
+**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K24 zrobione i wydane (K22–K24 – nagła emisja live, w 26.11.36; K24 drogą W1); Q1 i nagła emisja sprawdzone ręcznie przez użytkownika (2026-11-28); otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
 
 ## Następne
 
-1. **Aktualizacja s1, s2, s3 do 26.11.36** (Portainer: obrazy `:latest` – ponowne pobranie stosu).
-2. **Q1 i nagła emisja (ręcznie, z użytkownikiem):** Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3); na S1 okno nagłej emisji na kanale testowym z OBS (K23) i „zachowaj odcinek” na pozycji serialu (K24, sprawdzenie odcinka następnego dnia).
-3. **Do decyzji** (próba ErsatzTV Next N0/N1 odrzucona 2026-11-28 – legacy ma Next w sobie, PLAN-mcr §8.7): „Ramówka dnia” i kreator szablonu dnia (PLAN-mcr §7.3 – przy akceptacji nowe numery, bo K19/K20 to dziś konta), D3 (CG Playout przestaje pisać do legacy) i D4 (jedna nakładka compose) z §9.
+1. **s1, s2, s3 na 26.11.36** – przy najbliższym przebiegu `stack-refresh` (obrazy `:latest`).
+2. **Do decyzji** (próba ErsatzTV Next N0/N1 odrzucona 2026-11-28 – legacy ma Next w sobie, PLAN-mcr §8.7): „Ramówka dnia” i kreator szablonu dnia (PLAN-mcr §7.3 – przy akceptacji nowe numery, bo K19/K20 to dziś konta), D3 (CG Playout przestaje pisać do legacy) i D4 (jedna nakładka compose) z §9.
 
 ## Panel – zrobione (wg planu)
 
@@ -75,7 +74,6 @@ Zrobione w panelu: K1–K11, K18 (sesje, CSP, numeracja kanałów, rozdzielczoś
 
 ## Panel – kroki ręczne (czekają na użytkownika)
 
-- Sloty na żywo z prawdziwym sygnałem z OBS i Plex z prawdziwym kontem – Q1 (LUKI #3).
 - Lokalny stos `virtrs` (poza repo): `.env` poprawiony 2026-11-16 (`COMPOSE_FILE` z `docker-compose.live.yml` i `panel/compose.build.yml`, `COMPOSE_PROFILES=grafika,ingest`; kopia `.env.bak-przed-p4`). Kroki ręczne sprzed połączenia (nakładka `compose.cg-playout.yml`, legacy v26.12.0, `VIZRS_LIVE_VIZRS_URL`) są nieaktualne – historia w gicie (`d849485` i wcześniej).
 
 ## Panel – blokery / uwagi

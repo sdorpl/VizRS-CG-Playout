@@ -17,7 +17,6 @@
 | # | Luka | Uwagi |
 |---|---|---|
 | 1 | Brak TLS w panelu i w proxy dla widzów | zamierzone (serwer bez zależności); LAN/VPN albo zewnętrzne proxy TLS – [RUNBOOK.md §2](RUNBOOK.md#2-wdrożenie); ciasteczko dostaje `Secure` przy `X-Forwarded-Proto: https` ([RUNBOOK.md §7](RUNBOOK.md#7-wydanie-nowej-wersji-opiekun-repozytorium)) |
-| 3 | Sloty na żywo nie sprawdzone z prawdziwym sygnałem (OBS → CG Playout), Plex nie sprawdzony z prawdziwym kontem | e2e na atrapach; `panel/tests/real.sh` sprawdził Jellyfin, Emby i reguły grafiki na prawdziwym CG ([DOKUMENTACJA.md §7](DOKUMENTACJA.md#testy-panelu)); krok ręczny przed wdrożeniem – [STATUS.md](STATUS.md); PLAN-mcr Q1 (ręcznie) |
 | 5 | Panel nie bierze blokady biblioteki legacy (`IEntityLocker`, poza MediatR) | drugie zlecenie synchronizacji tej samej biblioteki trafia do kolejki ([DOKUMENTACJA.md §12](DOKUMENTACJA.md#12-ekrany-panelu), R8) |
 
 ## G2 – wierność wobec web GUI legacy (panel)
