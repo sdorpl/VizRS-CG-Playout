@@ -1,6 +1,6 @@
 # Plan rozwoju VizRS Live (PLAN-mcr) – braki wobec legacy, wzorzec Viz Channel Branding, legacy czy Next
 
-> **Stan:** gałąź `next-v`, wydanie testowe 1.3.0-test.1 (2026-11-10): K1–K11, K18 zrobione; K12–K14, K17 – panel gotowy, czeka na VizRS CG Playout; K15–K16 – kontrakt; Q1 ręcznie; decyzja legacy/Next: **A – legacy** (§6). Nagła emisja live (§5): K22–K23 zrobione (2026-11-28, niewydane); K24 – po K23, droga W1 (decyzja 2026-11-28). Stan prac: [../STATUS.md](../STATUS.md), znane braki: [../LUKI.md](../LUKI.md), opis działania: [../DOKUMENTACJA.md](../DOKUMENTACJA.md).
+> **Stan:** gałąź `next-v`, wydanie testowe 1.3.0-test.1 (2026-11-10): K1–K11, K18 zrobione; K12–K14, K17 – panel gotowy, czeka na VizRS CG Playout; K15–K16 – kontrakt; Q1 ręcznie; decyzja legacy/Next: **A – legacy** (§6). Nagła emisja live (§5): K22–K24 zrobione (2026-11-28, niewydane; K24 drogą W1). Stan prac: [../STATUS.md](../STATUS.md), znane braki: [../LUKI.md](../LUKI.md), opis działania: [../DOKUMENTACJA.md](../DOKUMENTACJA.md).
 >
 > **Jedyny dokument planów rozwoju VizRS Live** (decyzja użytkownika 2026-11-09): nowe plany i punkty panelu dopisuj tutaj – nowy punkt w tabeli §4 (w miejscu kolejki, które mu odpowiada) i opis w §5, nowe analizy jako kolejne sekcje – zamiast zakładać nowe pliki `PLAN-*.md`. Zakończone plany [PLAN-rozbudowy.md](archiwum/PLAN-rozbudowy.md) i [PLAN-makieta.md](archiwum/PLAN-makieta.md) zostają jako archiwum.
 >
@@ -97,7 +97,7 @@ Przebieg łączy [LUKI.md](../LUKI.md) i punkty z §2–§3 w jedną kolejkę: n
 | K21 | Jedno konto w pakiecie (opcja): konta panelu logują do VizRS Trio i Artist (przełącznik w Użytkownicy, `/api/sso`, CG System `--panel-login`) | K19 | zrobione (2026-11-18, `live-ingest-new` + CG System `konta-panelu`) |
 | K22 | Przebudowa ramówki bez kasowania postępu serii: Refresh zamiast Reset po zapisie emisji audycji i na karcie kanału | – | zrobione (2026-11-28, niewydane) |
 | K23 | Nagła emisja na żywo z datą: zaplanowane okno przejęcia kanału w CG Playout (wariant B, decyzja użytkownika 2026-11-28), wybór losu pozycji pod spodem przy dodawaniu (CG) | K22 | zrobione (2026-11-28, niewydane; ręcznie na S1 z OBS – jak Q1) |
-| K24 | Zachowanie odcinka pozycji zastąpionej przez nagłą emisję (wybór „zachowaj odcinek” z K23): rozpoznanie w legacy, potem wykonanie | K23 | do zrobienia po K23 – droga W1 (decyzja użytkownika 2026-11-28, §5) |
+| K24 | Zachowanie odcinka pozycji zastąpionej przez nagłą emisję (wybór „zachowaj odcinek” z K23): rozpoznanie w legacy, potem wykonanie | K23 | zrobione (2026-11-28, niewydane; droga W1) |
 
 **Poza przebiegiem** (wiersze zostają w LUKI):
 
@@ -216,7 +216,8 @@ W wariancie B pozycja legacy gra pod oknem, więc postęp jej serii idzie dalej 
 | W2 – tymczasowa zmiana pozycji w harmonogramie głównym do lokalnej północy, potem przywrócenie | `ReplaceProgramScheduleItems` przed oknem i po północy (Refresh po każdej zmianie robi legacy) | podobny jak W1 plus zapis zamiaru w `control.json` i przywracanie przy starcie | Gorsza od W1: harmonogram bywa wspólny dla kilku kanałów (`ProgramSchedule.Playouts`), więc zmiana trafia we wszystkie. Brak pozycji jest we wszystkich zbudowanych dniach do przywrócenia. Przywrócenie po awarii CG po następnej emisji puszcza dziurę bez okna. Edycje harmonogramu w tym czasie się nadpisują. **Odradzana.** |
 | **W3 – bez `keep`** | K23 tylko z `replace`, w panelu brak opcji | zero | Odcinek spod okna przepada, jak dziś przy ręcznym WPUŚĆ. |
 
-**Decyzja użytkownika (2026-11-28): W1.** K24 wykonuje się po K23 według wiersza W1; gotowe – e2e panelu (kopia, wiersz alternatywny z rokiem, sprzątanie, ostrzeżenie przy zmianie harmonogramu), test CG (odnośnik w oknie przeżywa restart), DOKUMENTACJA §1 i §12, INSTRUKCJA.
+**Zrobione (2026-11-28, W1):** panel `views/live.js` – `keepPlan` (harmonogram aktywny tego dnia jak `AlternateScheduleSelector`, stałe pozycje zaczynające się w oknie z blokiem „po poprzedniej”; odmowa z powodem: okno przez północ, playout nieklasyczny, brak stałej pozycji, pusta kopia), `keepApply` (kopia, zdjęcie pozycji, zastępczy z rokiem na pierwszym miejscu; błąd cofa), `keepUndo` i `cleanupKept` (dzień po emisji przy wejściu do Slotów albo zmianie stanu; usunięcie okna wcześniej – od razu); CG – `src/windows.rs` `Keep`, cecha `windows_keep`, okno z `keep` po końcu na liście (`over`) do 7 dni; testy jednostkowe, kontraktu, e2e (prawdziwe legacy: stała pozycja 21:00, kopia, zastępczy na jutro, usunięcie). Bez tej sesji: e2e na stosie testowym (CI po pushu) i ręcznie na S1.
+**Decyzja użytkownika (2026-11-28): W1.** Gotowe – e2e panelu (kopia, wiersz alternatywny z rokiem, sprzątanie, ostrzeżenie przy zmianie harmonogramu), test CG (odnośnik w oknie przeżywa restart), DOKUMENTACJA §1 i §12, INSTRUKCJA.
 
 ## 6. Legacy czy Next
 

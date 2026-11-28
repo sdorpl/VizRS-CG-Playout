@@ -1313,6 +1313,7 @@ impl Panel {
             Value::from("events"),
             Value::from("approval"),
             Value::from("windows"),
+            Value::from("windows_keep"),
         ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
@@ -1537,7 +1538,7 @@ impl Panel {
         let on_now: BTreeMap<String, Window> = {
             let mut settings = lock(&self.settings);
             let before = settings.windows.len();
-            settings.windows.retain(|w| !w.over(now));
+            settings.windows.retain(|w| w.kept(now));
             if settings.windows.len() != before {
                 let next = settings.clone();
                 drop(settings);
@@ -1596,9 +1597,6 @@ impl Panel {
                 Ok(w) => w,
                 Err(e) => return fail(stream, 400, &e),
             };
-            if window.under == windows::Under::Keep && !self.features().iter().any(|f| f.as_str() == Some("windows_keep")) {
-                return fail(stream, 400, "„zachowaj odcinek” – niedostępne w tej wersji CG Playout");
-            }
             settings.windows.push(window.clone());
             (window, settings.clone())
         };
@@ -2002,6 +2000,7 @@ mod tests {
             title: "Debata".into(),
             under: windows::Under::Replace,
             created_by: "jan".into(),
+            keep: None,
         }
     }
 

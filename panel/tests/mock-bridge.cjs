@@ -154,6 +154,7 @@ const SCHEDULES = [
   { Id: 3, Name: 'INFO24 – weekend', items: [
     { Index: 1, StartType: 'Fixed', StartTime: '08:00:00', FixedStartTimeBehavior: null, PlayoutMode: 'Flood', CollectionType: 'SmartCollection', SmartCollectionId: 2, PlaybackOrder: 'Shuffle', MultipleCount: '1' }] },
 ];
+const ALTS = {};
 const PLAYLISTS = [{ Id: 1, PlaylistGroupId: 1, Name: 'Poranek INFO24', IsSystem: false }];
 const PL_ITEMS = {};
 const LOGS = []; // wpisy dopisywane przez zadania w tle atrapy (K6)
@@ -185,7 +186,12 @@ const H = {
     { Id: 3, Name: 'LIVE · Wieczór na żywo', Query: 'type:remote_stream AND sort_title:"wieczór na żywo"' }],
   // harmonogramy (w pamięci): „INFO24 – dzień” kanału 24 – godziny emisji audycji LIVE (Audycje LIVE → Ramówka…)
   GetAllProgramSchedules: () => SCHEDULES.map(({ Id, Name }) => ({ Id, Name, FixedStartTimeBehavior: 'Strict', ShuffleScheduleItems: false })),
-  GetPlayoutAlternateSchedules: (a) => (a.PlayoutId === 1 ? [{ Id: 3, Index: 1, ProgramScheduleId: 3, DaysOfWeek: ['Saturday', 'Sunday'], DaysOfMonth: [], MonthsOfYear: [] }, { Id: 1, Index: 2, ProgramScheduleId: 1, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : a.PlayoutId === 3 ? [{ Id: 2, Index: 1, ProgramScheduleId: 2, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : []),
+  // harmonogramy zastępcze w pamięci (K24: kopia harmonogramu na jeden dzień jako zastępczy z rokiem)
+  GetPlayoutAlternateSchedules: (a) => (ALTS[a.PlayoutId] ??= (a.PlayoutId === 1 ? [{ Id: 3, Index: 1, ProgramScheduleId: 3, DaysOfWeek: ['Saturday', 'Sunday'], DaysOfMonth: [], MonthsOfYear: [] }, { Id: 1, Index: 2, ProgramScheduleId: 1, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : a.PlayoutId === 3 ? [{ Id: 2, Index: 1, ProgramScheduleId: 2, DaysOfWeek: [], DaysOfMonth: [], MonthsOfYear: [] }] : [])).map((x) => ({ ...x })),
+  ReplacePlayoutAlternateScheduleItems: (a) => { ALTS[a.PlayoutId] = a.Items.map((x) => ({ ...x, Id: x.Id > 0 || x.Id === -1 ? x.Id : 100 + Object.values(ALTS).flat().length })); return null; },
+  CopyProgramSchedule: (a) => { const src = SCHEDULES.find((x) => x.Id === a.ProgramScheduleId); const Id = Math.max(...SCHEDULES.map((x) => x.Id)) + 1;
+    SCHEDULES.push({ Id, Name: a.Name, items: JSON.parse(JSON.stringify(src?.items || [])) }); return { Id, Name: a.Name }; },
+  DeleteProgramSchedule: (a) => { const k = SCHEDULES.findIndex((x) => x.Id === a.ProgramScheduleId); if (k >= 0) SCHEDULES.splice(k, 1); return null; },
   GetProgramScheduleItems: (a) => (SCHEDULES.find((x) => x.Id === a.Id)?.items || []).map((it) => {
     const smart = it.SmartCollectionId && H.GetAllSmartCollections().find((c) => c.Id === it.SmartCollectionId);
     return { ...it, Count: it.MultipleCount, Name: smart?.Name ?? 'Archiwum INFO24', SmartCollection: it.SmartCollectionId ? { Id: it.SmartCollectionId, Name: smart?.Name } : null,
@@ -338,7 +344,7 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
         ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies', 'windows', ...(process.env.MOCK_KEEP === '1' ? ['windows_keep'] : [])], settings: { graphics_off: false },
         channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name, source: { live: c.Number === '24' }, inputs: inputsOf(c.Number), input: chosen[c.Number] || null, on_air: c.Number === '24', hold: false, takeover: c.Number === '24', anytime: c.Number === '24', layers: layers[c.Number] || [],
           next_live: c.Number === '25' ? { start: Date.now() + 3 * 60e3, title: 'Koncert w studiu' } : null,
-          windows: windows.filter((w) => w.channel === c.Number).map((w) => ({ ...w, active: w.start <= Date.now() && Date.now() < w.end })),
+          windows: windows.filter((w) => w.channel === c.Number).map((w) => ({ ...w, active: w.start <= Date.now() && Date.now() < w.end, over: w.end <= Date.now() })),
           window: windows.filter((w) => w.channel === c.Number && w.end > Date.now()).sort((a, z) => a.start - z.start)[0] || null })),
         events: [], guide: {},
       });

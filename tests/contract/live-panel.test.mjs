@@ -166,7 +166,8 @@ test("an emergency live window: planned, checked, takes the channel over, surviv
   assert.equal((await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: " " })).status, 400);
   assert.equal((await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "x", input: "0011223344556677" })).status, 400);
   const keep = await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "x", under: "keep" });
-  assert.equal(keep.status, 400, "keep only with windows_keep");
+  assert.equal(keep.status, 400, "keep needs the alternate schedule VizRS Live put in ErsatzTV");
+  assert.equal((await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "x", keep: { playout: 1, schedule: 2, date: "2026-11-28" } })).status, 400, "keep only with under: keep");
   assert.equal((await api("POST", "channels/4; x/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "x" })).status, 400);
 
   // One coming later and one on now.
@@ -205,6 +206,17 @@ test("an emergency live window: planned, checked, takes the channel over, surviv
   t.after(again.stop);
   for (let i = 0; i < 30 && (await ingestState(again.url, "4")).window !== "Pilne: konferencja"; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal((await ingestState(again.url, "4")).window, "Pilne: konferencja", "the window survives a restart");
+
+  // K24: a window that keeps the episode carries what VizRS Live put in ErsatzTV and stays after its end for the clean-up.
+  const kept = await api("POST", "channels/5/windows", { start: iso(now), end: iso(now + 2000), title: "Zachowaj", under: "keep", keep: { playout: 3, schedule: 41, date: "2026-11-28" } });
+  assert.equal(kept.status, 201, JSON.stringify(kept.body));
+  assert.deepEqual(kept.body.window.keep, { playout: 3, schedule: 41, date: "2026-11-28" });
+  await new Promise((r) => setTimeout(r, 3500));
+  const after = (await api("GET", "channels/5/windows")).body.windows;
+  assert.deepEqual(after.map((w) => [w.title, w.over, w.active]), [["Zachowaj", true, false]], "over, kept for the clean-up");
+  assert.equal((await ingestState(cg.url, "5")).window, null);
+  assert.equal((await api("DELETE", `channels/5/windows/${kept.body.window.id}`)).status, 200, "VizRS Live cleaned up");
+  assert.equal((await api("GET", "channels/5/windows")).body.windows.length, 0);
 
   // Removed while on: the channel is back to the hold from before at once.
   const id = onNow.body.window.id;
@@ -401,7 +413,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "windows"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "windows", "windows_keep"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -500,7 +512,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "windows", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "windows", "windows_keep", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

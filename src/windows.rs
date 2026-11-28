@@ -6,13 +6,16 @@
 // end the channel is back to what it was before the window.
 //
 //   GET    /api/live/channels/<n>/windows        {"windows": […], "now"}
-//   POST   /api/live/channels/<n>/windows        {"start", "end", "input", "title", "under"}
+//   POST   /api/live/channels/<n>/windows        {"start", "end", "input", "title", "under", "keep"}
 //   DELETE /api/live/channels/<n>/windows/<id>   removes it (an active one ends at once)
 //
 // `start` and `end` are ISO times with an offset (`2026-11-28T22:00:00+01:00`,
 // `…Z`) or epoch milliseconds. Windows live in `control.json` with the
 // decisions on channels (src/panel.rs), so a restart before the window does
-// not lose it; windows already over go away when read.
+// not lose it; windows already over go away when read – except those that keep
+// the episode (K24): VizRS Live put a one-day alternate schedule in ErsatzTV for
+// them (`keep`) and removes it the day after; until it does (at most
+// `KEEP_FOR_MS` after the end) the window stays on the list as `over`.
 
 use std::sync::atomic::{AtomicU16, Ordering};
 
@@ -28,6 +31,40 @@ pub const PAST_SLACK_MS: i64 = 60_000;
 pub const MAX_AHEAD_MS: i64 = 30 * 86_400_000;
 /// Longest title (characters).
 pub const TITLE_MAX: usize = 200;
+/// A window over that kept the episode stays this long for VizRS Live to clean ErsatzTV up.
+pub const KEEP_FOR_MS: i64 = 7 * 86_400_000;
+/// Largest id of ErsatzTV (playout, schedule): a 32-bit integer.
+const MAX_ETV_ID: f64 = 2_147_483_647.0;
+
+/// What VizRS Live put in ErsatzTV so that the episode under the window airs
+/// next time (K24, variant W1): a copy of the day's schedule without the item,
+/// as the playout's alternate schedule for that one date.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Keep {
+    pub playout: u32,
+    /// The copied schedule (and its alternate entry) to remove afterwards.
+    pub schedule: u32,
+    /// The local date of the alternate (`YYYY-MM-DD`).
+    pub date: String,
+}
+
+impl Keep {
+    fn to_value(&self) -> Value {
+        json::object([
+            ("playout", f64::from(self.playout).into()),
+            ("schedule", f64::from(self.schedule).into()),
+            ("date", self.date.as_str().into()),
+        ])
+    }
+
+    fn from_value(value: &Value) -> Option<Keep> {
+        let id = |name: &str| {
+            value.get(name).and_then(Value::as_f64).filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= MAX_ETV_ID).map(|n| n as u32)
+        };
+        let date = value.get("date").and_then(Value::as_str).filter(|d| crate::asrun::valid_day(d))?;
+        Some(Keep { playout: id("playout")?, schedule: id("schedule")?, date: date.to_owned() })
+    }
+}
 
 /// What happens to the schedule's item under the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +104,8 @@ pub struct Window {
     pub title: String,
     pub under: Under,
     pub created_by: String,
+    /// With `Under::Keep`: what VizRS Live put in ErsatzTV for it.
+    pub keep: Option<Keep>,
 }
 
 impl Window {
@@ -76,6 +115,11 @@ impl Window {
 
     pub fn over(&self, now_ms: i64) -> bool {
         self.end_ms <= now_ms
+    }
+
+    /// Kept on the list: not over, or over but still with ErsatzTV to clean up.
+    pub fn kept(&self, now_ms: i64) -> bool {
+        !self.over(now_ms) || (self.keep.is_some() && now_ms < self.end_ms + KEEP_FOR_MS)
     }
 
     /// For the API and `control.json`; `active` only for the API (`now`).
@@ -89,8 +133,10 @@ impl Window {
             ("title".to_owned(), self.title.as_str().into()),
             ("under".to_owned(), self.under.as_str().into()),
             ("created_by".to_owned(), self.created_by.as_str().into()),
+            ("keep".to_owned(), self.keep.as_ref().map_or(Value::Null, Keep::to_value)),
         ];
         if let Some(now) = now_ms {
+            members.push(("over".to_owned(), self.over(now).into()));
             members.push(("start_at".to_owned(), crate::time::iso_time(self.start_ms).into()));
             members.push(("end_at".to_owned(), crate::time::iso_time(self.end_ms).into()));
             members.push(("active".to_owned(), self.active(now).into()));
@@ -110,6 +156,7 @@ impl Window {
             title: text("title").and_then(|t| clean_title(&t).ok())?,
             under: text("under").as_deref().and_then(Under::parse).unwrap_or(Under::Replace),
             created_by: text("created_by").unwrap_or_default().chars().filter(|c| !c.is_control()).take(80).collect(),
+            keep: value.get("keep").and_then(Keep::from_value),
         };
         (window.end_ms > window.start_ms).then_some(window)
     }
@@ -211,6 +258,14 @@ pub fn new_window(
         Some(Value::String(u)) => Under::parse(u).ok_or("under: replace albo keep")?,
         Some(_) => return Err("under: replace albo keep".into()),
     };
+    let keep = match (under, body.get("keep")) {
+        (Under::Keep, Some(value @ Value::Object(_))) => {
+            Some(Keep::from_value(value).ok_or("keep: {playout, schedule, date RRRR-MM-DD} z ErsatzTV")?)
+        }
+        (Under::Keep, _) => return Err("„zachowaj odcinek”: brak harmonogramu na ten dzień w ErsatzTV (keep)".into()),
+        (Under::Replace, None | Some(Value::Null)) => None,
+        (Under::Replace, Some(_)) => return Err("keep tylko z under: keep".into()),
+    };
     if others.len() >= MAX_WINDOWS {
         return Err(format!("najwyżej {MAX_WINDOWS} zaplanowanych okien"));
     }
@@ -223,7 +278,7 @@ pub fn new_window(
         ));
     }
     let created_by = who.chars().filter(|c| !c.is_control()).take(80).collect();
-    Ok(Window { id, channel: channel.to_owned(), start_ms, end_ms, input, title, under, created_by })
+    Ok(Window { id, channel: channel.to_owned(), start_ms, end_ms, input, title, under, created_by, keep })
 }
 
 /// The window of the channel on now, else the nearest coming one.
@@ -305,8 +360,22 @@ mod tests {
             m.push(("input".into(), "00112233aabbccdd".into()));
             m.push(("under".into(), "keep".into()));
         }
+        assert!(with(&b, true).unwrap_err().contains("keep"), "keep needs what VizRS Live put in ErsatzTV");
+        if let Value::Object(m) = &mut b {
+            m.push(("keep".into(), json::parse(r#"{"playout": 3, "schedule": 41, "date": "2026-11-28"}"#).unwrap()));
+        }
         let w = with(&b, true).unwrap();
         assert_eq!((w.input.as_deref(), w.under), (Some("00112233aabbccdd"), Under::Keep));
+        assert_eq!(w.keep, Some(Keep { playout: 3, schedule: 41, date: "2026-11-28".into() }));
+        let back = Window::from_value(&json::parse(&w.to_value(None).to_string()).unwrap()).unwrap();
+        assert_eq!(back, w, "keep stored and read back");
+        // Kept on the list after the end until VizRS Live cleans ErsatzTV up, at most a week.
+        assert!(w.kept(w.end_ms + 1) && w.kept(w.end_ms + KEEP_FOR_MS - 1) && !w.kept(w.end_ms + KEEP_FOR_MS));
+        if let Value::Object(m) = &mut b {
+            m.retain(|(k, _)| k != "keep");
+            m.push(("keep".into(), json::parse(r#"{"playout": 0, "schedule": 41, "date": "2026-11-28"}"#).unwrap()));
+        }
+        assert!(with(&b, true).is_err(), "ids from 1");
         assert!(with(&b, false).is_err(), "an input the channel has not");
         let mut bad = body(((NOW + H) as f64).into(), ((NOW + 2 * H) as f64).into());
         if let Value::Object(m) = &mut bad {

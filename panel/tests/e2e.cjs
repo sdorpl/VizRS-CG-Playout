@@ -74,7 +74,7 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies', 'events', 'approval', ...(CG.noWindows ? [] : ['windows'])],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies', 'events', 'approval', ...(CG.noWindows ? [] : ['windows']), ...(CG.keepFeature ? ['windows_keep'] : [])],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
           input: CG.input || null,
@@ -113,7 +113,8 @@ function check(cond, msg) {
         const start = Date.parse(body.start), end = Date.parse(body.end);
         if (!/(Z|[+-]\d\d:\d\d)$/.test(body.start || '') || !(end > start)) return send(400, { error: 'koniec musi być po początku' });
         if (!String(body.title || '').trim()) return send(400, { error: 'tytuł: wpisz tytuł emisji' });
-        const w = { id: (Date.now().toString(16) + '0000').slice(-16).padStart(16, '0'), channel: '24', start, end, input: body.input || null, title: body.title.trim(), under: body.under || 'replace', created_by: 'VizRS Live', active: start <= Date.now() && Date.now() < end, held: false };
+        if ((body.under === 'keep') !== !!body.keep) return send(400, { error: 'keep tylko z under: keep' });
+        const w = { id: (Date.now().toString(16) + '0000').slice(-16).padStart(16, '0'), channel: '24', start, end, input: body.input || null, title: body.title.trim(), under: body.under || 'replace', created_by: 'VizRS Live', keep: body.keep || null, over: false, active: start <= Date.now() && Date.now() < end, held: false };
         CG.windows.push(w);
         return send(201, { window: w });
       }
@@ -1720,6 +1721,56 @@ function check(cond, msg) {
     await page.click('#dlg-buttons button:has-text("Usuń")');
     await page.waitForSelector('[data-windows="24"]', { state: 'detached' });
     check(CG.windows.length === 0, 'K23: okno usunięte');
+    // K24: „zachowaj odcinek” – jednodniowy harmonogram zastępczy w prawdziwym legacy (droga W1)
+    CG.keepFeature = true;
+    const scheds = (await api('GetAllProgramSchedules')).result;
+    const info = scheds.find((x) => x.Name === 'INFO24 dzień');
+    const pid24 = (await api('GetPlayoutIdByChannelNumber', { ChannelNumber: '24' })).result;
+    // pozycje harmonogramu przez funkcje panelu (fromLegacy / toReplace z Harmonogramów) – ten sam kształt co zapis z UI
+    const scheduleIo = (id, extra) => page.evaluate(async ([id, extra]) => {
+      const { fromLegacy, toReplace } = await import('/views/harmonogramy.js');
+      const post = async (n, a) => (await (await fetch('/api/cmd/' + n, { method: 'POST', headers: { 'X-VizRS-Live': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(a) })).json());
+      const items = ((await post('GetProgramScheduleItems', { Id: id })).result || []).sort((a, b) => a.Index - b.Index).map(fromLegacy);
+      const list = Array.isArray(extra) ? extra : [...items, { ...items[0], StartType: 'Fixed', StartTime: '21:00:00', FixedStartTimeBehavior: 'Strict', PlayoutMode: 'One', CustomTitle: 'E2E stała 21:00' }];
+      await post('ReplaceProgramScheduleItems', { ProgramScheduleId: id, Items: list.map((it, i) => toReplace(it, i + 1)) });
+      return items;
+    }, [id, extra]);
+    // stała pozycja 21:00 (ta sama kolekcja) – w oknie 20:55–21:30 jutro będzie co zachować
+    const itemsBefore = await scheduleIo(info.Id, 'add');
+    const altsBefore = (await api('GetPlayoutAlternateSchedules', { PlayoutId: pid24 })).result;
+    const tomorrow = await page.evaluate(() => { const d = new Date(Date.now() + 86400000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; });
+    await page.goto(`${BASE}/#live`);
+    await page.waitForSelector('[data-live-channel="24"] button:has-text("Nagła emisja…")');
+    await page.click('[data-live-channel="24"] button:has-text("Nagła emisja…")');
+    await page.waitForSelector('[data-window-form]');
+    await page.fill('#we-date', tomorrow);
+    await page.fill('#we-from', '20:55');
+    await page.fill('#we-to', '21:30');
+    await page.dispatchEvent('#we-to', 'change');
+    await page.waitForFunction(() => /kopia harmonogramu bez: 21:00 E2E stała 21:00/.test(document.querySelector('[data-window-keep]').textContent), null, { timeout: 15000 }).catch(() => {});
+    check(/kopia harmonogramu bez: 21:00 E2E stała 21:00/.test(await page.textContent('[data-window-keep]')) && await page.isEnabled('input[name="we-under"][value="keep"]'),
+      `K24: plan „zachowaj odcinek” – stała pozycja 21:00 do zdjęcia w kopii (${await page.textContent('[data-window-keep]')})`);
+    await page.check('input[name="we-under"][value="keep"]');
+    await page.fill('#we-title', 'E2E zachowaj');
+    await shot('k24-zachowaj');
+    await page.click('#dlg-buttons button:has-text("Zaplanuj")');
+    await page.waitForSelector('[data-windows="24"] [data-window]');
+    const kw = CG.windows.at(-1) || {};
+    const altsKeep = (await api('GetPlayoutAlternateSchedules', { PlayoutId: pid24 })).result.sort((a, b) => a.Index - b.Index);
+    const [ty, tm, td] = tomorrow.split('-').map(Number);
+    const copyItems = kw.keep ? (await api('GetProgramScheduleItems', { Id: kw.keep.schedule })).result : [];
+    check(kw.under === 'keep' && kw.keep?.playout === pid24 && kw.keep?.date === tomorrow && altsKeep.length === altsBefore.length + 1
+      && altsKeep[0].ProgramScheduleId === kw.keep.schedule && altsKeep[0].LimitToDateRange && altsKeep[0].StartYear === ty && altsKeep[0].StartMonth === tm && altsKeep[0].StartDay === td && altsKeep[0].EndYear === ty
+      && copyItems.length === itemsBefore.length && !copyItems.some((it) => it.StartType === 'Fixed'),
+    `K24: kopia bez pozycji 21:00 jako harmonogram zastępczy na ${tomorrow} (z rokiem, pierwszy), odnośnik keep w CG ${JSON.stringify(kw.keep)}`);
+    await page.click('[data-windows="24"] [data-window] button:has-text("🗑")');
+    await page.click('#dlg-buttons button:has-text("Usuń")');
+    await page.waitForSelector('[data-windows="24"]', { state: 'detached' });
+    const altsAfter = (await api('GetPlayoutAlternateSchedules', { PlayoutId: pid24 })).result;
+    check(CG.windows.length === 0 && altsAfter.length === altsBefore.length && !(await api('GetAllProgramSchedules')).result.some((x) => x.Id === kw.keep?.schedule),
+      'K24: usunięcie okna zdejmuje harmonogram zastępczy i kopię z legacy');
+    await scheduleIo(info.Id, itemsBefore);
+    CG.keepFeature = false;
     CG.noWindows = true;
     await page.goto(`${BASE}/#live`);
     await page.waitForSelector('main[data-view="live"] [data-live-channel="24"]');

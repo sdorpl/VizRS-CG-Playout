@@ -8,6 +8,7 @@ import { cmdEditor } from '../cmdedit.js';
 import { watermarkPicker } from './znaki.js';
 import { fromLegacy, toReplace } from './harmonogramy.js';
 import { minutesOf, hhmm, span } from '../parts.js';
+import { fromWhen, matchesDate, ALL_DAYS, ALL_MDAYS, ALL_MONTHS } from '../when.js';
 
 const cgMissing = () => h('div', { class: 'note' },
   'VizRS CG Playout nie jest podłączony. Uruchom panel z --cg-url http://<cg>:7700 i --cg-token <panel_token CG Playout> ' +
@@ -429,6 +430,102 @@ async function itemsUnder(channel, start, end) {
   return page.filter((it) => +new Date(it.Start) < end && +new Date(it.Finish) > start);
 }
 
+// ---------- K24: „zachowaj odcinek” – jednodniowy harmonogram zastępczy (droga W1, PLAN-mcr §5) ----------
+// Legacy liczy postęp serii z tego, co zaplanował, i nie ma komendy, która go cofa. Odcinek zostaje, gdy harmonogram
+// tego dnia nie ma pozycji spod okna: panel kopiuje harmonogram dnia, zdejmuje w kopii stałe pozycje zaczynające się
+// w oknie (z pozycjami „po poprzedniej” ich bloku) i ustawia kopię jako harmonogram zastępczy playoutu na tę jedną
+// datę z rokiem, z najwyższym priorytetem; legacy sam robi Refresh. Dzień po emisji panel zdejmuje zastępczy i kopię.
+const KEEP_CMDS = ['GetPlayoutIdByChannelNumber', 'GetPagedPlayouts', 'GetPlayoutAlternateSchedules', 'GetProgramScheduleItems',
+  'ReplaceProgramScheduleItems', 'CopyProgramSchedule', 'DeleteProgramSchedule', 'ReplacePlayoutAlternateScheduleItems'];
+const canKeep = () => hasKeep() && KEEP_CMDS.every(has);
+const itemName = (vm) => vm.CustomTitle || vm.Collection?.Name || vm.SmartCollection?.Name || vm.MultiCollection?.Name
+  || vm.Playlist?.Name || vm.MediaItem?.Title || vm.SearchTitle || vm.Name || 'pozycja';
+const hmsOf = (ms) => { const d = new Date(ms); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; };
+/** Pozycja z GetPlayoutAlternateSchedules w kształcie ReplacePlayoutAlternateSchedule z nowym Index. */
+const altItem = (a, index) => ({ Id: a.Id, ProgramScheduleId: a.ProgramScheduleId, ...fromWhen(a), Index: index });
+
+/** Plan „zachowaj odcinek” dla okna: playout klasyczny, harmonogram tego dnia i pozycje do zdjęcia. Błąd = powód. */
+export async function keepPlan(channel, start, end) {
+  if (!canKeep()) throw new Error('niedostępne: most bez komend harmonogramów albo CG Playout bez „windows_keep”');
+  const day = new Date(start); day.setHours(0, 0, 0, 0);
+  const next = new Date(day); next.setDate(next.getDate() + 1);
+  if (end > next.getTime()) throw new Error('okno przechodzi przez północ – „zachowaj odcinek” tylko w obrębie jednego dnia');
+  const id = await cmd('GetPlayoutIdByChannelNumber', { ChannelNumber: String(channel) });
+  if (!Number.isInteger(id)) throw new Error(`kanał ${channel} nie ma playoutu w ErsatzTV`);
+  const p = ((await cmd('GetPagedPlayouts', { Query: '', PageNum: 0, PageSize: 500 }))?.Page || []).find((x) => x.PlayoutId === id);
+  if (p?.ScheduleKind !== 'Classic') throw new Error('tylko przy playoucie klasycznym (harmonogram)');
+  const alts = [...((await cmd('GetPlayoutAlternateSchedules', { PlayoutId: id })) || [])].sort((a, b) => a.Index - b.Index);
+  const main = alts.pop();
+  if (!main) throw new Error('legacy nie podał harmonogramu playoutu');
+  const hit = alts.find((a) => matchesDate(fromWhen(a), day));
+  const schedule = (hit || main).ProgramScheduleId;
+  const raw = ((await cmd('GetProgramScheduleItems', { Id: schedule })) || []).sort((a, b) => a.Index - b.Index);
+  const from = hmsOf(start), to = end >= next.getTime() ? '24:00:00' : hmsOf(end);
+  const drop = [];
+  raw.forEach((it, i) => {
+    if (it.StartType !== 'Fixed' || !(it.StartTime >= from && it.StartTime < to)) return;
+    drop.push(i);
+    for (let j = i + 1; j < raw.length && raw[j].StartType !== 'Fixed'; j++) drop.push(j);
+  });
+  if (!drop.length) throw new Error('w oknie nie zaczyna się żadna stała pozycja harmonogramu – nie ma czego zachować');
+  if (drop.length >= raw.length) throw new Error('w kopii nie zostałaby żadna pozycja harmonogramu');
+  return {
+    playout: id, schedule, alts, main, drop, date: dateValue(start), count: raw.length,
+    names: drop.map((i) => `${raw[i].StartType === 'Fixed' ? raw[i].StartTime.slice(0, 5) : 'po poprzedniej'} ${itemName(raw[i])}`),
+  };
+}
+
+/** Wykonanie planu w legacy: kopia bez pozycji, zastępczy na jedną datę. Zwraca odnośnik `keep` dla CG Playout. */
+async function keepApply(plan, channel, start) {
+  const name = `Nagła emisja ${plan.date} k.${channel} ${timeValue(start).replace(':', '')}`.slice(0, 50);
+  const copy = await cmd('CopyProgramSchedule', { ProgramScheduleId: plan.schedule, Name: name });
+  const copyId = copy?.Id ?? copy?.result?.Id;
+  if (!Number.isInteger(copyId)) throw new Error('legacy nie zwrócił kopii harmonogramu');
+  try {
+    const items = await loadItems(copyId);
+    if (items.length !== plan.count) throw new Error('kopia harmonogramu ma inne pozycje niż oryginał – spróbuj jeszcze raz');
+    await saveItems(copyId, items.filter((_, i) => !plan.drop.includes(i)));
+    const [y, m, d] = plan.date.split('-').map(Number);
+    const one = { Id: 0, ProgramScheduleId: copyId, Index: 1, ...fromWhen({ DaysOfWeek: ALL_DAYS, DaysOfMonth: ALL_MDAYS, MonthsOfYear: ALL_MONTHS,
+      LimitToDateRange: true, StartYear: y, StartMonth: m, StartDay: d, EndYear: y, EndMonth: m, EndDay: d }) };
+    await cmd('ReplacePlayoutAlternateScheduleItems', { PlayoutId: plan.playout,
+      Items: [one, ...plan.alts.map((a, i) => altItem(a, i + 2)), altItem(plan.main, plan.alts.length + 2)] });
+  } catch (e) {
+    await cmd('DeleteProgramSchedule', { ProgramScheduleId: copyId }).catch(() => {});
+    throw e;
+  }
+  return { playout: plan.playout, schedule: copyId, date: plan.date };
+}
+
+/** Zdjęcie z legacy tego, co postawił keepApply: wiersz zastępczy z kopią i samą kopię (brak = już zdjęte). */
+async function keepUndo(k) {
+  const alts = [...((await cmd('GetPlayoutAlternateSchedules', { PlayoutId: k.playout })) || [])].sort((a, b) => a.Index - b.Index);
+  const main = alts.pop();
+  const rest = alts.filter((a) => a.ProgramScheduleId !== k.schedule);
+  if (main && rest.length !== alts.length) {
+    await cmd('ReplacePlayoutAlternateScheduleItems', { PlayoutId: k.playout, Items: [...rest.map((a, i) => altItem(a, i + 1)), altItem(main, rest.length + 1)] });
+  }
+  const left = ((await cmd('GetAllProgramSchedules').catch(() => null)) || null);
+  if (!left || left.some((sc) => sc.Id === k.schedule)) await cmd('DeleteProgramSchedule', { ProgramScheduleId: k.schedule });
+}
+
+/** Dzień po nagłej emisji z „zachowaj odcinek”: zdjęcie zastępczego i kopii, potem okna z listy CG (raz na okno w tej karcie). */
+const cleaning = new Set();
+async function cleanupKept(state) {
+  if (!KEEP_CMDS.every(has)) return;
+  const today = dateValue(cgNow());
+  for (const ch of state.channels || []) {
+    for (const w of ch.windows || []) {
+      if (!w.over || !w.keep || w.keep.date >= today || cleaning.has(w.id)) continue;
+      cleaning.add(w.id);
+      try {
+        await keepUndo(w.keep);
+        await cg(`live/channels/${encodeURIComponent(ch.number)}/windows/${encodeURIComponent(w.id)}`, 'DELETE');
+      } catch (e) { toast(`Nagła emisja „${w.title}”: nie udało się zdjąć harmonogramu na ${w.keep.date} z ErsatzTV – ${e.message}`, 'bad'); }
+    }
+  }
+}
+
 async function emergencyDialog(c) {
   const t0 = Math.ceil(cgNow() / 300000) * 300000;
   const f = {
@@ -443,14 +540,27 @@ async function emergencyDialog(c) {
   const under = h('div', { class: 'under', role: 'radiogroup', 'aria-label': 'Los pozycji pod spodem' },
     unders.map((k, n) => h('label', { class: 'chk' }, h('input', { type: 'radio', name: 'we-under', value: k, checked: n === 0 }), UNDER[k])));
   const preview = h('div', { class: 'dim', 'data-window-under': '' }, '—');
-  let seq = 0;
+  const keepNote = h('div', { class: 'dim full', 'data-window-keep': '' });
+  let seq = 0, plan = null;
+  const keepRadio = under.querySelector('input[value="keep"]');
+  if (keepRadio) keepRadio.disabled = true;  // do sprawdzenia planu
   const look = async () => {
     const r = windowRange(f.date.value, f.from.value, f.to.value);
     const my = ++seq;
+    plan = null;
     if (!r) { preview.textContent = 'Ustaw datę i godziny.'; return; }
     preview.textContent = 'sprawdzam ramówkę…';
-    const items = await itemsUnder(c.number, r[0], r[1]).catch(() => null);
+    const [items, kp] = await Promise.all([itemsUnder(c.number, r[0], r[1]).catch(() => null),
+      keepRadio ? keepPlan(c.number, r[0], r[1]).catch((e) => e) : null]);
     if (my !== seq) return;
+    if (keepRadio) {
+      plan = kp instanceof Error ? null : kp;
+      keepRadio.disabled = !plan;
+      if (!plan && keepRadio.checked) under.querySelector('input[value="replace"]').checked = true;
+      keepNote.textContent = plan
+        ? `„Zachowaj odcinek”: na ${plan.date} kopia harmonogramu bez: ${plan.names.join(', ')} – bez sygnału w oknie leci w tym czasie wypełniacz albo poprzednia pozycja; zmiany harmonogramu kanału po zaplanowaniu nie trafią w ten dzień do kopii.`
+        : kp ? `„Zachowaj odcinek” niedostępne: ${kp.message}` : '';
+    }
     preview.replaceChildren(items == null ? 'nie da się sprawdzić ramówki (most bez komend albo kanał bez playoutu)'
       : !items.length ? 'w tym czasie ramówka nie ma pozycji (albo nie jest jeszcze zbudowana)'
         : h('ul', null, items.map((it) => h('li', null, h('span', { class: 'mono' }, `${hm(new Date(it.Start))}–${hm(new Date(it.Finish))}`), ' ', it.Title || '(bez tytułu)'))));
@@ -465,25 +575,37 @@ async function emergencyDialog(c) {
     h('label', { for: 'we-title' }, 'Tytuł'), f.title,
     h('span'), h('span', { class: 'dim' }, 'w dzienniku emisji i na liście okien; EPG pokazuje dalej pozycję z ramówki'),
     h('div', { class: 'sec' }, 'Pod spodem w ramówce'), preview,
-    h('div', { class: 'sec' }, 'Los tej pozycji'), under,
+    h('div', { class: 'sec' }, 'Los tej pozycji'), under, keepNote,
     h('p', { class: 'dim full' }, 'W oknie studio przejmuje antenę od pierwszej klatki kluczowej sygnału; bez sygnału leci ramówka. ZDEJMIJ w oknie działa do jego końca, potem kanał wraca do stanu sprzed okna.'));
   if (!(await dialog(`Nagła emisja – kanał ${c.number}`, body, [['Anuluj', false], ['Zaplanuj', true, 'acc']]))) return;
   const r = windowRange(f.date.value, f.from.value, f.to.value);
   if (!r) { toast('Nagła emisja: ustaw datę i godziny', 'bad'); return; }
   if (!f.title.value.trim()) { toast('Nagła emisja: wpisz tytuł', 'bad'); return; }
   const choice = body.querySelector('input[name="we-under"]:checked')?.value || 'replace';
+  let keep = null;
+  if (choice === 'keep') {
+    // plan sprawdzony jeszcze raz na zatwierdzonych godzinach (operator mógł je zmienić bez „change”)
+    try { keep = await keepApply(await keepPlan(c.number, r[0], r[1]), c.number, r[0]); } catch (e) { toast(`Nagła emisja – zachowaj odcinek: ${e.message}`, 'bad'); route(true); return; }
+  }
   try {
     const res = await cg(`live/channels/${encodeURIComponent(c.number)}/windows`, 'POST',
-      { start: new Date(r[0]).toISOString(), end: new Date(r[1]).toISOString(), title: f.title.value.trim(), input: f.input.value || null, under: choice });
-    toast(`Kanał ${c.number}: nagła emisja „${res.window.title}” ${day(res.window.start)} ${at(res.window.start)}–${at(res.window.end)} zaplanowana`);
-  } catch (e) { toast(`Nagła emisja: ${e.message}`, 'bad'); }
+      { start: new Date(r[0]).toISOString(), end: new Date(r[1]).toISOString(), title: f.title.value.trim(), input: f.input.value || null, under: choice, keep });
+    toast(`Kanał ${c.number}: nagła emisja „${res.window.title}” ${day(res.window.start)} ${at(res.window.start)}–${at(res.window.end)} zaplanowana${keep ? ' – odcinek zostaje na następną emisję' : ''}`);
+  } catch (e) {
+    if (keep) await keepUndo(keep).catch(() => {});
+    toast(`Nagła emisja: ${e.message}`, 'bad');
+  }
   route(true);
 }
 
 async function deleteWindow(c, w) {
-  if (!(await confirmDlg('Usunąć nagłą emisję?', w.active
+  if (!(await confirmDlg('Usunąć nagłą emisję?', (w.active
     ? `Okno „${w.title}” trwa – po usunięciu kanał ${c.number} od razu wraca do stanu sprzed okna.`
-    : `Okno „${w.title}” ${day(w.start)} ${at(w.start)}–${at(w.end)} nie przejmie kanału ${c.number}.`, 'Usuń'))) return;
+    : `Okno „${w.title}” ${day(w.start)} ${at(w.start)}–${at(w.end)} nie przejmie kanału ${c.number}.`)
+    + (w.keep && !w.over ? ` Harmonogram na ${w.keep.date} wraca do zwykłego – pozycja spod okna znowu jest w ramówce.` : ''), 'Usuń'))) return;
+  if (w.keep) {
+    try { await keepUndo(w.keep); } catch (e) { toast(`Nie udało się zdjąć harmonogramu na ${w.keep.date} z ErsatzTV – okno zostaje: ${e.message}`, 'bad'); return; }
+  }
   try { await cg(`live/channels/${encodeURIComponent(c.number)}/windows/${encodeURIComponent(w.id)}`, 'DELETE'); toast('Nagła emisja usunięta'); } catch (e) { toast(e.message, 'bad'); }
   route(true);
 }
@@ -495,7 +617,7 @@ function windowsBox(c) {
   if (!list.length) return null;
   return h('div', { class: 'windows', 'data-windows': c.number },
     list.map((w) => h('div', { class: 'win' + (w.active ? ' on' : ''), 'data-window': w.id },
-      w.active ? pill(w.held ? 'NAGŁA EMISJA – wstrzymana' : 'NAGŁA EMISJA – trwa', w.held ? 'warn' : 'on') : h('span', { class: 'mono' }, `${day(w.start)} ${at(w.start)}–${at(w.end)}`),
+      w.over ? pill('po emisji – sprzątanie harmonogramu', 'warn') : w.active ? pill(w.held ? 'NAGŁA EMISJA – wstrzymana' : 'NAGŁA EMISJA – trwa', w.held ? 'warn' : 'on') : h('span', { class: 'mono' }, `${day(w.start)} ${at(w.start)}–${at(w.end)}`),
       h('b', null, w.title), w.active ? h('span', { class: 'mono dim' }, `do ${at(w.end)}`) : null,
       h('span', { class: 'dim' }, w.under === 'keep' ? 'zachowaj odcinek' : 'zastąp'),
       btn('🗑', () => deleteWindow(c, w), 'danger'))));
@@ -628,6 +750,7 @@ async function poll() {
   if (sig === view.sig || document.querySelector('main button:active')) return;
   Object.assign(view, { state, sig, receivedAt: cgNow() });
   repaint();
+  cleanupKept(state);
 }
 
 VIEWS.live = async () => {
@@ -638,6 +761,7 @@ VIEWS.live = async () => {
   const t0 = Date.now();
   try { state = await cg('live/state'); } catch (e) { return [head(title, desc), cgError(e)]; }
   skew = (t0 + Date.now()) / 2 - state.now;
+  cleanupKept(state);  // K24: dzień po emisji – zdjęcie harmonogramu zastępczego z legacy
   const root = h('div', { class: 'split wide' });
   view = { root, state, sig: signature(state), receivedAt: cgNow(), status: h('div'), cards: h('div', { class: 'live-grid' }), guide: h('div'), events: h('div'), inputs: h('div', { class: 'tw', 'data-inputs-table': '' }) };
   root.append(
