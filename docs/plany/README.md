@@ -6,7 +6,7 @@ Dokumenty projektowe: zakres punktów, decyzje i ich uzasadnienie. Bieżący sta
 
 | Dokument | Stan | Zakres |
 |---|---|---|
-| [PLAN-mcr.md](PLAN-mcr.md) | K1–K21 zrobione i wydane (ostatnie: K15, K16, K20 w 26.11.29); otwarte Q1 (ręcznie) i propozycje §7.3, §8 bez decyzji | **jedyny plan rozwoju panelu**: jeden przebieg luk i planu (K1–K18, Q1): G1 (sesje, CSP), braki wobec web GUI legacy, panel na wzór Viz Channel Branding (kontrola ramówki, mozaika, import ramówki, warstwy, TAKE/OUT, as-run, zdarzenia wtórne, promo, alarmy); decyzja: zostajemy przy legacy (§6) |
+| [PLAN-mcr.md](PLAN-mcr.md) | K1–K21 zrobione i wydane (ostatnie: K15, K16, K20 w 26.11.29); do zrobienia K22–K23 (nagła emisja live), K24 po K23 (droga W1); otwarte Q1 (ręcznie) i propozycje §7.3, §8 bez decyzji | **jedyny plan rozwoju panelu**: jeden przebieg luk i planu (K1–K18, Q1): G1 (sesje, CSP), braki wobec web GUI legacy, panel na wzór Viz Channel Branding (kontrola ramówki, mozaika, import ramówki, warstwy, TAKE/OUT, as-run, zdarzenia wtórne, promo, alarmy); decyzja: zostajemy przy legacy (§6) |
 | [native.md](native.md) | w `main`: `renderer: auto` z `vizrs-render` z VizRS CG System 26.11.13 (od 26.11.30 – ruch 2D, WebP); stan etapów – PLAN-native w CG System | natywny renderer VizRS (`vizrs-render`) zamiast Chromium |
 | [PLAN-strefy.md](PLAN-strefy.md) | S0–S6 zrobione | strefy grafiki liczone z tego, co jest na antenie (`VIZRS_AREA=auto`) |
 
