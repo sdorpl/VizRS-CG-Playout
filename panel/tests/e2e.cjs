@@ -1739,7 +1739,8 @@ function check(cond, msg) {
     const itemsBefore = await scheduleIo(info.Id, 'add');
     const altsBefore = (await api('GetPlayoutAlternateSchedules', { PlayoutId: pid24 })).result;
     const tomorrow = await page.evaluate(() => { const d = new Date(Date.now() + 86400000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; });
-    await page.goto(`${BASE}/#live`);
+    // ten sam adres #live – goto nie przeładowuje strony; reload = świeży stan CG z windows_keep
+    await page.reload();
     await page.waitForSelector('[data-live-channel="24"] button:has-text("Nagła emisja…")');
     await page.click('[data-live-channel="24"] button:has-text("Nagła emisja…")');
     await page.waitForSelector('[data-window-form]');
@@ -1772,7 +1773,7 @@ function check(cond, msg) {
     await scheduleIo(info.Id, itemsBefore);
     CG.keepFeature = false;
     CG.noWindows = true;
-    await page.goto(`${BASE}/#live`);
+    await page.reload();
     await page.waitForSelector('main[data-view="live"] [data-live-channel="24"]');
     check(!(await page.isVisible('[data-live-channel="24"] button:has-text("Nagła emisja…")')), 'K23: starszy CG Playout bez windows – brak przycisku');
     CG.noWindows = false;
