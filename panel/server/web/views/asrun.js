@@ -14,7 +14,7 @@ const KIND = {
   item_start: ['start pozycji', 'on'], item_end: ['koniec pozycji', ''], take: ['TAKE strony', 'info'], continue: ['CONTINUE', 'info'], out: ['OUT strony', 'warn'],
   live_on: ['studio na antenie', 'on'], live_off: ['studio zdjęte', 'warn'], hold: ['ZDEJMIJ (studio)', 'warn'], release: ['WPUŚĆ (studio)', 'ok'],
   graphics_off: ['grafika zdjęta', 'bad'], graphics_on: ['grafika przywrócona', 'ok'],
-  live_graphics_on: ['przejęcie live – grafika ramówki wstrzymana', 'on'], live_graphics_off: ['koniec przejęcia – grafika ramówki wraca', 'ok'], input: ['wybór wejścia', 'ok'],
+  live_graphics_on: ['przejęcie live – grafika ramówki wstrzymana', 'on'], live_graphics_off: ['koniec przejęcia – grafika ramówki wraca', 'ok'], input: ['wybór wejścia', 'ok'], window_start: ['nagła emisja – okno przejęcia', 'on'], window_end: ['koniec okna nagłej emisji', 'ok'],
 };
 /** Źródła: [etykieta w wyborze, etykieta w kolumnie „Źródło”]. */
 export const SOURCES = {

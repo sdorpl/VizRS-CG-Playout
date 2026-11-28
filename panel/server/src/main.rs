@@ -599,6 +599,21 @@ mod tests {
         );
         assert_eq!(cg_path("DELETE", "live/graphics"), None);
         assert_eq!(
+            cg_path("POST", "live/channels/1/windows").as_deref(),
+            Some("/api/live/channels/1/windows")
+        );
+        assert_eq!(
+            cg_path("GET", "live/channels/1/windows").as_deref(),
+            Some("/api/live/channels/1/windows")
+        );
+        assert_eq!(
+            cg_path("DELETE", "live/channels/1/windows/0193abcd00000001").as_deref(),
+            Some("/api/live/channels/1/windows/0193abcd00000001")
+        );
+        assert_eq!(cg_path("DELETE", "live/channels/1/windows"), None);
+        assert_eq!(cg_path("PUT", "live/channels/1/windows/x"), None);
+        assert_eq!(cg_path("DELETE", "live/channels/1/windows/.."), None);
+        assert_eq!(
             cg_path("POST", "live/graphics/off").as_deref(),
             Some("/api/live/graphics/off")
         );

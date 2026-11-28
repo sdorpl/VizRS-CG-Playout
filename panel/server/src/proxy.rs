@@ -248,6 +248,13 @@ pub fn cg_path(method: &str, rest: &str) -> Option<String> {
         ("POST", ["live", "channels", ch, a @ ("hold" | "release" | "rebuild")]) => {
             format!("/api/live/channels/{ch}/{a}")
         }
+        // K23: okna nagłej emisji kanału (lista, nowe, usunięcie) – granica danych w CG Playout (src/windows.rs)
+        ("GET" | "POST", ["live", "channels", ch, "windows"]) => {
+            format!("/api/live/channels/{ch}/windows")
+        }
+        ("DELETE", ["live", "channels", ch, "windows", id]) => {
+            format!("/api/live/channels/{ch}/windows/{id}")
+        }
         // K13: ręczne TAKE / CONTINUE / OUT pojedynczej strony na antenie kanału (kontrakt CG – DOKUMENTACJA §11)
         ("POST", ["live", "channels", ch, a @ ("take" | "continue" | "out")]) => {
             format!("/api/live/channels/{ch}/{a}")

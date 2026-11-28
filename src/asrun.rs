@@ -83,6 +83,9 @@ pub const LIVE_GRAPHICS_ON: &str = "live_graphics_on";
 pub const LIVE_GRAPHICS_OFF: &str = "live_graphics_off";
 /// The operator chose the input a channel takes (or automatic); `detail` names it.
 pub const INPUT: &str = "input";
+/// An emergency live window (K23) began · ended; `title` is its title.
+pub const WINDOW_START: &str = "window_start";
+pub const WINDOW_END: &str = "window_end";
 
 /// One line of the log; empty fields are left out.
 #[derive(Clone, Debug, Default, PartialEq)]

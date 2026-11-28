@@ -31,6 +31,9 @@
 //   PUT    /api/live/encoder              {"preset", "profile", "x264_params", "nvenc_preset",
 //                                         "qsv_preset", "bframes"} ("" or null = default):
 //                                         encoder.json, from the next ffmpeg (src/encoder.rs)
+//   GET    /api/live/channels/<n>/windows  emergency live windows of the channel (K23, src/windows.rs)
+//   POST   /api/live/channels/<n>/windows  {"start", "end", "input", "title", "under"}: a new one
+//   DELETE /api/live/channels/<n>/windows/<id>  remove it (an active one ends at once)
 //   GET    /api/live/youtube-cookies      the cookies file of YouTube inputs: whether there is
 //                                         one, when saved, how many, signed in, expiry (no values)
 //   PUT    /api/live/youtube-cookies      {"text": Netscape cookies.txt or a browser's JSON}:
@@ -62,6 +65,7 @@ use crate::http::{self, Request};
 use crate::ingest::{ChannelControl, Ingest, constant_eq};
 use crate::json::{self, Value};
 use crate::live_shows;
+use crate::windows::{self, Window};
 
 /// A wrong token waits this long (slows guessing down).
 const BAD_TOKEN_DELAY: Duration = Duration::from_secs(1);
@@ -81,6 +85,8 @@ struct Settings {
     graphics_off: bool,
     /// When they were taken off (epoch ms), for the alarms of VizRS Live (K17).
     graphics_off_since: Option<i64>,
+    /// Emergency live windows (K23), all channels.
+    windows: Vec<Window>,
 }
 
 impl Settings {
@@ -100,6 +106,7 @@ impl Settings {
             ("channels", Value::Object(channels.collect())),
             ("graphics_off", self.graphics_off.into()),
             ("graphics_off_since", self.graphics_off_since.map_or(Value::Null, |t| (t as f64).into())),
+            ("windows", Value::Array(self.windows.iter().map(|w| w.to_value(None)).collect())),
         ]);
         format!("{value}\n")
     }
@@ -111,6 +118,10 @@ impl Settings {
             channels: BTreeMap::new(),
             graphics_off: value.get("graphics_off").and_then(Value::as_bool).unwrap_or(false),
             graphics_off_since: value.get("graphics_off_since").and_then(Value::as_f64).map(|t| t as i64),
+            windows: match value.get("windows") {
+                Some(Value::Array(items)) => items.iter().filter_map(Window::from_value).take(crate::windows::MAX_WINDOWS).collect(),
+                _ => Vec::new(),
+            },
         };
         if let Some(Value::Object(channels)) = value.get("channels") {
             for (number, c) in channels {
@@ -251,6 +262,18 @@ pub struct Panel {
     layers: Mutex<Layers>,
     /// Thumbnails of the show's pages (`vizrs-render thumb`), made on demand and kept.
     thumbs: crate::thumbs::Thumbs,
+    /// Emergency live windows on air now, by channel (`tick_windows`).
+    active: Mutex<BTreeMap<String, Active>>,
+}
+
+/// An emergency live window on air: what the channel takes in place of the operator's decision.
+#[derive(Clone, Debug, PartialEq)]
+struct Active {
+    id: String,
+    title: String,
+    input: Option<String>,
+    /// The operator held the studio off within the window (WSTRZYMAJ); after the window the hold from before is back.
+    held: bool,
 }
 
 /// What VizRS has on the antenna of each channel, and since when.
@@ -385,6 +408,7 @@ impl Panel {
                 &config.vizrs.token,
             ),
             config: config.clone(),
+            active: Mutex::new(BTreeMap::new()),
         });
         if let Some(path) = panel.control_path() {
             match fs::read_to_string(&path) {
@@ -1166,6 +1190,12 @@ impl Panel {
             ("POST", ["channels", channel, action @ ("take" | "continue" | "out")]) => {
                 self.command(channel, action, &body, &mut stream, ingest, &who)
             }
+            ("GET", ["channels", channel, "windows"]) => {
+                let now = crate::time::now_ms();
+                reply(&mut stream, 200, &windows::list_json(&lock(&self.settings).windows, channel, now))
+            }
+            ("POST", ["channels", channel, "windows"]) => self.add_window(channel, &body, &mut stream, ingest, &who),
+            ("DELETE", ["channels", channel, "windows", id]) => self.delete_window(channel, id, &mut stream, ingest, &who),
             ("GET", ["asrun"]) => self.asrun(request, &mut stream),
             ("GET", ["logs"]) => self.logs(request, &mut stream),
             ("POST", ["channels", channel, "rebuild"]) => {
@@ -1282,6 +1312,7 @@ impl Panel {
             Value::from("youtube_cookies"),
             Value::from("events"),
             Value::from("approval"),
+            Value::from("windows"),
         ];
         if !self.config.alert_webhook.is_empty() {
             features.push("webhook".into());
@@ -1308,6 +1339,7 @@ impl Panel {
         let names: BTreeMap<&str, &str> = cache.channels.iter().map(|(n, name)| (n.as_str(), name.as_str())).collect();
         let mut numbers: Vec<String> = cache.channels.iter().map(|(n, _)| n.clone()).collect();
         let settings = lock(&self.settings).clone();
+        let active = lock(&self.active).clone();
         let extra = ingest
             .channels()
             .into_iter()
@@ -1351,6 +1383,20 @@ impl Panel {
                     ("input", control.input.as_deref().map_or(Value::Null, Value::from)),
                     ("inputs", Value::Array(self.inputs_of(number, ingest))),
                     ("layers", Value::Array(self.layers_of(number))),
+                    (
+                        "window",
+                        windows::current_or_next(&settings.windows, number, now).map_or(Value::Null, |w| {
+                            let mut v = w.to_value(Some(now));
+                            if let Value::Object(m) = &mut v {
+                                m.push(("held".into(), active.get(number.as_str()).is_some_and(|a| a.id == w.id && a.held).into()));
+                            }
+                            v
+                        }),
+                    ),
+                    (
+                        "windows",
+                        Value::Array(windows::of_channel(&settings.windows, number).into_iter().map(|w| w.to_value(Some(now))).collect()),
+                    ),
                 ])
             })
             .collect();
@@ -1446,11 +1492,153 @@ impl Panel {
             next.channels.insert(channel.to_owned(), control.clone());
         }
         // The decision takes effect even when the disk fails; it is only not kept.
-        ingest.set_control(channel, control.clone());
+        ingest.set_control(channel, self.effective(channel, &control));
         *settings = next.clone();
         drop(settings);
         self.save_settings(&next)?;
         Ok(control)
+    }
+
+    /// What the channel takes: the operator's decision, or within an emergency
+    /// live window `anytime`, no hold (unless held in the window) and the window's input.
+    fn effective(&self, channel: &str, stored: &ChannelControl) -> ChannelControl {
+        match lock(&self.active).get(channel) {
+            Some(a) => ChannelControl { hold: a.held, anytime: Some(true), input: a.input.clone().or_else(|| stored.input.clone()) },
+            None => stored.clone(),
+        }
+    }
+
+    /// Pushes what the channel takes now to the ingest.
+    fn apply(&self, channel: &str, ingest: &Ingest) {
+        let stored = lock(&self.settings).channels.get(channel).cloned().unwrap_or_default();
+        ingest.set_control(channel, self.effective(channel, &stored));
+    }
+
+    /// A hold within the channel's active window; false = no window on now.
+    fn window_hold(&self, channel: &str, hold: bool, ingest: &Ingest) -> bool {
+        match lock(&self.active).get_mut(channel) {
+            Some(a) => a.held = hold,
+            None => return false,
+        }
+        self.apply(channel, ingest);
+        true
+    }
+
+    /// The title of the channel's emergency live window on air now (`/ingest/state`).
+    pub fn window_title(&self, channel: &str) -> Option<String> {
+        lock(&self.active).get(channel).map(|a| a.title.clone())
+    }
+
+    /// Starts and ends the emergency live windows (every second, src/server.rs):
+    /// windows over go away from `control.json`; a channel whose window begins
+    /// takes it over, one whose window ended is back to the operator's decision.
+    pub fn tick_windows(&self, ingest: &Ingest) {
+        let now = crate::time::now_ms();
+        let on_now: BTreeMap<String, Window> = {
+            let mut settings = lock(&self.settings);
+            let before = settings.windows.len();
+            settings.windows.retain(|w| !w.over(now));
+            if settings.windows.len() != before {
+                let next = settings.clone();
+                drop(settings);
+                if let Err(e) = self.save_settings(&next) {
+                    crate::warn!("panel settings: {e}");
+                }
+                settings = lock(&self.settings);
+            }
+            settings.windows.iter().filter(|w| w.active(now)).map(|w| (w.channel.clone(), w.clone())).collect()
+        };
+        let (ended, began) = {
+            let mut active = lock(&self.active);
+            let ended: Vec<(String, Active)> = active
+                .iter()
+                .filter(|(channel, a)| on_now.get(channel.as_str()).is_none_or(|w| w.id != a.id))
+                .map(|(c, a)| (c.clone(), a.clone()))
+                .collect();
+            for (channel, _) in &ended {
+                active.remove(channel);
+            }
+            let began: Vec<Window> = on_now.values().filter(|w| !active.contains_key(&w.channel)).cloned().collect();
+            for w in &began {
+                active.insert(w.channel.clone(), Active { id: w.id.clone(), title: w.title.clone(), input: w.input.clone(), held: false });
+            }
+            (ended, began)
+        };
+        for (channel, a) in ended {
+            self.apply(&channel, ingest);
+            crate::asrun::log(&self.etv_config, &channel, &crate::asrun::Entry::of(crate::asrun::WINDOW_END).title(&a.title));
+            self.record(
+                ingest,
+                "CG Playout",
+                &channel,
+                &format!("okno nagłej emisji „{}” zakończone – kanał wraca do stanu sprzed okna", a.title),
+            );
+        }
+        for w in began {
+            self.apply(&w.channel, ingest);
+            crate::asrun::log(
+                &self.etv_config,
+                &w.channel,
+                &crate::asrun::Entry::of(crate::asrun::WINDOW_START).title(&w.title).operator(&w.created_by),
+            );
+            self.record(ingest, "CG Playout", &w.channel, &format!("okno nagłej emisji „{}” – studio przejmuje antenę", w.title));
+        }
+    }
+
+    /// `POST /api/live/channels/<n>/windows`.
+    fn add_window(&self, channel: &str, body: &Value, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        let now = crate::time::now_ms();
+        let (window, next) = {
+            let mut settings = lock(&self.settings);
+            let window = match windows::new_window(body, channel, windows::new_id(now), who, now, &settings.windows, |id| {
+                self.has_input(channel, id)
+            }) {
+                Ok(w) => w,
+                Err(e) => return fail(stream, 400, &e),
+            };
+            if window.under == windows::Under::Keep && !self.features().iter().any(|f| f.as_str() == Some("windows_keep")) {
+                return fail(stream, 400, "„zachowaj odcinek” – niedostępne w tej wersji CG Playout");
+            }
+            settings.windows.push(window.clone());
+            (window, settings.clone())
+        };
+        let saved = self.save_settings(&next);
+        self.record(
+            ingest,
+            who,
+            channel,
+            &format!(
+                "okno nagłej emisji „{}” zaplanowane: {} – {} UTC ({})",
+                window.title,
+                crate::time::iso_time(window.start_ms),
+                crate::time::iso_time(window.end_ms),
+                if window.under == windows::Under::Keep { "zachowaj odcinek" } else { "zastąp" }
+            ),
+        );
+        self.tick_windows(ingest);
+        match saved {
+            Ok(()) => reply(stream, 201, &json::object([("window", window.to_value(Some(now)))])),
+            Err(e) => fail(stream, 500, &format!("okno działa, ale nie zapisało się na dysku (zniknie po restarcie): {e}")),
+        }
+    }
+
+    /// `DELETE /api/live/channels/<n>/windows/<id>`.
+    fn delete_window(&self, channel: &str, id: &str, stream: &mut TcpStream, ingest: &Ingest, who: &str) -> io::Result<()> {
+        let (gone, next) = {
+            let mut settings = lock(&self.settings);
+            let Some(at) = settings.windows.iter().position(|w| w.id == id && w.channel == channel) else {
+                return fail(stream, 404, "nie ma takiego okna (już minęło?)");
+            };
+            let gone = settings.windows.remove(at);
+            (gone, settings.clone())
+        };
+        let saved = self.save_settings(&next);
+        self.record(ingest, who, channel, &format!("okno nagłej emisji „{}” usunięte", gone.title));
+        self.tick_windows(ingest);
+        match saved {
+            Ok(()) => reply(stream, 200, &json::object([("ok", true.into())])),
+            Err(e) => fail(stream, 500, &format!("okno usunięte, ale zmiana nie zapisała się na dysku: {e}")),
+        }
     }
 
     fn valid_channel(channel: &str) -> bool {
@@ -1465,6 +1653,16 @@ impl Panel {
         );
         if !Self::valid_channel(channel) {
             return fail(stream, 400, "kanał?");
+        }
+        // Within an emergency live window a hold is the window's: after it the decision from before is back.
+        if self.window_hold(channel, hold, ingest) {
+            let text = if hold {
+                "studio wstrzymane w oknie nagłej emisji (ZDEJMIJ)"
+            } else {
+                "studio wpuszczone w oknie nagłej emisji (WPUŚĆ)"
+            };
+            self.record(ingest, who, channel, text);
+            return reply(stream, 200, &json::object([("hold", hold.into()), ("window", true.into())]));
         }
         let saved = self.set_channel(channel, ingest, |c| c.hold = hold);
         self.record(ingest, who, channel, if hold { "studio wstrzymane (ZDEJMIJ)" } else { "studio wpuszczone (WPUŚĆ)" });
@@ -1781,12 +1979,69 @@ mod tests {
 
     #[test]
     fn settings_round_trip() {
-        let mut settings =
-            Settings { library: Some(7), channels: BTreeMap::new(), graphics_off: true, graphics_off_since: Some(1_700_000_000_000) };
+        let mut settings = Settings {
+            library: Some(7),
+            channels: BTreeMap::new(),
+            graphics_off: true,
+            graphics_off_since: Some(1_700_000_000_000),
+            windows: Vec::new(),
+        };
         settings.channels.insert("4".into(), ChannelControl { hold: true, anytime: Some(false), input: None });
         settings.channels.insert("5".into(), ChannelControl { hold: false, anytime: None, input: Some("00112233aabbccdd".into()) });
         assert_eq!(Settings::from_json(&settings.to_json()).unwrap(), settings);
         assert_eq!(Settings::from_json("{}").unwrap(), Settings::default());
+    }
+
+    fn window(channel: &str, start_ms: i64, end_ms: i64) -> Window {
+        Window {
+            id: windows::new_id(start_ms),
+            channel: channel.into(),
+            start_ms,
+            end_ms,
+            input: None,
+            title: "Debata".into(),
+            under: windows::Under::Replace,
+            created_by: "jan".into(),
+        }
+    }
+
+    #[test]
+    fn windows_survive_a_restart() {
+        let now = crate::time::now_ms();
+        let settings = Settings { windows: vec![window("1", now + 60_000, now + 120_000)], ..Settings::default() };
+        assert_eq!(Settings::from_json(&settings.to_json()).unwrap(), settings);
+    }
+
+    #[test]
+    fn an_emergency_window_takes_the_channel_and_gives_it_back() {
+        let config = Config::default();
+        let ingest = Ingest::new("", false);
+        let panel = Panel::new(&config, &ingest, Arc::new(crate::graphics::Store::new(&config)));
+        // Held by the operator before the window, input chosen.
+        panel.set_channel("1", &ingest, |c| c.hold = true).unwrap();
+        let now = crate::time::now_ms();
+        lock(&panel.settings).windows.push(window("1", now - 1_000, now + 60_000));
+        lock(&panel.settings).windows.push(window("1", now + 120_000, now + 180_000));
+        panel.tick_windows(&ingest);
+        let c = ingest.control("1");
+        assert!(!c.hold && c.anytime == Some(true), "in the window: anytime, no hold ({c:?})");
+        assert!(ingest.anytime_of("1"));
+        assert_eq!(panel.window_title("1").as_deref(), Some("Debata"));
+        assert!(panel.window_title("2").is_none());
+        // An explicit hold within the window keeps the studio off, and is the window's only.
+        assert!(panel.window_hold("1", true, &ingest));
+        assert!(ingest.control("1").hold);
+        assert!(!panel.window_hold("2", true, &ingest), "no window on channel 2");
+        // A change of the operator's decision within the window is kept for after it.
+        panel.set_channel("1", &ingest, |c| c.anytime = Some(false)).unwrap();
+        assert_eq!(ingest.control("1").anytime, Some(true));
+        // The window is over: gone, the decision from before (and the change) is back.
+        lock(&panel.settings).windows[0].end_ms = now - 1;
+        panel.tick_windows(&ingest);
+        assert_eq!(lock(&panel.settings).windows.len(), 1, "the window over is gone, the next stays");
+        let c = ingest.control("1");
+        assert!(c.hold && c.anytime == Some(false), "back to the decision from before ({c:?})");
+        assert!(panel.window_title("1").is_none());
     }
 
     #[test]

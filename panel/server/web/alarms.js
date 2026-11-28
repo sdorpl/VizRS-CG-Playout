@@ -7,6 +7,7 @@ import { checkItems } from './check.js';
 
 export const ALARM_WINDOW_MS = 15 * 60e3;     // błąd ramówki w najbliższych 15 min
 export const LIVE_WARN_MS = 5 * 60e3;         // slot LIVE za ≤ 5 min bez sygnału studia
+export const WINDOW_SILENT_MS = 60e3;     // K23: okno nagłej emisji bez sygnału studia dłużej niż minutę
 export const GRAPHICS_OFF_MS = 5 * 60e3;      // grafika zdjęta dłużej niż 5 min
 const SNOOZE_MS = 10 * 60e3;
 
@@ -43,6 +44,11 @@ export function computeAlarms(d) {
       const nl = ch.next_live;
       if (nl && nl.start - now <= LIVE_WARN_MS && nl.start > now - 60e3 && !ch.source?.live) {
         out.push({ key: `live-${ch.number}-${nl.start}`, level: 'bad', text: `${who}: slot na żywo „${nl.title}” o ${hm(new Date(nl.start))} – brak sygnału studia`, href: '#live' });
+      }
+      // K23: okno nagłej emisji trwa minutę, a sygnału studia nie ma – ramówka gra dalej pod oknem
+      const w = ch.window;
+      if (w?.active && !ch.source?.live && now - w.start >= WINDOW_SILENT_MS) {
+        out.push({ key: `window-${ch.number}-${w.id}`, level: 'bad', text: `${who}: nagła emisja „${w.title}” od ${hm(new Date(w.start))} – brak sygnału studia, leci ramówka`, href: '#live' });
       }
       if (Array.isArray(d.sessions) && !d.sessions.some((s) => String(s.ChannelNumber) === String(ch.number))) {
         out.push({ key: `stopped-${ch.number}`, level: 'warn', text: `${who}: emisja kanału zatrzymana (CG Playout nadaje ten kanał, a legacy nie ma sesji)`, href: '#antena' });

@@ -20,7 +20,8 @@
 //                              a second of black and silence without a length,
 //                              so that ErsatzTV's ffprobe of the item works
 //   GET  /ingest/state?channel=1
-//                              {"enabled":…,"anytime":…,"hold":…,"live":…,"audio":…,"video":…,"live_watermark":"3,5"}
+//                              {"enabled":…,"anytime":…,"hold":…,"live":…,"audio":…,"video":…,"live_watermark":"3,5",
+//                               "window": title of an emergency live window on now (K23) | null}
 //
 // Readers of the overlay's live runs (`take=<seconds>`, src/takeover.rs) go on
 // from where the run before stopped: the sidecar keeps the last `HISTORY` of
@@ -794,7 +795,15 @@ impl Ingest {
 
     /// `GET /ingest/state`; `live_watermark` – the ErsatzTV watermarks (ids) of a takeover of the channel now;
     /// `graphics` – VizRS graphics on the channel's antenna now (none = not known, the field left out).
-    pub fn state_request(&self, request: &Request, mut stream: TcpStream, live_watermark: &str, graphics: Option<bool>) -> io::Result<()> {
+    /// `window` – the title of the emergency live window on now (K23; null = none): `anytime` and `hold` already say what it means.
+    pub fn state_request(
+        &self,
+        request: &Request,
+        mut stream: TcpStream,
+        live_watermark: &str,
+        graphics: Option<bool>,
+        window: Option<&str>,
+    ) -> io::Result<()> {
         let channel = request.param("channel").unwrap_or("");
         let mut state = match self.feed(channel) {
             Some(feed) => feed.state(),
@@ -820,6 +829,7 @@ impl Ingest {
             members.insert(1, ("anytime".into(), self.anytime_of(channel).into()));
             members.insert(2, ("hold".into(), hold.into()));
             members.push(("live_watermark".into(), live_watermark.into()));
+            members.push(("window".into(), window.map_or(Value::Null, Value::from)));
             if let Some(graphics) = graphics {
                 members.push(("graphics".into(), graphics.into()));
             }

@@ -142,6 +142,7 @@ fn main() -> ExitCode {
     server.start_footprints();
     server.start_layers();
     server.start_takeovers();
+    server.start_windows();
     let stopping = Arc::clone(&server);
     std::thread::spawn(move || {
         sys::wait_for_stop();

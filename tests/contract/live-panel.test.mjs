@@ -128,7 +128,7 @@ test("holding a channel keeps its studio off and survives a restart", async (t) 
   const ingestState = async (url, ch) => (await fetch(`${url}/ingest/state?channel=${ch}`)).json();
   // `graphics` only once the sidecar knows the channel (ErsatzTV's channels read in the background).
   const { graphics, ...first } = await ingestState(cg.url, "4");
-  assert.deepEqual(first, { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null, live_watermark: "" });
+  assert.deepEqual(first, { enabled: true, anytime: true, hold: false, live: false, audio: false, video: null, fps: null, seconds: null, live_watermark: "", window: null });
   assert.ok(graphics === undefined || graphics === false, `no graphics on air: ${graphics}`);
 
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
@@ -152,6 +152,72 @@ test("holding a channel keeps its studio off and survives a restart", async (t) 
 
   assert.equal((await api("POST", "channels/4/release")).status, 200);
   assert.equal((await ingestState(cg.url, "4")).hold, false);
+});
+
+test("an emergency live window: planned, checked, takes the channel over, survives a restart, ends", async (t) => {
+  const { cg, api, folder } = await setup(t, {}, { ingest_anytime: false });
+  const ingestState = async (url, ch) => (await fetch(`${url}/ingest/state?channel=${ch}`)).json();
+  const iso = (ms) => new Date(ms).toISOString();
+  const now = Date.now();
+  // Checked at the boundary: times with an offset, end after start, not in the past, a title, no overlap.
+  assert.equal((await api("POST", "channels/4/windows", { start: "2026-11-28T22:00:00", end: iso(now + 7.2e6), title: "x" })).status, 400);
+  assert.equal((await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 1.8e6), title: "x" })).status, 400);
+  assert.equal((await api("POST", "channels/4/windows", { start: iso(now - 3.6e6), end: iso(now + 3.6e6), title: "x" })).status, 400);
+  assert.equal((await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: " " })).status, 400);
+  assert.equal((await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "x", input: "0011223344556677" })).status, 400);
+  const keep = await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "x", under: "keep" });
+  assert.equal(keep.status, 400, "keep only with windows_keep");
+  assert.equal((await api("POST", "channels/4; x/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "x" })).status, 400);
+
+  // One coming later and one on now.
+  const later = await api("POST", "channels/4/windows", { start: iso(now + 3.6e6), end: iso(now + 7.2e6), title: "Debata wieczorna" });
+  assert.equal(later.status, 201, JSON.stringify(later.body));
+  assert.equal(later.body.window.under, "replace");
+  assert.equal(later.body.window.created_by, "MCR 1");
+  const overlap = await api("POST", "channels/4/windows", { start: iso(now + 5.4e6), end: iso(now + 9e6), title: "Inna" });
+  assert.equal(overlap.status, 400);
+  assert.match(overlap.body.error, /ma już w tym czasie okno/);
+  assert.equal((await ingestState(cg.url, "4")).anytime, false);
+  assert.equal((await api("POST", "channels/4/hold")).status, 200, "held before the window");
+  const onNow = await api("POST", "channels/4/windows", { start: iso(now), end: iso(now + 1.8e6), title: "Pilne: konferencja" });
+  assert.equal(onNow.status, 201);
+  let st = await ingestState(cg.url, "4");
+  assert.equal(st.anytime, true, "in the window the studio takes any piece");
+  assert.equal(st.hold, false, "the hold from before does not count in the window");
+  assert.equal(st.window, "Pilne: konferencja");
+  const list = (await api("GET", "channels/4/windows")).body.windows;
+  assert.deepEqual(list.map((w) => [w.title, w.active]), [["Pilne: konferencja", true], ["Debata wieczorna", false]]);
+  const ch = (await api("GET", "state")).body;
+  assert.ok(ch.features.includes("windows"));
+  const c4 = ch.channels.find((c) => c.number === "4");
+  assert.equal(c4.window.title, "Pilne: konferencja");
+  assert.equal(c4.windows.length, 2);
+
+  // An explicit hold within the window keeps the studio off.
+  assert.equal((await api("POST", "channels/4/hold")).body.window, true);
+  assert.equal((await ingestState(cg.url, "4")).hold, true);
+  assert.equal((await api("POST", "channels/4/release")).status, 200);
+
+  // Kept on the volume: a second sidecar on the same configuration has both.
+  const stored = JSON.parse(readFileSync(path.join(folder, "vizrs-live", "control.json"), "utf8"));
+  assert.equal(stored.windows.length, 2);
+  const again = await startSidecar({ output_url: "", panel_token: TOKEN, ingest_token: "ing", etv_config: folder, sync_seconds: 3600 });
+  t.after(again.stop);
+  for (let i = 0; i < 30 && (await ingestState(again.url, "4")).window !== "Pilne: konferencja"; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal((await ingestState(again.url, "4")).window, "Pilne: konferencja", "the window survives a restart");
+
+  // Removed while on: the channel is back to the hold from before at once.
+  const id = onNow.body.window.id;
+  assert.equal((await api("DELETE", `channels/4/windows/${id}`)).status, 200);
+  assert.equal((await api("DELETE", `channels/4/windows/${id}`)).status, 404);
+  st = await ingestState(cg.url, "4");
+  assert.deepEqual([st.anytime, st.hold, st.window], [false, true, null]);
+  const day = new Date().toISOString().slice(0, 10);
+  const asrun = (await api("GET", `asrun?channel=4&day=${day}`)).body.entries;
+  // (the second sidecar on the same folder logged its own start of the window too)
+  const marks = asrun.filter((e) => e.kind.startsWith("window_")).map((e) => [e.kind, e.title]);
+  assert.deepEqual(marks[0], ["window_start", "Pilne: konferencja"]);
+  assert.deepEqual(marks.at(-1), ["window_end", "Pilne: konferencja"]);
 });
 
 test("the overlay's encoder: filled once from the environment, then set in the panel, checked, logged", async (t) => {
@@ -335,7 +401,7 @@ test("the state carries the layers on air and what this build can do", async (t)
   const { api } = await setup(t, {}, { vizrs: { address: vizrs.address, token: "" } });
 
   const state = (await api("GET", "state")).body;
-  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval"], "no webhook without one configured");
+  assert.deepEqual(state.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "windows"], "no webhook without one configured");
   // The background refresh reads the channels of ErsatzTV and STATE every two
   // seconds, so the first answer may have neither yet.
   const ch = await (async () => {
@@ -434,7 +500,7 @@ test("alarms of the as-run log reach the webhook", async (t) => {
   t.after(() => hook.close());
   const { api } = await setup(t, { VIZRS_ALERT_WEBHOOK: `http://127.0.0.1:${hook.address().port}/alarm` });
 
-  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "webhook"]);
+  assert.deepEqual((await api("GET", "state")).body.features, ["layers", "take", "asrun", "encoder", "thumbs", "logs", "on_live", "input_on_live", "live_watermark", "input_select", "youtube_cookies", "events", "approval", "windows", "webhook"]);
   assert.equal((await api("POST", "channels/4/hold")).status, 200);
   for (let i = 0; i < 40 && alerts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(alerts.length, 1, "holding a channel is an alarm");

@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Nagła emisja na żywo z datą (PLAN-mcr K23).** Okno przejęcia kanału w CG Playout: w zaplanowanym czasie kanał bierze sygnał studia jak przy „studio także poza audycjami” i bez wstrzymania, po końcu wraca do stanu sprzed okna; ErsatzTV i ramówka bez zmian (pozycja pod oknem przepada, EPG ją pokazuje). Live API `GET|POST /api/live/channels/<n>/windows`, `DELETE …/windows/<id>`, cecha `windows`, pola `window`/`windows` kanału w stanie i `window` w `/ingest/state`, wpisy `window_start`/`window_end` w dzienniku emisji; okna w `control.json` przeżywają restart. Panel: „Nagła emisja…” na karcie kanału w Slotach na żywo (data, od–do, wejście, tytuł, podgląd ramówki pod spodem), lista okien z usuwaniem, alarm „okno bez sygnału” po minucie; starszy CG Playout – bez przycisku.
+
 - **Panel: przebudowa ramówki bez kasowania postępu seriali (PLAN-mcr K22).** „⟲ Przebuduj ramówkę” na karcie kanału w Slotach na żywo i w Audycjach LIVE oraz przebudowa po zmianie audycji robią Refresh playoutu przez most (`BuildPlayout`), a nie Reset CG Playout (`/rebuild`), który zaczynał seriale od początku. Po zapisie samych emisji panel nie przebudowuje drugi raz – legacy robi to sam. „Od nowa” zostaje w Playoutach i Na antenie, z ostrzeżeniem o skasowaniu postępu.
 
 ## 26.11.35 (2026-11-27)

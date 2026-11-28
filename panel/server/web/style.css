@@ -211,6 +211,16 @@ td.log { font-family: var(--mono, monospace); font-size: 12px; white-space: pre-
 .live-ch .now { display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: var(--r-sm); background: var(--panel2); }
 .live-ch .now.warn { background: var(--warn-bg); color: var(--link); }
 .live-ch .ctl { gap: 10px; }
+.live-ch .windows { display: grid; gap: 6px; }
+.live-ch .win { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--r-sm); background: var(--panel2); }
+.live-ch .win.on { box-shadow: 0 0 0 1px var(--red) inset; }
+.live-ch .win b { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dialog:has(.live-window-ed) { width: min(720px, 94vw); }
+.live-window-ed .under, .live-window-ed [data-window-under], .live-window-ed .full { grid-column: 1 / -1; }
+.live-window-ed .under { display: grid; gap: 4px; }
+.live-window-ed .bar { flex-wrap: nowrap; align-items: center; }
+.live-window-ed .bar > input[type=time] { width: auto; flex: 0 0 auto; }
+.live-window-ed ul { margin: 0; padding-left: 18px; }
 .live-ch .in-pick { gap: 8px; margin-bottom: 8px; }
 .live-ch .in-pick select { flex: 1 1 0; width: 0; min-width: 0; text-overflow: ellipsis; }
 button.big { font-size: 15px; font-weight: 700; padding: 10px 20px; letter-spacing: .03em; border-radius: var(--r); }

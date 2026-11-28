@@ -40,7 +40,7 @@ function check(cond, msg) {
   const vizrsSeen = [];
   const T0 = Date.now(); // ramówka atrapy stała w czasie, jak EPG prawdziwego CG Playout
   const CG = {
-    hold: false, anytime: true, library: null, operators: [],
+    hold: false, anytime: true, library: null, operators: [], windows: [], windowPosts: [],
     layers: [{ layer: 10, page: '1001', name: 'Belka tytułowa', scene: 'belka', since: T0 - 30000 }], asrun: [{ t: T0 - 60000, kind: 'item_start', title: 'Wiadomosci' }],
     graphics: { rules: { on_clip: 'TAKE 4001 headline={title}', on_ad: '', ad_match: { path: '/reklamy/', title: '' }, on_end: '', end_seconds: 60, shows: [], channels: { 24: { on_end: '', shows: [{ show_title: 'x', on_clip: 'TAKE 9' }] } },
       secondary: [{ name: 'E2E belki', target: { show_title: '^Wiadomo' }, events: [{ page: '1001', anchor: 'start', offset_s: 10, duration_s: 8 }], approved: null }] }, source: 'config', store: true },
@@ -74,10 +74,12 @@ function check(cond, msg) {
       if (u === '/health') return send(200, { sessions: 1, overlay: ['24'], ingest: { channels: ['24'] }, captures: [{ channel: '24', size: '1280x720', fps: 25, mode: 'frames', drawn_by: 'native', status: 'capturing' }] });
       if (u === '/etv/pages?channel=24') return send(200, { pages: [{ number: 1001, name: 'Belka tytułowa', playout: { at: -60, out: 5, ref: 'programme' } }, { number: 3001, name: 'Wracamy po reklamie' }, { number: 4001, name: 'Pasek' }] });
       if (u === '/api/live/state') return send(200, {
-        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies', 'events', 'approval'],
+        ingest: true, now, features: ['layers', 'take', 'asrun', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies', 'events', 'approval', ...(CG.noWindows ? [] : ['windows'])],
         channels: [{ number: '24', name: 'INFO24', source: { live: true, audio: true, video: 'h264', seconds: 75 }, on_air: !CG.hold && CG.anytime, hold: CG.hold, takeover: !CG.hold && CG.anytime, anytime: CG.anytime, layers: CG.layers,
           now: { title: 'Wiadomosci', start: T0 - 60000, stop: T0 + 60000, live: false }, next_live: { title: 'Poranek na żywo', start: T0 + 3600000, stop: T0 + 7200000, live: true },
           input: CG.input || null,
+          // K23: okna nagłej emisji (jak CG Playout: bieżące albo najbliższe i wszystkie kanału)
+          window: CG.windows[0] || null, windows: CG.windows,
           inputs: [{ kind: 'rtmp', host: 'tv.example.pl', port: 1936, app: '/live', key: 'studio-klucz', passphrase: '', streamid: '', id: '00000000000000a1', label: 'RTMP 1936', state: 'on' },
             { kind: 'srt', host: '', port: 9000, app: '', key: '', passphrase: 'tajne haslo', streamid: '', id: '00000000000000a2', label: 'SRT 9000', state: 'waiting' },
             { kind: 'youtube', url: 'https://youtu.be/abc123', youtube: 'video', id: '00000000000000a3', label: 'YouTube youtu.be/abc123', state: CG.input ? 'off' : '' },
@@ -105,6 +107,21 @@ function check(cond, msg) {
         return send(200, { show, steps: [{ step: 'file', ok: true, detail: `vizrs-live/${show.id}.yml` }, { step: 'collection', ok: true, detail: '' }] });
       }
       if ((m = u.match(/^\/api\/live\/shows\/([\w.-]+)$/)) && q.method === 'DELETE') { CG.shows = CG.shows.filter((x) => x.id !== m[1]); return send(200, { ok: true }); }
+      // K23: okna nagłej emisji – walidacja jak w CG Playout (src/windows.rs) w skrócie
+      if (u === '/api/live/channels/24/windows' && q.method === 'POST') {
+        CG.windowPosts.push(body);
+        const start = Date.parse(body.start), end = Date.parse(body.end);
+        if (!/(Z|[+-]\d\d:\d\d)$/.test(body.start || '') || !(end > start)) return send(400, { error: 'koniec musi być po początku' });
+        if (!String(body.title || '').trim()) return send(400, { error: 'tytuł: wpisz tytuł emisji' });
+        const w = { id: (Date.now().toString(16) + '0000').slice(-16).padStart(16, '0'), channel: '24', start, end, input: body.input || null, title: body.title.trim(), under: body.under || 'replace', created_by: 'VizRS Live', active: start <= Date.now() && Date.now() < end, held: false };
+        CG.windows.push(w);
+        return send(201, { window: w });
+      }
+      if ((m = u.match(/^\/api\/live\/channels\/24\/windows\/([0-9a-f]{16})$/)) && q.method === 'DELETE') {
+        const before = CG.windows.length;
+        CG.windows = CG.windows.filter((w) => w.id !== m[1]);
+        return CG.windows.length < before ? send(200, { ok: true }) : send(404, { error: 'nie ma takiego okna' });
+      }
       if (u === '/api/live/channels/24/rebuild' && q.method === 'POST') { CG.rebuilt = (CG.rebuilt || 0) + 1; return send(200, { ok: true }); }
       if ((m = u.match(/^\/api\/live\/channels\/24\/(hold|release)$/))) { CG.hold = m[1] === 'hold'; return send(200, { ok: true }); }
       // K13: TAKE / CONTINUE / OUT; K14: dziennik emisji (kontrakt DOKUMENTACJA §11)
@@ -1568,9 +1585,10 @@ function check(cond, msg) {
     const now = Date.now(), iso = (t) => new Date(t).toISOString();
     const items = new Map([['24', [{ Title: 'A', Start: iso(now - 60e3), Finish: iso(now + 120e3) }, { Title: 'B', Start: iso(now + 300e3), Finish: iso(now + 3600e3) }]]]);
     return computeAlarms({ now, channels: [{ Number: '24', Name: 'INFO24' }], playouts: new Map([['24', { PlayoutId: 1 }]]), items, sessions: [],
-      cg: { channels: [{ number: '24', name: 'INFO24', source: { live: false }, next_live: { start: now + 120e3, title: 'Studio' } }], settings: { graphics_off: true, graphics_off_since: now - 600e3 } } }).map((a) => a.key.split('-')[0]);
+      cg: { channels: [{ number: '24', name: 'INFO24', source: { live: false }, next_live: { start: now + 120e3, title: 'Studio' },
+        window: { id: '0000000000000001', title: 'Pilne', start: now - 90e3, end: now + 600e3, active: true } }], settings: { graphics_off: true, graphics_off_since: now - 600e3 } } }).map((a) => a.key.split('-')[0]);
   });
-  check(['gap', 'live', 'stopped', 'graphics'].every((k) => al.includes(k)), `K17: alarmy – dziura za 15 min, LIVE bez sygnału, emisja zatrzymana, grafika zdjęta (${al.join(', ')})`);
+  check(['gap', 'live', 'stopped', 'graphics', 'window'].every((k) => al.includes(k)), `K17: alarmy – dziura za 15 min, LIVE bez sygnału, emisja zatrzymana, grafika zdjęta, K23 okno nagłej emisji bez sygnału (${al.join(', ')})`);
   await tab('antena');
   // poza stroną (page.request – te same ciasteczka): odrzucone 404 nie trafia do konsoli przeglądarki
   const badSes = (await page.request.post(`${BASE}/api/session/24/kill`, { headers: { 'X-VizRS-Live': '1' } })).status();
@@ -1680,6 +1698,33 @@ function check(cond, msg) {
     check(builds.length === nb + 1 && builds[nb].Mode === 'Refresh' && Number.isInteger(builds[nb].PlayoutId) && (CG.rebuilt || 0) === rb,
       'K22: „Przebuduj ramówkę” na karcie kanału = Refresh przez most, bez Resetu CG Playout');
     await page.waitForSelector('main[data-view="live"] [data-live-channel="24"]');
+  }
+  // K23: nagła emisja – okno przejęcia kanału w CG Playout (dodanie, lista, usunięcie)
+  {
+    await page.click('[data-live-channel="24"] button:has-text("Nagła emisja…")');
+    await page.waitForSelector('[data-window-form]');
+    check(await page.isVisible('input[name="we-under"][value="replace"]') && !(await page.isVisible('input[name="we-under"][value="keep"]')),
+      'K23: los pozycji – „zastąp”, bez „zachowaj odcinek” przy CG bez windows_keep');
+    await page.waitForFunction(() => !/sprawdzam/.test(document.querySelector('[data-window-under]').textContent));
+    await page.fill('#we-from', '22:00');
+    await page.fill('#we-to', '23:30');
+    await page.fill('#we-title', 'Konferencja E2E');
+    await shot('k23-nagla-emisja');
+    await page.click('#dlg-buttons button:has-text("Zaplanuj")');
+    await page.waitForSelector('[data-windows="24"] [data-window]');
+    const post = CG.windowPosts.at(-1) || {};
+    check(CG.windows.length === 1 && post.title === 'Konferencja E2E' && post.under === 'replace' && /Z$/.test(post.start) && Date.parse(post.end) - Date.parse(post.start) === 90 * 60000,
+      `K23: okno zaplanowane w CG Playout (ISO, 22:00–23:30) ${JSON.stringify(post)}`);
+    check(/Konferencja E2E/.test(await page.textContent('[data-windows="24"]')) && /22:00–23:30/.test(await page.textContent('[data-windows="24"]')), 'K23: okno na karcie kanału');
+    await page.click('[data-windows="24"] [data-window] button:has-text("🗑")');
+    await page.click('#dlg-buttons button:has-text("Usuń")');
+    await page.waitForSelector('[data-windows="24"]', { state: 'detached' });
+    check(CG.windows.length === 0, 'K23: okno usunięte');
+    CG.noWindows = true;
+    await page.goto(`${BASE}/#live`);
+    await page.waitForSelector('main[data-view="live"] [data-live-channel="24"]');
+    check(!(await page.isVisible('[data-live-channel="24"] button:has-text("Nagła emisja…")')), 'K23: starszy CG Playout bez windows – brak przycisku');
+    CG.noWindows = false;
   }
   const inTab = await page.textContent('[data-inputs-table]');
   check(inTab.includes('rtmp://tv.example.pl:1936/live') && inTab.includes('YouTube') && inTab.includes('https://youtu.be/abc123') && /nadaje/.test(inTab) && /h264 · z dźwiękiem/.test(inTab) && !inTab.includes('studio-klucz') && !inTab.includes('tajne')

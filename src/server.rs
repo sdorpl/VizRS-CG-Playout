@@ -386,6 +386,20 @@ impl Server {
     /// With live ingest, follows the overlay's takeovers of the channels: while a
     /// live is on air, the channel's schedule graphics are held and its `on_live`
     /// (a LIVE logo) goes on air instead (`ChannelEvents::live_takeover`).
+    /// Emergency live windows (K23): started and ended every second.
+    pub fn start_windows(self: &Arc<Self>) {
+        if !self.panel.enabled() {
+            return;
+        }
+        let server = Arc::clone(self);
+        let _ = thread::Builder::new().name("live-windows".into()).spawn(move || {
+            loop {
+                server.panel.tick_windows(&server.ingest);
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+
     pub fn start_takeovers(self: &Arc<Self>) {
         if !self.ingest.enabled() {
             return;
@@ -874,7 +888,13 @@ impl Server {
                 let channel = request.param("channel").unwrap_or("");
                 let marks = self.panel.live_watermark(channel, self.ingest.input_of(channel).as_deref());
                 // A piece without a VizRS element takes graphics in when the channel has some on air.
-                self.ingest.state_request(&request, stream, &marks, self.panel.graphics_on_air(channel))
+                self.ingest.state_request(
+                    &request,
+                    stream,
+                    &marks,
+                    self.panel.graphics_on_air(channel),
+                    self.panel.window_title(channel).as_deref(),
+                )
             }
             ("GET", "/ingest") => self.ingest.read_request(&request, stream),
             ("POST", "/ingest") => self.ingest.source_request(&request, stream),

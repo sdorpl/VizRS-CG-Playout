@@ -194,6 +194,7 @@ const H = {
   ReplaceProgramScheduleItems: (a) => { const sc = SCHEDULES.find((x) => x.Id === a.ProgramScheduleId); if (sc) sc.items = a.Items; return null; },
   GetAllFillerPresets: () => DB.fillers,
   GetPagedPlayouts: () => ({ TotalCount: DB.playouts.length, Page: DB.playouts }),
+  GetPlayoutIdByChannelNumber: (a) => DB.playouts.find((p) => String(p.ChannelNumber) === String(a.ChannelNumber))?.PlayoutId ?? null,
   GetAllBlockPlayouts: () => DB.playouts.filter((p) => p.ScheduleKind === 'Block'),
   GetFuturePlayoutItemsById: (a) => { const it = items(a.PlayoutId, a.PageSize || 8); return { TotalCount: it.length, Page: it }; },
   GetPlayoutWarningsCount: () => 1,
@@ -308,6 +309,7 @@ if (process.env.MOCK_CG === '1') {
 let ytCookies = true;
 let inputs = [{ channel: '24', url: 'rtmp://0.0.0.0:1936/live/x' }, { channel: '24', url: 'https://www.youtube.com/@kanal/live' }, { channel: '25', url: 'https://cdn.example.pl/live/index.m3u8' }];
 const chosen = {}; // wybrane wejście kanału (PUT /api/live/channels/<n> {"input"})
+let windows = []; // K23: okna nagłej emisji (w pamięci); MOCK_KEEP=1 – CG z windows_keep (K24)
 const idOf = (l) => [...`${l.channel}=${l.url}`].reduce((h, ch) => ((h * 31 + ch.charCodeAt(0)) >>> 0), 7).toString(16).padStart(16, '0');
 const labelOf = (l) => (/youtu/.test(l.url) ? `YouTube ${l.url.replace(/^https?:\/\/(www\.)?/, '')}` : /^\w+:\/\/0\.0\.0\.0/.test(l.url)
   ? `${l.url.slice(0, 4).toUpperCase().replace(':', '')} ${l.url.split(':')[2].split(/[/?]/)[0]}` : `Link ${/\.m3u8/.test(l.url) ? 'HLS' : 'RTMP'} ${l.url.split('/')[2]}`);
@@ -333,9 +335,11 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
       if (q.headers.authorization !== 'Bearer ' + CGT) return reply(r, 401, { error: 'zły token panelu' });
       if (u.pathname === '/health') return reply(r, 200, { sessions: 3, overlay: ['24'], ingest: { channels: ['24'] }, captures: [] });
       if (u.pathname === '/api/live/state') return reply(r, 200, {
-        ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies'], settings: { graphics_off: false },
+        ingest: true, now: Date.now(), version: 'atrapa', features: ['layers', 'take', 'asrun', 'encoder', 'thumbs', 'webhook', 'logs', 'on_live', 'input_on_live', 'live_watermark', 'input_select', 'youtube_cookies', 'windows', ...(process.env.MOCK_KEEP === '1' ? ['windows_keep'] : [])], settings: { graphics_off: false },
         channels: DB.channels.slice(0, 3).map((c) => ({ number: c.Number, name: c.Name, source: { live: c.Number === '24' }, inputs: inputsOf(c.Number), input: chosen[c.Number] || null, on_air: c.Number === '24', hold: false, takeover: c.Number === '24', anytime: c.Number === '24', layers: layers[c.Number] || [],
-          next_live: c.Number === '25' ? { start: Date.now() + 3 * 60e3, title: 'Koncert w studiu' } : null })),
+          next_live: c.Number === '25' ? { start: Date.now() + 3 * 60e3, title: 'Koncert w studiu' } : null,
+          windows: windows.filter((w) => w.channel === c.Number).map((w) => ({ ...w, active: w.start <= Date.now() && Date.now() < w.end })),
+          window: windows.filter((w) => w.channel === c.Number && w.end > Date.now()).sort((a, z) => a.start - z.start)[0] || null })),
         events: [], guide: {},
       });
       if (u.pathname === '/api/live/encoder') {
@@ -343,6 +347,18 @@ let encoder = { preset: 'veryfast', profile: '', x264_params: '', nvenc_preset: 
         return reply(r, 200, { used: encoder, from: 'panel', store: true, presets: ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow', 'placebo'],
           profiles: ['baseline', 'main', 'high'], x264_keys: ['bframes', 'subme', 'ref', 'me', 'trellis'], nvenc_presets: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'], qsv_presets: ['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'], max_bframes: 4 });
       }
+      const wm = u.pathname.match(/^\/api\/live\/channels\/([\w.-]+)\/windows(?:\/([0-9a-f]{16}))?$/);
+      if (wm && q.method === 'POST' && !wm[2]) {
+        const v = JSON.parse(b || '{}');
+        const start = Date.parse(v.start), end = Date.parse(v.end);
+        if (!(end > start) || !String(v.title || '').trim()) return reply(r, 400, { error: 'koniec po początku i tytuł' });
+        if (windows.some((w) => w.channel === wm[1] && w.start < end && start < w.end)) return reply(r, 400, { error: `kanał ${wm[1]} ma już w tym czasie okno` });
+        const w = { id: (Date.now().toString(16) + windows.length.toString(16).padStart(4, '0')).padStart(16, '0').slice(-16), channel: wm[1], start, end, input: v.input || null, title: v.title.trim(), under: v.under || 'replace', created_by: 'VizRS Live · atrapa', keep: v.keep || null };
+        windows.push(w);
+        return reply(r, 201, { window: w });
+      }
+      if (wm && q.method === 'GET' && !wm[2]) return reply(r, 200, { windows: windows.filter((w) => w.channel === wm[1]), now: Date.now() });
+      if (wm && q.method === 'DELETE' && wm[2]) { windows = windows.filter((w) => w.id !== wm[2]); return reply(r, 200, { ok: true }); }
       const chm = u.pathname.match(/^\/api\/live\/channels\/([\w.-]+)$/);
       if (chm && q.method === 'PUT') {
         const v = JSON.parse(b || '{}');

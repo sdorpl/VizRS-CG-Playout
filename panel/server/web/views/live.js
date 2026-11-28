@@ -393,10 +393,112 @@ function channelCard(c, receivedAt) {
       h('dt', null, 'Najbliższa LIVE'), h('dd', null, c.next_live ? `${c.next_live.title} · ${day(c.next_live.start)} ${at(c.next_live.start)}` : '—')),
     h('div', { class: 'now' + (warn ? ' warn' : '') }, left, right),
     inputPicker(c),
+    windowsBox(c),
     h('div', { class: 'bar ctl' }, main,
       h('label', { class: 'chk' }, anytime, 'studio także poza audycjami'),
+      hasWindows() ? btn('Nagła emisja…', () => emergencyDialog(c)) : null,
       btn('⟲ Przebuduj ramówkę', async () => { await rebuild(c.number); route(true); })),
     how);
+}
+
+// ---------- Sloty na żywo: nagła emisja (K23) ----------
+// Okno przejęcia kanału w CG Playout: w oknie kanał bierze studio jak przy „studio także poza audycjami” i bez
+// wstrzymania (WSTRZYMAJ w oknie działa tylko do jego końca); po końcu wraca stan sprzed okna. Legacy i ramówka bez zmian.
+const hasWindows = () => (view?.state.features || []).includes('windows');
+const hasKeep = () => (view?.state.features || []).includes('windows_keep');
+const UNDER = { replace: 'zastąp – odcinek pod spodem przepada', keep: 'zachowaj odcinek – poleci w następnej emisji' };
+const dateValue = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+const timeValue = (ms) => { const d = new Date(ms); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+
+/** Data i godziny z formularza → [start, end] w ms (czas przeglądarki); koniec przed początkiem = następnego dnia. */
+export function windowRange(date, from, to) {
+  if (!/^\d{4}-\d\d-\d\d$/.test(date || '') || !/^\d\d:\d\d$/.test(from || '') || !/^\d\d:\d\d$/.test(to || '')) return null;
+  const start = new Date(`${date}T${from}`).getTime();
+  let end = new Date(`${date}T${to}`).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (end <= start) end += 86400000;
+  return [start, end];
+}
+
+/** Pozycje ramówki kanału w czasie okna (legacy, przez most); null = nie da się sprawdzić. */
+async function itemsUnder(channel, start, end) {
+  if (!['GetPlayoutIdByChannelNumber', 'GetFuturePlayoutItemsById'].every(has)) return null;
+  const id = await cmd('GetPlayoutIdByChannelNumber', { ChannelNumber: String(channel) });
+  if (!Number.isInteger(id)) return null;
+  const page = (await cmd('GetFuturePlayoutItemsById', { PlayoutId: id, ShowFiller: true, PageNum: 0, PageSize: 300 }))?.Page || [];
+  return page.filter((it) => +new Date(it.Start) < end && +new Date(it.Finish) > start);
+}
+
+async function emergencyDialog(c) {
+  const t0 = Math.ceil(cgNow() / 300000) * 300000;
+  const f = {
+    date: h('input', { type: 'date', id: 'we-date', value: dateValue(t0) }),
+    from: h('input', { type: 'time', id: 'we-from', value: timeValue(t0) }),
+    to: h('input', { type: 'time', id: 'we-to', value: timeValue(t0 + 3600000) }),
+    title: h('input', { id: 'we-title', maxlength: 200, placeholder: 'np. Konferencja prasowa – na żywo' }),
+    input: h('select', { id: 'we-input' }, h('option', { value: '' }, 'jak wybrane w kanale (automatycznie: pierwsze z sygnałem)'),
+      (c.inputs || []).map((i) => h('option', { value: i.id }, inputName(i)))),
+  };
+  const unders = Object.keys(UNDER).filter((k) => k === 'replace' || hasKeep());
+  const under = h('div', { class: 'under', role: 'radiogroup', 'aria-label': 'Los pozycji pod spodem' },
+    unders.map((k, n) => h('label', { class: 'chk' }, h('input', { type: 'radio', name: 'we-under', value: k, checked: n === 0 }), UNDER[k])));
+  const preview = h('div', { class: 'dim', 'data-window-under': '' }, '—');
+  let seq = 0;
+  const look = async () => {
+    const r = windowRange(f.date.value, f.from.value, f.to.value);
+    const my = ++seq;
+    if (!r) { preview.textContent = 'Ustaw datę i godziny.'; return; }
+    preview.textContent = 'sprawdzam ramówkę…';
+    const items = await itemsUnder(c.number, r[0], r[1]).catch(() => null);
+    if (my !== seq) return;
+    preview.replaceChildren(items == null ? 'nie da się sprawdzić ramówki (most bez komend albo kanał bez playoutu)'
+      : !items.length ? 'w tym czasie ramówka nie ma pozycji (albo nie jest jeszcze zbudowana)'
+        : h('ul', null, items.map((it) => h('li', null, h('span', { class: 'mono' }, `${hm(new Date(it.Start))}–${hm(new Date(it.Finish))}`), ' ', it.Title || '(bez tytułu)'))));
+  };
+  for (const el of [f.date, f.from, f.to]) el.addEventListener('change', look);
+  look();
+  const body = h('div', { class: 'form live-window-ed', 'data-window-form': '' },
+    h('label', { for: 'we-date' }, 'Data'), f.date,
+    h('label', { for: 'we-from' }, 'Od – do'), h('span', { class: 'bar' }, f.from, '–', f.to),
+    h('span'), h('span', { class: 'dim' }, 'godziny wg zegara tej przeglądarki; koniec przed początkiem = po północy'),
+    h('label', { for: 'we-input' }, 'Wejście'), f.input,
+    h('label', { for: 'we-title' }, 'Tytuł'), f.title,
+    h('span'), h('span', { class: 'dim' }, 'w dzienniku emisji i na liście okien; EPG pokazuje dalej pozycję z ramówki'),
+    h('div', { class: 'sec' }, 'Pod spodem w ramówce'), preview,
+    h('div', { class: 'sec' }, 'Los tej pozycji'), under,
+    h('p', { class: 'dim full' }, 'W oknie studio przejmuje antenę od pierwszej klatki kluczowej sygnału; bez sygnału leci ramówka. ZDEJMIJ w oknie działa do jego końca, potem kanał wraca do stanu sprzed okna.'));
+  if (!(await dialog(`Nagła emisja – kanał ${c.number}`, body, [['Anuluj', false], ['Zaplanuj', true, 'acc']]))) return;
+  const r = windowRange(f.date.value, f.from.value, f.to.value);
+  if (!r) { toast('Nagła emisja: ustaw datę i godziny', 'bad'); return; }
+  if (!f.title.value.trim()) { toast('Nagła emisja: wpisz tytuł', 'bad'); return; }
+  const choice = body.querySelector('input[name="we-under"]:checked')?.value || 'replace';
+  try {
+    const res = await cg(`live/channels/${encodeURIComponent(c.number)}/windows`, 'POST',
+      { start: new Date(r[0]).toISOString(), end: new Date(r[1]).toISOString(), title: f.title.value.trim(), input: f.input.value || null, under: choice });
+    toast(`Kanał ${c.number}: nagła emisja „${res.window.title}” ${day(res.window.start)} ${at(res.window.start)}–${at(res.window.end)} zaplanowana`);
+  } catch (e) { toast(`Nagła emisja: ${e.message}`, 'bad'); }
+  route(true);
+}
+
+async function deleteWindow(c, w) {
+  if (!(await confirmDlg('Usunąć nagłą emisję?', w.active
+    ? `Okno „${w.title}” trwa – po usunięciu kanał ${c.number} od razu wraca do stanu sprzed okna.`
+    : `Okno „${w.title}” ${day(w.start)} ${at(w.start)}–${at(w.end)} nie przejmie kanału ${c.number}.`, 'Usuń'))) return;
+  try { await cg(`live/channels/${encodeURIComponent(c.number)}/windows/${encodeURIComponent(w.id)}`, 'DELETE'); toast('Nagła emisja usunięta'); } catch (e) { toast(e.message, 'bad'); }
+  route(true);
+}
+
+/** Zaplanowane okna kanału na karcie (CG Playout z `windows`). */
+function windowsBox(c) {
+  if (!hasWindows()) return null;
+  const list = c.windows || [];
+  if (!list.length) return null;
+  return h('div', { class: 'windows', 'data-windows': c.number },
+    list.map((w) => h('div', { class: 'win' + (w.active ? ' on' : ''), 'data-window': w.id },
+      w.active ? pill(w.held ? 'NAGŁA EMISJA – wstrzymana' : 'NAGŁA EMISJA – trwa', w.held ? 'warn' : 'on') : h('span', { class: 'mono' }, `${day(w.start)} ${at(w.start)}–${at(w.end)}`),
+      h('b', null, w.title), w.active ? h('span', { class: 'mono dim' }, `do ${at(w.end)}`) : null,
+      h('span', { class: 'dim' }, w.under === 'keep' ? 'zachowaj odcinek' : 'zastąp'),
+      btn('🗑', () => deleteWindow(c, w), 'danger'))));
 }
 
 // ---------- Sloty na żywo: wybór wejścia kanału ----------

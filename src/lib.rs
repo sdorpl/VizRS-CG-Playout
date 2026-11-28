@@ -44,5 +44,6 @@ pub mod template;
 pub mod thumbs;
 pub mod time;
 pub mod vizrs;
+pub mod windows;
 pub mod yt_cookies;
 pub mod yuva;

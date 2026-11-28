@@ -78,6 +78,7 @@ Czerwony komunikat „legacy odrzucił: …” to odmowa ErsatzTV legacy z jego 
 | „wymaga komendy X na białej liście mostu” | wersja mostu nie zna funkcji – administrator |
 | „za dużo nieudanych logowań” | odczekaj minutę, zaloguj się ponownie |
 | „zły login albo hasło” | sprawdź login i hasło; administrator ustawi nowe hasło w Użytkownicy (albo zaloguj się tokenem awaryjnym) |
+| emisja na żywo ogłoszona dziś, o godzinie zajętej przez ramówkę | **Sloty na żywo** → karta kanału → **Nagła emisja…**: data, od–do, wejście (zwykle „jak wybrane w kanale”), tytuł; okno pokazuje, co ramówka ma pod spodem – ta pozycja leci pod spodem i jej odcinek przepada (EPG dalej ją pokazuje); **Zaplanuj**. Okno widać na karcie kanału; w tym czasie sygnał studia sam wchodzi na antenę (jak przy „studio także poza audycjami”), **ZDEJMIJ** działa do końca okna, po końcu kanał wraca do poprzednich ustawień. Bez sygnału przez minutę – ALARM w banerze, leci ramówka. 🗑 usuwa okno (trwające – kanał od razu wraca) |
 | studio nie wchodzi na antenę | **Sloty na żywo**: czy jest sygnał, czy kanał nie jest WSTRZYMANY (WPUŚĆ), czy w **Wejście** nie wybrano innego wejścia (sygnał czeka → wybierz je albo „automatycznie”) |
 
 Zawsze przy zgłoszeniu do administratora: godzina, kanał, treść komunikatu (albo zrzut ekranu).

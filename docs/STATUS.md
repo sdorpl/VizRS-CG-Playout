@@ -13,12 +13,12 @@ Ostatnie wydania (szczegóły w CHANGELOG):
 - 26.11.31–26.11.33 – okno AppImage z GStreamerem i podglądem `/output`, grafika VizRS na pozycji bez elementu VizRS, wydanie z bramką CI;
 - 26.11.34–26.11.35 – grafika na pozycji bez elementu także przy `ingest_anytime`, yt-dlp 2026.11.23 dla wejścia YouTube.
 
-**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K21 zrobione i wydane; K22 zrobione (niewydane), do zrobienia K23 (nagła emisja live), K24 po K23 (droga W1); otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
+**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K21 zrobione i wydane; K22–K23 zrobione (niewydane; K23 ręcznie na S1 z OBS), nagła emisja live, K24 po K23 (droga W1); otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
 
 ## Następne
 
 1. **Q1 (ręcznie, z użytkownikiem):** Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3).
-2. **Nagła emisja live „dziś” – K22–K24** ([PLAN-mcr](plany/PLAN-mcr.md), decyzje 2026-11-28: wariant B – okno przejęcia w CG Playout, los pozycji pod spodem wybiera operator): K22 Refresh zamiast Reset przy przebudowie – zrobione (niewydane), K23 okno nagłej emisji z datą (CG + panel), K24 „zachowaj odcinek” – rozpoznanie zrobione 2026-11-28: legacy nie ma komendy cofającej postęp serii; decyzja W1 – jednodniowy harmonogram alternatywny z rokiem tylko dla `keep`, wykonanie po K23.
+2. **Nagła emisja live „dziś” – K22–K24** ([PLAN-mcr](plany/PLAN-mcr.md), decyzje 2026-11-28: wariant B – okno przejęcia w CG Playout, los pozycji pod spodem wybiera operator): K22 Refresh zamiast Reset przy przebudowie – zrobione (niewydane), K23 okno nagłej emisji z datą (CG + panel) – zrobione (niewydane, ręcznie na S1 z OBS), K24 „zachowaj odcinek” – rozpoznanie zrobione 2026-11-28: legacy nie ma komendy cofającej postęp serii; decyzja W1 – jednodniowy harmonogram alternatywny z rokiem tylko dla `keep`, wykonanie po K23.
 3. **Do decyzji:** „Ramówka dnia” i kreator szablonu dnia (PLAN-mcr §7.3 – przy akceptacji nowe numery, bo K19/K20 to dziś konta), próba N0/N1 z ErsatzTV Next (§8), D3 (CG Playout przestaje pisać do legacy) i D4 (jedna nakładka compose) z §9.
 
 ## Panel – zrobione (wg planu)
