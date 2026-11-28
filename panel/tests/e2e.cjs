@@ -1981,10 +1981,11 @@ function check(cond, msg) {
   check(await page.isVisible('select[aria-label="Element graficzny emisji 1"]'), 'audycje: wybór elementu graficznego przy emisji');
   if (geOpts.length) await page.selectOption('select[aria-label="Element graficzny emisji 2"]', geOpts[0]);
   await shot('audycje-okno');
+  const buildsBefore = builds.length;  // wcześniej w teście „Od nowa” w Playoutach (Reset) – liczą się tylko nowe
   await page.click('#dlg-buttons button:has-text("Utwórz")');
   await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
   const wiz = await page.textContent('[data-wizard]');
-  check(/Audycja zapisana/.test(wiz) && /Godzina emisji w harmonogramie.*INFO24 dzień.*07:15, 20:00/.test(wiz) && /Ramówka kanału przebudowana.*legacy przebudował ramówkę sam/.test(wiz) && !CG.rebuilt && !builds.some((b) => b.Mode !== 'Refresh'),
+  check(/Audycja zapisana/.test(wiz) && /Godzina emisji w harmonogramie.*INFO24 dzień.*07:15, 20:00/.test(wiz) && /Ramówka kanału przebudowana.*legacy przebudował ramówkę sam/.test(wiz) && !CG.rebuilt && builds.length === buildsBefore,
     `audycje: dwie emisje zapisane przy zakładaniu, ramówkę przebudował legacy (Refresh) bez Resetu CG (${wiz})`);
   const builtAt = builds.length;
   check(CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '12'), 'audycje: kategoria wiekowa zapisana w CG Playout');
