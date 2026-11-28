@@ -14,14 +14,13 @@ Ostatnie wydania (szczegóły w CHANGELOG):
 - 26.11.34–26.11.35 – grafika na pozycji bez elementu także przy `ingest_anytime`, yt-dlp 2026.11.23 dla wejścia YouTube;
 - 26.11.36 – nagła emisja live: przebudowa Refresh zamiast Reset (K22), okno przejęcia kanału z datą (K23), „zachowaj odcinek” (K24).
 
-**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K24 zrobione i wydane (K22–K24 – nagła emisja live, w 26.11.36; K24 drogą W1); sloty na żywo i nagła emisja z prawdziwym OBS sprawdzone ręcznie przez użytkownika (2026-11-28), Plex (Q1) czeka; do zrobienia K25 (kreator szablonu dnia); otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
+**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K24 zrobione i wydane (K22–K24 – nagła emisja live, w 26.11.36; K24 drogą W1); sloty na żywo i nagła emisja z prawdziwym OBS sprawdzone ręcznie przez użytkownika (2026-11-28), test Plexa usunięty (Q1 zamknięte); do zrobienia K25 (kreator szablonu dnia); otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
 
 ## Następne
 
 1. **s1, s2, s3 na 26.11.36** – przy najbliższym przebiegu `stack-refresh` (obrazy `:latest`).
-2. **Q1 – Plex (ręcznie, z użytkownikiem):** logowanie PIN i synchronizacja z prawdziwym kontem (LUKI #3); OBS już sprawdzony.
-3. **K25 – kreator szablonu dnia** ([PLAN-mcr](plany/PLAN-mcr.md) §5, decyzja 2026-11-28): bloki godzinowe → pozycje harmonogramu w Harmonogramach.
-4. **Odłożone** (decyzje 2026-11-28): „Ramówka dnia” (PLAN-mcr §7.3), D3 – CG Playout przestaje pisać do legacy (§9); próba ErsatzTV Next odrzucona (§8.7), D4 zamknięte (§9).
+2. **K25 – kreator szablonu dnia** ([PLAN-mcr](plany/PLAN-mcr.md) §5, decyzja 2026-11-28): bloki godzinowe → pozycje harmonogramu w Harmonogramach.
+3. **Odłożone** (decyzje 2026-11-28): „Ramówka dnia” (PLAN-mcr §7.3), D3 – CG Playout przestaje pisać do legacy (§9); próba ErsatzTV Next odrzucona (§8.7), D4 zamknięte (§9).
 
 ## Panel – zrobione (wg planu)
 
@@ -76,7 +75,6 @@ Zrobione w panelu: K1–K11, K18 (sesje, CSP, numeracja kanałów, rozdzielczoś
 
 ## Panel – kroki ręczne (czekają na użytkownika)
 
-- Plex z prawdziwym kontem – Q1 (LUKI #3).
 - Lokalny stos `virtrs` (poza repo): `.env` poprawiony 2026-11-16 (`COMPOSE_FILE` z `docker-compose.live.yml` i `panel/compose.build.yml`, `COMPOSE_PROFILES=grafika,ingest`; kopia `.env.bak-przed-p4`). Kroki ręczne sprzed połączenia (nakładka `compose.cg-playout.yml`, legacy v26.12.0, `VIZRS_LIVE_VIZRS_URL`) są nieaktualne – historia w gicie (`d849485` i wcześniej).
 
 ## Panel – blokery / uwagi
