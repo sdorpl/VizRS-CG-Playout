@@ -15,7 +15,7 @@ const CARD_KINDS = [
   ['ArtistCards', 'Artist'], ['MusicVideoCards', 'MusicVideo'], ['OtherVideoCards', 'OtherVideo'], ['SongCards', 'Song'],
   ['ImageCards', 'Image'], ['RemoteStreamCards', 'RemoteStream'],
 ];
-const cards = (r) => CARD_KINDS.flatMap(([k, kind]) => (r?.[k] || []).map((c) => ({ ...c, Kind: kind })));
+export const cards = (r) => CARD_KINDS.flatMap(([k, kind]) => (r?.[k] || []).map((c) => ({ ...c, Kind: kind })));
 
 function collectionItems(col, items) {
   const picked = new Set();
@@ -64,7 +64,7 @@ const plain = crudView({
 
 // ---------- inteligentne ----------
 /** Liczba pozycji pasujących do zapytania (QuerySearchIndexAllItems zwraca listy id po rodzajach). */
-async function countQuery(q) {
+export async function countQuery(q) {
   const r = await cmd('QuerySearchIndexAllItems', { Query: q });
   return Object.values(r || {}).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
 }

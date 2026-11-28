@@ -488,3 +488,20 @@ img.mini { cursor: zoom-in; }
 /* znak wodny ErsatzTV na przejęcie przez live ingest (views/znaki.js watermarkPicker): pod grafiką reguły kanału i wejścia */
 .rule-card > .wm-picker { padding: 0 12px 8px; }
 .inputs-edit .in-graphics > .wm-picker { grid-column: 1 / -1; }
+
+/* K25: kreator szablonu dnia (Harmonogramy) */
+.dialog:has(.kw), .dialog:has(.kw-prev) { width: min(1100px, 96vw); }
+.kw, .kw-prev, .kw-rows, .kw-check { display: grid; gap: 10px; }
+.kw > .form { padding: 0; }
+.kw-head, .kw-row { display: grid; grid-template-columns: 22px 76px 76px minmax(0, 1fr) 140px 190px 34px; gap: 8px; align-items: start; }
+.kw-head { font-size: 12px; }
+.kw-row { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.kw-row .kw-n { padding-top: 7px; text-align: right; }
+.kw-row .picks { max-height: 120px; }
+.kw-check ul, .kw-prev ul { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 3px; }
+@media (max-width: 760px) {
+  .kw-head { display: none; }
+  .kw-row { grid-template-columns: 1fr 1fr; }
+  .kw-row .kw-n { display: none; }
+  .kw-row .picker { grid-column: 1 / -1; }
+}

@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Panel: kreator szablonu dnia w Harmonogramach (PLAN-mcr K25).** „Kreator dnia…” przy wybranym harmonogramie i przy „+ Nowy”: wiersze bloków (start, czas, kolekcja / kolekcja inteligentna / zapytanie, losowo albo po kolei, wypełniacz ogona) → pozycje o stałej godzinie w trybie „przez określony czas” z ogonem z wypełniacza, zapis `ReplaceProgramScheduleItems` do nowego harmonogramu albo – po podglądzie i potwierdzeniu – zamiast pozycji wybranego. Kontrola przed zapisem: nakładanie, kolejność godzin, źródło wybrane i niepuste, jedna kolejność dla tej samej treści (blokują); luki i niepełna doba (ostrzeżenie). Bez nowych komend mostu.
+
 ## 26.11.36 (2026-11-28)
 
 - **Nagła emisja: „zachowaj odcinek” (PLAN-mcr K24, droga W1).** Przy dodawaniu okna operator może zachować odcinek pozycji spod okna: panel daje temu dniu w ErsatzTV kopię harmonogramu bez tej pozycji jako harmonogram zastępczy z rokiem, a dzień po emisji go zdejmuje. CG Playout: cecha `windows_keep`, pole `keep` okna (`{playout, schedule, date}`), okno z `keep` po końcu zostaje na liście (`over`) do sprzątania, najwyżej 7 dni. Wymaga panelu i CG Playout z tego wydania; starszy CG – opcja niewidoczna.

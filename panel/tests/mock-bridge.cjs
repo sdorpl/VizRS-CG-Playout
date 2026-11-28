@@ -115,7 +115,8 @@ const DB = {
     { PlayoutId: 3, ScheduleKind: 'Classic', ChannelName: 'Kino Klasyka', ChannelNumber: '26', PlayoutMode: 'Continuous', ScheduleName: 'Kino – wieczór', ScheduleFile: null, DbDailyRebuildTime: null, BuildStatus: { LastBuild: iso(now - 600e3), Success: false, Message: 'Collection "Westerny" is empty' } },
   ],
   watermarks: [{ Id: 1, Name: 'Logo INFO24', Image: '', ImageSource: 'ChannelLogo', Mode: 'Permanent', Location: 'TopRight', Size: 'Scaled', WidthPercent: 12, HorizontalMarginPercent: 4, VerticalMarginPercent: 5, FrequencyMinutes: 15, DurationSeconds: 15, Opacity: 90, PlaceWithinSourceContent: false, ZIndex: 0 }],
-  fillers: [{ Id: 1, Name: 'Plansza zapasowa', FillerKind: 'Fallback', FillerMode: 'None' }, { Id: 2, Name: 'Zapowiedzi', FillerKind: 'MidRoll', FillerMode: 'Count' }],
+  fillers: [{ Id: 1, Name: 'Plansza zapasowa', FillerKind: 'Fallback', FillerMode: 'None' }, { Id: 2, Name: 'Zapowiedzi', FillerKind: 'MidRoll', FillerMode: 'Count' },
+    { Id: 3, Name: 'Ogon – plansze INFO24', FillerKind: 'Tail', FillerMode: 'None' }],
 };
 const TITLES = {
   1: ['Serwis informacyjny', 'Pogoda', 'Rozmowa dnia', 'Serwis informacyjny', 'Magazyn regionalny', 'Pogoda', 'Gość VizRS', 'Serwis informacyjny'],
@@ -184,6 +185,11 @@ const H = {
   // kolekcje inteligentne: jedna audycji LIVE (prowadzi ją CG Playout – w panelu tylko do odczytu) i jedna zwykła
   GetAllSmartCollections: () => [{ Id: 1, Name: 'LIVE · Koncert w studiu', Query: 'type:remote_stream AND sort_title:"koncert w studiu"' }, { Id: 2, Name: 'Archiwum INFO24', Query: 'type:other_video AND tag:info' },
     { Id: 3, Name: 'LIVE · Wieczór na żywo', Query: 'type:remote_stream AND sort_title:"wieczór na żywo"' }],
+  // wybór treści (contentPicker): wyszukiwanie po nazwie; kolekcja zwykła „Puste” bez pozycji (K25: kontrola pustego źródła)
+  SearchSmartCollections: (a) => H.GetAllSmartCollections().filter((c) => c.Name.toLowerCase().includes(String(a.Query || '').toLowerCase())).map(({ Id, Name }) => ({ Id, Name })),
+  SearchCollections: (a) => [{ Id: 1, Name: 'Magazyny' }, { Id: 2, Name: 'Puste' }].filter((c) => c.Name.toLowerCase().includes(String(a.Query || '').toLowerCase())),
+  GetCollectionCards: (a) => ({ OtherVideoCards: a.Id === 2 ? [] : VIDEOS.slice(0, 3) }),
+  CreateProgramSchedule: (a) => { const Id = Math.max(...SCHEDULES.map((x) => x.Id)) + 1; SCHEDULES.push({ Id, Name: a.Name, items: [] }); return { ProgramScheduleId: Id }; },
   // harmonogramy (w pamięci): „INFO24 – dzień” kanału 24 – godziny emisji audycji LIVE (Audycje LIVE → Ramówka…)
   GetAllProgramSchedules: () => SCHEDULES.map(({ Id, Name }) => ({ Id, Name, FixedStartTimeBehavior: 'Strict', ShuffleScheduleItems: false })),
   // harmonogramy zastępcze w pamięci (K24: kopia harmonogramu na jeden dzień jako zastępczy z rokiem)
@@ -194,7 +200,9 @@ const H = {
   DeleteProgramSchedule: (a) => { const k = SCHEDULES.findIndex((x) => x.Id === a.ProgramScheduleId); if (k >= 0) SCHEDULES.splice(k, 1); return null; },
   GetProgramScheduleItems: (a) => (SCHEDULES.find((x) => x.Id === a.Id)?.items || []).map((it) => {
     const smart = it.SmartCollectionId && H.GetAllSmartCollections().find((c) => c.Id === it.SmartCollectionId);
-    return { ...it, Count: it.MultipleCount, Name: smart?.Name ?? 'Archiwum INFO24', SmartCollection: it.SmartCollectionId ? { Id: it.SmartCollectionId, Name: smart?.Name } : null,
+    return { ...it, Count: it.MultipleCount, Name: smart?.Name ?? (it.CollectionId && H.SearchCollections({}).find((c) => c.Id === it.CollectionId)?.Name) ?? (it.SearchTitle || 'Archiwum INFO24'), SmartCollection: it.SmartCollectionId ? { Id: it.SmartCollectionId, Name: smart?.Name } : null,
+      Collection: it.CollectionId ? { Id: it.CollectionId, Name: H.SearchCollections({}).find((c) => c.Id === it.CollectionId)?.Name } : null,
+      TailFiller: it.TailFillerId ? DB.fillers.find((f) => f.Id === it.TailFillerId) : null,
       Watermarks: (it.WatermarkIds || []).map((Id) => ({ Id })), GraphicsElements: (it.GraphicsElementIds || []).map((Id) => ({ Id })) };
   }),
   ReplaceProgramScheduleItems: (a) => { const sc = SCHEDULES.find((x) => x.Id === a.ProgramScheduleId); if (sc) sc.items = a.Items; return null; },

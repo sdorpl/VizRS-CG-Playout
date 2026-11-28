@@ -489,6 +489,101 @@ function check(cond, msg) {
     SmartCollectionId: sc, PlaybackOrder: 'Chronological', MultipleCount: '1', SearchTitle: '', SearchQuery: '', CustomTitle: '', WatermarkIds: [], GraphicsElementIds: [] }] });
   check(chId > 0 && psId > 0, `playout: kanał ${chNum} i harmonogram przygotowane przez API`);
 
+  // K25: kreator szablonu dnia – kontrola bloków (czysta funkcja), potem kreator → nowy harmonogram → zastąpienie pozycji w legacy
+  const kw = await page.evaluate(async () => {
+    const { checkBlocks, blocksToItems, toReplace } = await import('/views/harmonogramy.js');
+    const src = (id) => ({ CollectionType: 'SmartCollection', SmartCollectionId: id });
+    const b = (start, dur, id = 1, order = 'Shuffle') => ({ start, dur, content: src(id), order, label: 'K' + id, tail: 7 });
+    const H = 60;
+    return {
+      full: checkBlocks([b(6 * H, 12 * H), b(18 * H, 12 * H, 2)]),
+      midnight: checkBlocks([b(18 * H, 8 * H), b(2 * H, 16 * H, 2)]),
+      overlap: checkBlocks([b(6 * H, 12 * H), b(17 * H, 6 * H, 2)]),
+      order: checkBlocks([b(10 * H, H), b(9 * H, H, 2), b(8 * H, H, 3)]),
+      gaps: checkBlocks([b(6 * H, 6 * H), b(13 * H, 5 * H, 2)]),
+      orders: checkBlocks([b(0, 12 * H, 1, 'Shuffle'), b(12 * H, 12 * H, 1, 'Chronological')]),
+      missing: checkBlocks([{ start: null, dur: null, content: { CollectionType: 'SearchQuery', SearchQuery: '' }, order: 'Shuffle', label: '—' }]),
+      day: toReplace(blocksToItems([b(0, 24 * H)])[0], 1),
+      noTail: toReplace(blocksToItems([{ ...b(6 * H, 90), tail: null }])[0], 1),
+    };
+  });
+  check(!kw.full.errors.length && !kw.full.warnings.length && kw.full.total === 1440 && !kw.midnight.errors.length && !kw.midnight.warnings.length,
+    `K25: kontrola – pełna doba bez uwag, także z przejściem przez północ (${JSON.stringify([kw.full, kw.midnight])})`);
+  check(kw.overlap.errors.some((e) => /Blok 2.*nakłada się na Blok 1/.test(e)) && kw.order.errors.some((e) => /nie jest po kolei/.test(e))
+    && kw.orders.errors.some((e) => /jednej kolejności/.test(e)) && kw.missing.errors.length === 3,
+    `K25: kontrola – nakładanie, kolejność godzin, dwie kolejności jednej treści i brak pól blokują (${JSON.stringify([kw.overlap.errors, kw.order.errors, kw.orders.errors])})`);
+  check(!kw.gaps.errors.length && kw.gaps.warnings.some((w) => /Luka 12:00–13:00/.test(w)) && kw.gaps.warnings.some((w) => /Luka 18:00–06:00/.test(w))
+    && kw.gaps.warnings.some((w) => /razem 11:00 z 24:00 – niepełna doba/.test(w)),
+    `K25: kontrola – luki i niepełna doba tylko ostrzegają (${JSON.stringify(kw.gaps.warnings)})`);
+  check(kw.day.StartType === 'Fixed' && kw.day.StartTime === '00:00:00' && kw.day.PlayoutMode === 'Duration' && kw.day.PlayoutDuration === '1.00:00:00'
+    && kw.day.TailMode === 'Filler' && kw.day.TailFillerId === 7 && kw.day.FixedStartTimeBehavior === null && kw.day.SmartCollectionId === 1 && kw.day.Index === 1
+    && kw.noTail.TailMode === 'Offline' && kw.noTail.TailFillerId === null && kw.noTail.PlayoutDuration === '01:30:00',
+    `K25: bloki → pozycje (stała godzina, czas bloku, ogon z wypełniacza; doba jako 1.00:00:00) (${JSON.stringify([kw.day, kw.noTail])})`);
+
+  const kwTail = 'E2E ogon ' + tag, kwName = 'E2E kreator ' + tag;
+  await api('CreateFillerPreset', { Name: kwTail, FillerKind: 'Tail', FillerMode: 'None', Duration: null, Count: null, PadToNearestMinute: null, AllowWatermarks: false,
+    CollectionType: 'SmartCollection', CollectionId: null, MediaItemId: null, MultiCollectionId: null, SmartCollectionId: sc, PlaylistId: null, Expression: '', UseChaptersAsMediaItems: false });
+  const kwTailId = (await api('GetAllFillerPresets')).result.find((x) => x.Name === kwTail)?.Id;
+  await page.goto(`${BASE}/#harmonogramy`);
+  await page.waitForSelector('main[data-view="harmonogramy"]');
+  await rerender(() => page.click('text=+ Nowy harmonogram'));
+  await page.click('main .head button:has-text("Kreator dnia…")');
+  await page.waitForSelector('.kw');
+  check((await page.$$eval('#kw-target option', (o) => o.map((x) => x.value))).join() === 'new', 'K25: kreator przy „+ Nowy” – tylko zapis do nowego harmonogramu');
+  await page.fill('#kw-name', kwName);
+  const kwRow = (n) => `.kw-row:nth-child(${n})`;
+  await page.fill(`${kwRow(1)} input[aria-label="Start bloku"]`, '6:00');
+  await page.fill(`${kwRow(1)} input[aria-label="Czas bloku"]`, '12:00');
+  await page.fill(`${kwRow(1)} input[aria-label="Szukaj treści"]`, 'INFO');
+  await page.click(`${kwRow(1)} .picks button:has-text("Archiwum INFO24")`);
+  await page.selectOption(`${kwRow(1)} select[aria-label="Kolejność"]`, 'Chronological');
+  await page.selectOption(`${kwRow(1)} select[aria-label="Wypełniacz ogona"]`, String(kwTailId));
+  await page.click('.kw button:has-text("+ Dodaj blok")');
+  check((await page.inputValue(`${kwRow(2)} input[aria-label="Start bloku"]`)) === '18:00' && (await page.inputValue(`${kwRow(2)} select[aria-label="Wypełniacz ogona"]`)) === String(kwTailId),
+    'K25: nowy blok zaczyna się po poprzednim, z tym samym wypełniaczem ogona');
+  await page.fill(`${kwRow(2)} input[aria-label="Start bloku"]`, '17:00');
+  await page.fill(`${kwRow(2)} input[aria-label="Czas bloku"]`, '6:00');
+  await page.selectOption(`${kwRow(2)} select[aria-label="Rodzaj treści"]`, 'SearchQuery');
+  await page.fill(`${kwRow(2)} input[aria-label="Tytuł wyszukiwania"]`, 'Wieczór');
+  await page.fill(`${kwRow(2)} input[aria-label="Zapytanie wyszukiwania"]`, 'type:other_video');
+  await page.click('#dlg-buttons button:has-text("Dalej")');
+  await page.waitForFunction(() => /nakłada się/.test(document.querySelector('.kw-check')?.textContent || ''));
+  check(await page.isVisible('.kw') && /Blok 2 \(start 17:00\) nakłada się na Blok 1 \(06:00–18:00\)/.test(await page.textContent('.kw-check .note.err')),
+    'K25: nakładanie bloków blokuje zapis – okno zostaje z błędem');
+  await page.fill(`${kwRow(2)} input[aria-label="Start bloku"]`, '19:00');
+  await page.waitForFunction(() => !document.querySelector('.kw-check .note.err') && /niepełna doba/.test(document.querySelector('.kw-check').textContent));
+  const kwWarn = await page.textContent('.kw-check .note');
+  check(/Luka 18:00–19:00/.test(kwWarn) && /Luka 01:00–06:00/.test(kwWarn) && /razem 18:00 z 24:00 – niepełna doba/.test(kwWarn), `K25: luki i niepełna doba jako ostrzeżenie (${kwWarn})`);
+  await page.click('#dlg-buttons button:has-text("Dalej")');
+  await page.waitForSelector('.kw-prev');
+  check(/niepełna doba/.test(await page.textContent('.kw-prev')) && (await page.$$('.kw-prev tbody tr')).length === 2, 'K25: podgląd z ostrzeżeniem i pozycjami przed zapisem');
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/k25-kreator.png`, fullPage: true });
+  await rerender(() => page.click('#dlg-buttons button:has-text("Załóż harmonogram")'));
+  await page.waitForSelector(`main .panel header h2:has-text("${kwName}")`);
+  const kwId = (await api('GetAllProgramSchedules')).result.find((x) => x.Name === kwName)?.Id;
+  const kwItems = async () => (await api('GetProgramScheduleItems', { Id: kwId })).result.sort((a, b) => a.Index - b.Index);
+  let kwi = await kwItems();
+  check(kwi.length === 2 && kwi.every((it) => it.StartType === 'Fixed' && it.PlayoutMode === 'Duration' && it.TailMode === 'Filler' && it.TailFiller?.Id === kwTailId && it.FixedStartTimeBehavior == null)
+    && kwi[0].StartTime === '06:00:00' && kwi[0].PlayoutDuration === '12:00:00' && kwi[0].CollectionType === 'SmartCollection' && kwi[0].PlaybackOrder === 'Chronological'
+    && kwi[1].StartTime === '19:00:00' && kwi[1].PlayoutDuration === '06:00:00' && kwi[1].CollectionType === 'SearchQuery' && kwi[1].SearchQuery === 'type:other_video' && kwi[1].PlaybackOrder === 'Shuffle',
+    `K25: kreator → nowy harmonogram z pozycjami w legacy (${JSON.stringify(kwi.map((it) => [it.StartTime, it.PlayoutDuration, it.CollectionType, it.PlaybackOrder, it.TailMode, it.TailFiller?.Id]))})`);
+  // zastąpienie pozycji wybranego harmonogramu: bloki wracają z pozycji, potwierdzenie z podglądem obecnych pozycji
+  await page.click('main .head button:has-text("Kreator dnia…")');
+  await page.waitForSelector('.kw');
+  check((await page.$$('.kw-row')).length === 2 && (await page.inputValue(`${kwRow(2)} input[aria-label="Start bloku"]`)) === '19:00' && (await page.inputValue('#kw-target')) === 'cur',
+    'K25: kreator przy wybranym harmonogramie – bloki z jego pozycji, zapis do niego');
+  await page.fill(`${kwRow(2)} input[aria-label="Start bloku"]`, '18:00');
+  await page.fill(`${kwRow(2)} input[aria-label="Czas bloku"]`, '12:00');
+  await page.waitForFunction(() => /bez nakładania, pełna doba/.test(document.querySelector(".kw-check").textContent));
+  await page.click('#dlg-buttons button:has-text("Dalej")');
+  await page.waitForSelector('.kw-prev');
+  check(/zostaną zastąpione/.test(await page.textContent('.kw-prev .note.err')), 'K25: zastąpienie pozycji dopiero po potwierdzeniu z listą obecnych pozycji');
+  await rerender(() => page.click('#dlg-buttons button:has-text("Zastąp pozycje")'));
+  kwi = await kwItems();
+  check(kwi.length === 2 && kwi[1].StartTime === '18:00:00' && kwi[1].PlayoutDuration === '12:00:00', 'K25: pozycje wybranego harmonogramu zastąpione w legacy');
+  await api('DeleteProgramSchedule', { ProgramScheduleId: kwId });
+  await api('DeleteFillerPreset', { FillerPresetId: kwTailId });
+
   // router: wolny ekran skończony już po przejściu dalej nie nadpisuje nowego widoku (dawniej e2e sprzątania deco)
   const raced = await page.evaluate(async () => {
     const { VIEWS, h } = await import('/core.js');
