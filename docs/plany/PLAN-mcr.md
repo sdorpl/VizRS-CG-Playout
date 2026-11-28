@@ -1,6 +1,6 @@
 # Plan rozwoju VizRS Live (PLAN-mcr) – braki wobec legacy, wzorzec Viz Channel Branding, legacy czy Next
 
-> **Stan:** gałąź `next-v`, wydanie testowe 1.3.0-test.1 (2026-11-10): K1–K11, K18 zrobione; K12–K14, K17 – panel gotowy, czeka na VizRS CG Playout; K15–K16 – kontrakt; Q1 sprawdzone ręcznie (2026-11-28); decyzja legacy/Next: **A – legacy** (§6), próba N0/N1 odrzucona (2026-11-28, §8.7). Nagła emisja live (§5): K22–K24 zrobione i wydane w 26.11.36 (K24 drogą W1). Stan prac: [../STATUS.md](../STATUS.md), znane braki: [../LUKI.md](../LUKI.md), opis działania: [../DOKUMENTACJA.md](../DOKUMENTACJA.md).
+> **Stan:** gałąź `next-v`, wydanie testowe 1.3.0-test.1 (2026-11-10): K1–K11, K18 zrobione; K12–K14, K17 – panel gotowy, czeka na VizRS CG Playout; K15–K16 – kontrakt; Q1 – OBS sprawdzone ręcznie (2026-11-28), Plex czeka; decyzja legacy/Next: **A – legacy** (§6), próba N0/N1 odrzucona (2026-11-28, §8.7). Nagła emisja live (§5): K22–K24 zrobione i wydane w 26.11.36 (K24 drogą W1). Stan prac: [../STATUS.md](../STATUS.md), znane braki: [../LUKI.md](../LUKI.md), opis działania: [../DOKUMENTACJA.md](../DOKUMENTACJA.md).
 >
 > **Jedyny dokument planów rozwoju VizRS Live** (decyzja użytkownika 2026-11-09): nowe plany i punkty panelu dopisuj tutaj – nowy punkt w tabeli §4 (w miejscu kolejki, które mu odpowiada) i opis w §5, nowe analizy jako kolejne sekcje – zamiast zakładać nowe pliki `PLAN-*.md`. Zakończone plany [PLAN-rozbudowy.md](archiwum/PLAN-rozbudowy.md) i [PLAN-makieta.md](archiwum/PLAN-makieta.md) zostają jako archiwum.
 >
@@ -84,7 +84,7 @@ Przebieg łączy [LUKI.md](../LUKI.md) i punkty z §2–§3 w jedną kolejkę: n
 | K9 | Kontrola ramówki: błędy na czerwono w Na antenie, EPG i Playoutach (Vizrt B) | K6 | zrobione (2026-11-09) |
 | K10 | Mozaika kanałów (multiview) w Na antenie (Vizrt J) | K9 | zrobione (2026-11-09) |
 | K11 | Import ramówki z pliku CSV/XML do playlisty legacy (Vizrt E) | – | zrobione (2026-11-09) |
-| Q1 | Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3, G1) | – | zrobione (ręcznie – sprawdził użytkownik, 2026-11-28) |
+| Q1 | Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3, G1) | – | częściowo: OBS sprawdzone ręcznie przez użytkownika (2026-11-28); Plex z prawdziwym kontem – czeka |
 | K12 | Warstwy i strony VizRS na antenie w karcie kanału (LUKI #22, Vizrt D; CG) | – | zrobione (panel + CG Playout 26.11.x) |
 | K13 | Ręczne TAKE / CONTINUE / OUT pojedynczej strony (Vizrt H; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
 | K14 | Dziennik emisji (as-run) z eksportem CSV (Vizrt C; CG) | K12 | zrobione (panel + CG Playout 26.11.x) |
@@ -147,7 +147,7 @@ Na antenie: przełącznik „Mozaika” – siatka podglądów (`player.js`/`mux
 Plik CSV (start, tytuł albo ścieżka pliku, długość) lub XML wgrany w przeglądarce, parsowany w JS. Dopasowanie do mediów legacy (`QuerySearchIndexAllItems` po ścieżce, potem po tytule), podgląd: dopasowane / niejednoznaczne / brak. Zapis jako **playlista legacy** (`CreatePlaylist`, `ReplacePlaylistItems` – są na liście) do użycia w harmonogramie. Bez zapisu plików na `/config` (R2). Godziny emisji wymusza harmonogram (pozycja „stała godzina”). Harris/Omnibus i godziny co do sekundy – poza punktem (§6).
 
 ### Q1 – prawdziwy sygnał i Plex (LUKI #3, ręcznie)
-Z użytkownikiem, na jego stosie: OBS → RTMP/SRT → CG Playout → przejęcie kanału, ZDEJMIJ/WPUŚĆ, audycja LIVE z ramówki; Plex – logowanie PIN i synchronizacja. Wynik w DOKUMENTACJA §7 i STATUS. Najlepiej przed K12–K17, które rozbudowują część live. **Zrobione (2026-11-28):** użytkownik sprawdził ręcznie – działa.
+Z użytkownikiem, na jego stosie: OBS → RTMP/SRT → CG Playout → przejęcie kanału, ZDEJMIJ/WPUŚĆ, audycja LIVE z ramówki; Plex – logowanie PIN i synchronizacja. Wynik w DOKUMENTACJA §7 i STATUS. Najlepiej przed K12–K17, które rozbudowują część live. **Stan (2026-11-28):** sloty na żywo z prawdziwym OBS – użytkownik sprawdził ręcznie, działa; Plex z prawdziwym kontem – jeszcze nie sprawdzony.
 
 ### K12 – warstwy VizRS na antenie (LUKI #22; CG)
 CG Playout: w `/api/live/state` dla kanału `layers`: `[{layer, page, scene, since}]` – CG zna je z `STATE` VizRS (woła je już przy „Zdejmij grafikę”). Panel: pigułki „W10 · belka 101” w karcie kanału (makieta M2).
