@@ -6,19 +6,20 @@
 
 ## Bieżący etap
 
-**Wydanie 26.11.35** (2026-11-27) na stosach s1, s2 i s3 (Portainer, obrazy `:latest`; s3 – stos `vizplay-s3` od 2026-11-21). Sidecar i panel wychodzą razem (jedna wersja `vizrs-cg` = `vizrs-live`, wydanie z bramką CI od 26.11.32); wersje sąsiadów – `ZGODNOSC.md` w [sdorpl/VizRS](https://github.com/sdorpl/VizRS/blob/main/ZGODNOSC.md), zmiany – [CHANGELOG.md](../CHANGELOG.md).
+**Wydanie 26.11.36** (2026-11-28, nagła emisja live K22–K24); na stosach s1, s2 i s3 – 26.11.35 do aktualizacji (Portainer, obrazy `:latest`; s3 – stos `vizplay-s3` od 2026-11-21). Sidecar i panel wychodzą razem (jedna wersja `vizrs-cg` = `vizrs-live`, wydanie z bramką CI od 26.11.32); wersje sąsiadów – `ZGODNOSC.md` w [sdorpl/VizRS](https://github.com/sdorpl/VizRS/blob/main/ZGODNOSC.md), zmiany – [CHANGELOG.md](../CHANGELOG.md).
 
 Ostatnie wydania (szczegóły w CHANGELOG):
 - 26.11.29–26.11.30 – zdarzenia wtórne (K15) z ważnością i zatwierdzaniem (K16), symbol `{next_start_iso}` (Za chwilę Z4), okno AppImage logowane kontem (K20), renderer natywny z VizRS CG System 26.11.13;
 - 26.11.31–26.11.33 – okno AppImage z GStreamerem i podglądem `/output`, grafika VizRS na pozycji bez elementu VizRS, wydanie z bramką CI;
-- 26.11.34–26.11.35 – grafika na pozycji bez elementu także przy `ingest_anytime`, yt-dlp 2026.11.23 dla wejścia YouTube.
+- 26.11.34–26.11.35 – grafika na pozycji bez elementu także przy `ingest_anytime`, yt-dlp 2026.11.23 dla wejścia YouTube;
+- 26.11.36 – nagła emisja live: przebudowa Refresh zamiast Reset (K22), okno przejęcia kanału z datą (K23), „zachowaj odcinek” (K24).
 
-**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K21 zrobione i wydane; K22–K24 zrobione (niewydane; nagła emisja live, K24 drogą W1; ręcznie na S1 z OBS); otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
+**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K24 zrobione i wydane (K22–K24 – nagła emisja live, w 26.11.36; K24 drogą W1); ręcznie na S1 z OBS – K23/K24 razem z Q1; otwarte Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
 
 ## Następne
 
-1. **Q1 (ręcznie, z użytkownikiem):** Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3).
-2. **Nagła emisja live „dziś” – K22–K24** ([PLAN-mcr](plany/PLAN-mcr.md), decyzje 2026-11-28: wariant B – okno przejęcia w CG Playout, los pozycji pod spodem wybiera operator): K22 Refresh zamiast Reset przy przebudowie – zrobione (niewydane), K23 okno nagłej emisji z datą (CG + panel) – zrobione (niewydane, ręcznie na S1 z OBS), K24 „zachowaj odcinek” – zrobione (niewydane, W1: jednodniowy harmonogram zastępczy z rokiem). Zostało: wydanie i sprawdzenie na S1 z prawdziwym OBS (jak Q1).
+1. **Aktualizacja s1, s2, s3 do 26.11.36** (Portainer: obrazy `:latest` – ponowne pobranie stosu).
+2. **Q1 i nagła emisja (ręcznie, z użytkownikiem):** Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3); na S1 okno nagłej emisji na kanale testowym z OBS (K23) i „zachowaj odcinek” na pozycji serialu (K24, sprawdzenie odcinka następnego dnia).
 3. **Do decyzji:** „Ramówka dnia” i kreator szablonu dnia (PLAN-mcr §7.3 – przy akceptacji nowe numery, bo K19/K20 to dziś konta), próba N0/N1 z ErsatzTV Next (§8), D3 (CG Playout przestaje pisać do legacy) i D4 (jedna nakładka compose) z §9.
 
 ## Panel – zrobione (wg planu)

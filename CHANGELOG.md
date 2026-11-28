@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+## 26.11.36 (2026-11-28)
+
 - **Nagła emisja: „zachowaj odcinek” (PLAN-mcr K24, droga W1).** Przy dodawaniu okna operator może zachować odcinek pozycji spod okna: panel daje temu dniu w ErsatzTV kopię harmonogramu bez tej pozycji jako harmonogram zastępczy z rokiem, a dzień po emisji go zdejmuje. CG Playout: cecha `windows_keep`, pole `keep` okna (`{playout, schedule, date}`), okno z `keep` po końcu zostaje na liście (`over`) do sprzątania, najwyżej 7 dni. Wymaga panelu i CG Playout z tego wydania; starszy CG – opcja niewidoczna.
 
 - **Nagła emisja na żywo z datą (PLAN-mcr K23).** Okno przejęcia kanału w CG Playout: w zaplanowanym czasie kanał bierze sygnał studia jak przy „studio także poza audycjami” i bez wstrzymania, po końcu wraca do stanu sprzed okna; ErsatzTV i ramówka bez zmian (pozycja pod oknem przepada, EPG ją pokazuje). Live API `GET|POST /api/live/channels/<n>/windows`, `DELETE …/windows/<id>`, cecha `windows`, pola `window`/`windows` kanału w stanie i `window` w `/ingest/state`, wpisy `window_start`/`window_end` w dzienniku emisji; okna w `control.json` przeżywają restart. Panel: „Nagła emisja…” na karcie kanału w Slotach na żywo (data, od–do, wejście, tytuł, podgląd ramówki pod spodem), lista okien z usuwaniem, alarm „okno bez sygnału” po minucie; starszy CG Playout – bez przycisku.
