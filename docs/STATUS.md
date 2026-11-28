@@ -20,7 +20,7 @@ Ostatnie wydania (szczegóły w CHANGELOG):
 
 1. **Aktualizacja s1, s2, s3 do 26.11.36** (Portainer: obrazy `:latest` – ponowne pobranie stosu).
 2. **Q1 i nagła emisja (ręcznie, z użytkownikiem):** Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3); na S1 okno nagłej emisji na kanale testowym z OBS (K23) i „zachowaj odcinek” na pozycji serialu (K24, sprawdzenie odcinka następnego dnia).
-3. **Do decyzji:** „Ramówka dnia” i kreator szablonu dnia (PLAN-mcr §7.3 – przy akceptacji nowe numery, bo K19/K20 to dziś konta), próba N0/N1 z ErsatzTV Next (§8), D3 (CG Playout przestaje pisać do legacy) i D4 (jedna nakładka compose) z §9.
+3. **Do decyzji** (próba ErsatzTV Next N0/N1 odrzucona 2026-11-28 – legacy ma Next w sobie, PLAN-mcr §8.7): „Ramówka dnia” i kreator szablonu dnia (PLAN-mcr §7.3 – przy akceptacji nowe numery, bo K19/K20 to dziś konta), D3 (CG Playout przestaje pisać do legacy) i D4 (jedna nakładka compose) z §9.
 
 ## Panel – zrobione (wg planu)
 

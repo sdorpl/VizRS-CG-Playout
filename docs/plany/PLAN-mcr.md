@@ -1,6 +1,6 @@
 # Plan rozwoju VizRS Live (PLAN-mcr) – braki wobec legacy, wzorzec Viz Channel Branding, legacy czy Next
 
-> **Stan:** gałąź `next-v`, wydanie testowe 1.3.0-test.1 (2026-11-10): K1–K11, K18 zrobione; K12–K14, K17 – panel gotowy, czeka na VizRS CG Playout; K15–K16 – kontrakt; Q1 ręcznie; decyzja legacy/Next: **A – legacy** (§6). Nagła emisja live (§5): K22–K24 zrobione i wydane w 26.11.36 (K24 drogą W1). Stan prac: [../STATUS.md](../STATUS.md), znane braki: [../LUKI.md](../LUKI.md), opis działania: [../DOKUMENTACJA.md](../DOKUMENTACJA.md).
+> **Stan:** gałąź `next-v`, wydanie testowe 1.3.0-test.1 (2026-11-10): K1–K11, K18 zrobione; K12–K14, K17 – panel gotowy, czeka na VizRS CG Playout; K15–K16 – kontrakt; Q1 ręcznie; decyzja legacy/Next: **A – legacy** (§6), próba N0/N1 odrzucona (2026-11-28, §8.7). Nagła emisja live (§5): K22–K24 zrobione i wydane w 26.11.36 (K24 drogą W1). Stan prac: [../STATUS.md](../STATUS.md), znane braki: [../LUKI.md](../LUKI.md), opis działania: [../DOKUMENTACJA.md](../DOKUMENTACJA.md).
 >
 > **Jedyny dokument planów rozwoju VizRS Live** (decyzja użytkownika 2026-11-09): nowe plany i punkty panelu dopisuj tutaj – nowy punkt w tabeli §4 (w miejscu kolejki, które mu odpowiada) i opis w §5, nowe analizy jako kolejne sekcje – zamiast zakładać nowe pliki `PLAN-*.md`. Zakończone plany [PLAN-rozbudowy.md](archiwum/PLAN-rozbudowy.md) i [PLAN-makieta.md](archiwum/PLAN-makieta.md) zostają jako archiwum.
 >
@@ -356,7 +356,7 @@ ErsatzTV Next (oficjalny obraz) ── /channel/*.m3u8 ──▶ Caddy ──▶
 
 Nowe moduły w `server/src/`: `store.rs`, `scan.rs`, `sched/` (klasyczny, blokowy, wypełniacze), `next.rs` (pliki Next ze schematów), `epg.rs`, `hdhr.rs`. Do sprawdzenia w repo CG Playout: czy VizRS może podać warstwę `canvas` (wideo z alfą przez HTTP z nagłówkami `x-etv-offset-ms`), żeby zastąpić nakładkę `vizrs-ffmpeg`.
 
-### 8.5 Etapy (propozycja N0–N7, do decyzji – po akceptacji wiersze trafią do §4)
+### 8.5 Etapy (propozycja N0–N7 – odrzucona 2026-11-28, §8.7)
 
 | Punkt | Zakres | Bramka „idziemy dalej” |
 |---|---|---|
@@ -376,6 +376,8 @@ Każdą bramkę można zakończyć decyzją „zostajemy”. Po N1 stan jest trw
 Harmonogramy YAML i Scripted Schedule (C2), ExternalJson, Trakt, Plex/Jellyfin/Emby do czasu N6. Do tego darmowe poprawki legacy i jego społeczność. Kanały lustrzane, przesunięcia czasu, preferencje języka ścieżek i selektor strumieni trzeba przepisać (N3–N5), bo inaczej znikną.
 
 ### 8.7 Rekomendacja i decyzje do podjęcia
+
+**Decyzja użytkownika (2026-11-28): bez próby N0/N1 i bez dalszych etapów N.** „Nie chcę próbować ErsatzTV Next. Legacy zawiera Next w sobie już” – od legacy v26.12.0 wszystkie kanały nadaje wbudowany Next (§6), więc osobny lineup Next ani planista VizRS dla Next nie są potrzebne. Decyzja A z §6 zostaje bez zmian; rekomendacja niżej zostaje jako zapis analizy.
 
 - **Nie zaczynać pełnego przepisania teraz.** Zrobić **N0** (tanie, rozstrzyga technikę) i – jeśli się uda – **N1**. Tak dostajemy ramówkę co do sekundy, `in/out`, LIVE i grafikę w Next bez utraty legacy. Po N1 decyzja §6 zmienia się z „A” na „A + kanały VizRS w Next”.
 - **Warunki przejścia do N2 i dalej** (wystarczy jeden): Next 1.0 albo stabilny schemat playoutu przez ≥ 2 miesiące; legacy przestaje być rozwijane (sygnał z §6); N1 przez miesiąc bez awarii, a koszt utrzymania mostu rośnie.
