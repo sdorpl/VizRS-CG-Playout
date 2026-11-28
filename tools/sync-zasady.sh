@@ -3,7 +3,7 @@
 #   tools/sync-zasady.sh [KATALOG-CG-SYSTEM]          – skopiuj zasady ze źródła do tego repo
 #   tools/sync-zasady.sh --check [KATALOG-CG-SYSTEM]  – sprawdź zgodność (CI, bramka); kod 1 = rozjazd
 # Domyślnie ../VizRS CG System. Kopiowane: bloki <!-- pakiet:X --> … <!-- /pakiet:X --> w CLAUDE.md (A, S, B, C, D),
-# całe GEMINI.md, docs/AGENCI.md i ten skrypt; AGENTS.md = kopia CLAUDE.md (nie dowiązanie). Wersja źródła:
+# całe GEMINI.md, docs/AGENCI.md, tools/check-docs.sh i ten skrypt; AGENTS.md = kopia CLAUDE.md (nie dowiązanie). Wersja źródła:
 # docs/ZASADY_CG_SYSTEM (commit CG System – CI pobiera go do --check). W samym VizRS CG System skrypt pilnuje
 # tylko AGENTS.md = CLAUDE.md. Zmiana zasad pakietu: najpierw CG System, potem ten skrypt w pozostałych repo.
 set -e
@@ -15,7 +15,7 @@ DEF="$TOP/../VizRS CG System"
 grep -q '^name = "vizrs"$' "$TOP/source/Cargo.toml" 2>/dev/null && DEF="$TOP"
 CG="$(cd "${1:-$DEF}" 2>/dev/null && pwd)" || { echo "Brak źródła CG System: ${1:-$DEF}" >&2; exit 2; }
 BLOCKS="A S B C D"
-FILES="GEMINI.md docs/AGENCI.md tools/sync-zasady.sh"
+FILES="GEMINI.md docs/AGENCI.md tools/sync-zasady.sh tools/check-docs.sh"
 [ -f "$CG/CLAUDE.md" ] && [ -f "$CG/source/Cargo.toml" ] || { echo "To nie jest VizRS CG System: $CG" >&2; exit 2; }
 
 # blok X (z liniami znaczników) z pliku $1
@@ -58,7 +58,7 @@ else
     cat "$tmp" > "$TOP/CLAUDE.md"
     rm -f "$TOP/AGENTS.md"; cp "$TOP/CLAUDE.md" "$TOP/AGENTS.md"
     for f in $FILES; do mkdir -p "$(dirname "$TOP/$f")"; cp "$CG/$f" "$TOP/$f"; done
-    chmod +x "$TOP/tools/sync-zasady.sh"
+    chmod +x "$TOP/tools/sync-zasady.sh" "$TOP/tools/check-docs.sh"
     rev=$(git -C "$CG" rev-parse HEAD 2>/dev/null || true)
     [ -n "$rev" ] && echo "$rev" > "$TOP/docs/ZASADY_CG_SYSTEM"
     echo "Zasady pakietu skopiowane z $CG${rev:+ ($rev)}"

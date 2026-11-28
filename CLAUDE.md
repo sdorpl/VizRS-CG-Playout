@@ -27,7 +27,8 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 - **Styk zmienia się po obu stronach w tym samym cyklu.** Opis styku jest u dostawcy; klient opisuje tylko, jak z niego korzysta.
 - **Starsza wersja sąsiada nie psuje aplikacji ani emisji** – brak nowego pola lub ścieżki to „niedostępne w tej wersji”, nie błąd.
 - **Wydania razem:** przed wydaniem sprawdź z bieżącymi wersjami sąsiadów; zmianę wymagającą nowszego sąsiada odnotuj w `CHANGELOG.md` z minimalną wersją.
-- **Po wydaniu – centrum projektu:** w sdorpl/VizRS wiersz w `ZGODNOSC.md` (wersja, data, pliki, nowe minimalne wersje sąsiadów); zmiana funkcji albo styku – także README (§1–§2) i `STYKI.md`; nowy dokument aplikacji – wiersz w spisie dokumentacji README.
+- **Po wydaniu – centrum projektu:** w sdorpl/VizRS wiersz w `ZGODNOSC.md` (wersja, data, pliki, nowe minimalne wersje sąsiadów); zmiana funkcji albo styku – także README (§1–§2) i `STYKI.md`; nowy dokument aplikacji – wiersz w spisie dokumentacji README; zmiana otwartych planów aplikacji – README §9 „Stan prac i otwarte plany”.
+- **Plan w innym repo:** wdrożenie punktu planu, który leży w sąsiednim repozytorium (np. A1 Artist w CG System, renderer natywny w CG System i CG Playout), aktualizuje stan tego planu w tym samym cyklu – commit w repo planu, nie tylko w repo kodu.
 <!-- /pakiet:A -->
 
 ## Zacznij każdą sesję tutaj
@@ -57,6 +58,7 @@ Zgodność – wszystkie aplikacje w bieżących wersjach działają razem:
 - **Numer wersji: rok.miesiąc.rewizja** (`26.11.1` = listopad 2026, pierwsze wydanie w miesiącu; kolejne `26.11.2`, w grudniu od `26.12.1`), bez zer wiodących (semver: Cargo, paczki, obrazy). Znacznik `v<wersja>` = wersja we wszystkich manifestach projektu (lista – „Tego projektu”). Wydania z gałęzi `main`; `main-oldstable` to stan sprzed 26.11.1.
 - **Gdzie co opisywać:** README tylko wprowadza i odsyła; opis działania, opcje i zmienne tylko w `docs/DOKUMENTACJA.md` (nie powielaj w README, planach ani STATUS); API, którego aplikacja jest dostawcą – `docs/API.md` (albo sekcja wskazana w „Tego projektu”); praca użytkownika – `docs/INSTRUKCJA*.md`; wdrożenie i awarie – `docs/RUNBOOK.md`; plany – `docs/plany/` + wiersz w `docs/plany/README.md`; opis całego pakietu – sdorpl/VizRS.
 - **Dokumentacja razem z kodem:** commit zmieniający zachowanie (UI, API, format, opcje, obrazy) aktualizuje w tym samym commicie `docs/DOKUMENTACJA.md`, a gdy dotyczy codziennej pracy – także instrukcję; API – `docs/API.md`; wdrożenie – `docs/RUNBOOK.md`; zmiany wydania – `CHANGELOG.md` (sekcja „Niewydane”); zamknięta luka – usuń wiersz z `docs/LUKI.md`; zmiana etapu – `docs/STATUS.md`.
+- **Dokumentacja stanu – jedno źródło, wszystkie miejsca w jednym cyklu.** Stan punktu planu (zrobione / częściowo / czeka / decyzja / propozycja, z wersją wydania) trzyma tabela etapów w planie; nagłówek planu, wiersz w `docs/plany/README.md` i `docs/STATUS.md` podają go krótko z tą samą wersją, `docs/LUKI.md` – tylko braki. Kto zmienia stan, poprawia wszystkie te miejsca w tym samym commicie. **Wydanie** (nowa wersja w manifestach) aktualizuje też `docs/STATUS.md` – data „Ostatnia aktualizacja”, „Bieżący etap”, „Następne”. **Scalenie gałęzi** do `main` usuwa z dokumentów zapisy „na gałęzi X”, „czeka na tag/scalenie”. Nowa propozycja punktu od razu dostaje wiersz w tabeli planu z numerem i stanem „propozycja” – numerów nie używa się ponownie. `CHANGELOG.md` tylko się wydłuża (wpisy wydanych wersji nie znikają); pilnuje tego i daty STATUS `tools/check-docs.sh` (CI, bramka przed commitem).
 - **Produkcji i danych użytkownika nie ruszaj bez prośby.** Testy na kopii danych, innym porcie albo stosie testowym; działających serwerów, stosów i kontenerów nie zatrzymuj (mogą nadawać).
 - **Zobacz wynik.** Przy pracy nad UI zrzut ekranu (Playwright; pliki PNG poza repo) i obejrzenie go przed commitem.
 <!-- /pakiet:B -->
@@ -161,6 +163,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings
 cargo test                                 # moduły, wektory tests/vectors/, Chromium (pomijany bez przeglądarki)
 cargo build --release && npm test          # kontrakt: binarka jako czarna skrzynka (tests/contract/)
 tools/sync-zasady.sh --check                # zasady pakietu = CG System (wersja w docs/ZASADY_CG_SYSTEM)
+tools/check-docs.sh                         # dokumentacja stanu: CHANGELOG (wersja, bez utraconych wpisów), data STATUS
 ```
 
 Wektory `tests/vectors/*.json` to zachowanie sidecara Node.js sprzed migracji (generator w historii gita, commit 0c54143); po zamierzonej zmianie zachowania popraw wektor w tym samym commicie. Testy kontraktu (udawany VizRS, klient `vizrs-etv-client`, nakładka `vizrs-ffmpeg`; `VIRTRS_CG_BIN`/`VIZRS_ETV_CLIENT_BIN`/`VIZRS_FFMPEG_BIN` wskazują inne binarki) obowiązują każdą zmianę protokołu.

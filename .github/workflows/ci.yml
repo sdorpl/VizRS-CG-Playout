@@ -20,6 +20,8 @@ jobs:
       VIZRS_BROWSER_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # tools/check-docs.sh porównuje CHANGELOG z HEAD~1
       # zasady pakietu (CLAUDE.md – bloki pakiet:*, GEMINI.md, docs/AGENCI.md) = CG System w wersji z docs/ZASADY_CG_SYSTEM
       - name: Wersja CG System dla zasad pakietu
         id: zasady
@@ -34,10 +36,13 @@ jobs:
             GEMINI.md
             docs/AGENCI.md
             tools/sync-zasady.sh
+            tools/check-docs.sh
             source/Cargo.toml
           sparse-checkout-cone-mode: false
       - name: Zasady pakietu zgodne z CG System
         run: tools/sync-zasady.sh --check cg-zasady
+      - name: Dokumentacja stanu (CHANGELOG, STATUS)
+        run: tools/check-docs.sh
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo test --locked
