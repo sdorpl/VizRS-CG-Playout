@@ -1,3 +1,10 @@
+# vizrs-cg – VizRS graphics sidecar for ErsatzTV (+ vizrs-ffmpeg, vizrs-etv-client), static musl binaries.
+#
+# Allowed dependencies (VizRS package rule "dependencies only from the list"; a new one is the user's decision):
+#   png – decoding PNG frames from headless Chromium (DevTools screenshots),
+#   regex – ad detection and path patterns in graphics rules (no default features).
+# JSON, HTTP, base64, DevTools and scaling are our own code; contract tests in Node.js use only the standard library.
+
 [package]
 name = "vizrs-cg"
 version = "26.11.35"

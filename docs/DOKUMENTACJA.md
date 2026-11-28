@@ -2298,6 +2298,10 @@ Bez opublikowanego obrazu dodaj `--build` do `up` – zbuduje go sama A1
 natywnie dla arm64, statycznie (musl), więc działają w obrazie ErsatzTV arm64
 bez dodatkowych pakietów. Na x86 binarka arm64 kompiluje się krzyżowo (ok. 40 s), przez
 QEMU idzie tylko instalacja pakietów obrazu.
+
+Binarki arm64 (`vizrs-cg`, `vizrs-ffmpeg`, `vizrs-etv-client`, `vizrs-render`, panel `vizrs-live`) kompilują się z
+`RUSTFLAGS="-C target-cpu=neoverse-n1 -C opt-level=3"`. Nakładka `docker-compose.ampere.yml` stroi .NET legacy:
+`DOTNET_gcServer=0`, `DOTNET_GCHeapHardLimit=0x60000000` (1,5 GB), `DOTNET_EnableWriteXorExecute=0`.
 Obraz VizRS ma wariant arm64.
 
 Nakładka ogranicza sidecar do 2 CPU i 2 GB (`CG_CPUS`, `CG_MEMORY`), uruchamia
