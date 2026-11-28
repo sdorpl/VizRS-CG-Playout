@@ -238,6 +238,8 @@ Niezależnie od decyzji: CG Playout może sprawdzić, czy element graficzny lega
 
 ### 7.3 Propozycja (do decyzji użytkownika – po akceptacji wiersze trafią do §4)
 
+> Uwaga (2026-11-28): numery K19 i K20 z tej propozycji zajęły później konta operatorów (K19) i okno logowane kontem (K20) w §4. „Ramówka dnia” i „Kreator szablonu dnia” nie są zrobione – przy akceptacji dostaną nowe numery (od K22).
+
 **K19 – Ramówka dnia (edytor listy na datę, wzorzec ffplayout).** Nowy ekran albo karta w Playoutach dla kanału z playoutem **klasycznym**:
 - wybór kanału i daty, lista pozycji z wyliczonymi godzinami (start doby + suma długości z metadanych legacy), pasek zapełnienia doby i pozycje po końcu doby na czerwono;
 - dodawanie z Przeglądarki i wyszukiwarki (jak `contentPicker`), zmiana kolejności, usuwanie, „zapętl do pełnej doby”, „kopiuj dzień na datę…”, źródło z importu K11;

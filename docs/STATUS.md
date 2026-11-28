@@ -2,16 +2,24 @@
 
 > Aktualizuj w tym samym commicie, który zmienia stan. Plan: [plany/PLAN-mcr.md](plany/PLAN-mcr.md), znane braki: [LUKI.md](LUKI.md), opis działania: [DOKUMENTACJA.md](DOKUMENTACJA.md), specyfikacja API: [API.md](API.md), zmiany wydań: [CHANGELOG.md](../CHANGELOG.md).
 >
-> **Ostatnia aktualizacja:** 2026-11-16
+> **Ostatnia aktualizacja:** 2026-11-28
 
 ## Bieżący etap
 
-**Połączenie z VizRS Live – P3 zrobione (2026-11-16):** stosy s1 i s2 (Portainer, stosy 7 i 11) mają `COMPOSE_PROFILES=grafika,ingest`; gałąź `polaczenie-live` scalona do `main` – stosy przeładowane z jednym compose i panelem z `:latest` (26.11.10 ze starego repo, bez migracji bazy; restart ErsatzTV dał planszę zastępczą tylko pozycji w trakcie). Kopie `etv-config` przed P3: `~/vizrs-kopie/etv-config-2026-11-16-przed-p3/` na s1 i s2. Stosy mają włączone „Re-pull image” (2026-11-16) – po wydaniu `stack-refresh` (`.release`) przeładowuje je z nowymi obrazami `:latest`. Wydanie 26.11.11 – pierwsze wspólne z panelem (CHANGELOG).
+**Wydanie 26.11.35** (2026-11-27) na stosach s1, s2 i s3 (Portainer, obrazy `:latest`; s3 – stos `vizplay-s3` od 2026-11-21). Sidecar i panel wychodzą razem (jedna wersja `vizrs-cg` = `vizrs-live`, wydanie z bramką CI od 26.11.32); wersje sąsiadów – `ZGODNOSC.md` w [sdorpl/VizRS](https://github.com/sdorpl/VizRS/blob/main/ZGODNOSC.md), zmiany – [CHANGELOG.md](../CHANGELOG.md).
+
+Ostatnie wydania (szczegóły w CHANGELOG):
+- 26.11.29–26.11.30 – zdarzenia wtórne (K15) z ważnością i zatwierdzaniem (K16), symbol `{next_start_iso}` (Za chwilę Z4), okno AppImage logowane kontem (K20), renderer natywny z VizRS CG System 26.11.13;
+- 26.11.31–26.11.33 – okno AppImage z GStreamerem i podglądem `/output`, grafika VizRS na pozycji bez elementu VizRS, wydanie z bramką CI;
+- 26.11.34–26.11.35 – grafika na pozycji bez elementu także przy `ingest_anytime`, yt-dlp 2026.11.23 dla wejścia YouTube.
+
+**PLAN-mcr** ([plany/PLAN-mcr.md](plany/PLAN-mcr.md)): K1–K21 zrobione i wydane; otwarte tylko Q1 (ręcznie) i propozycje bez decyzji (§7.3, §8).
 
 ## Następne
 
-1. **P4 zrobione (2026-11-16):** repo `sdorpl/VizRS-Live-Playout` zarchiwizowane (notka w README); katalog lokalny `VirtRS CG Playout` → `VizRS CG Playout`; kopie `gpu.rs`, `scale.rs`, `screen.rs`, `vizrs-ui.css` i zasady pakietu z CG System 639f80f. Wydanie 26.11.11 na s1 i s2.
-2. **Lokalny stos `virtrs` (poza repo, decyzja użytkownika):** `.env` wskazuje w `COMPOSE_FILE` starą nakładkę `/home/maciej/vizrs-live-next-v/compose.cg-playout.yml` i nie ma `COMPOSE_PROFILES` – przed następnym `docker compose up` ustawić `COMPOSE_FILE=docker-compose.yml:docker-compose.nvidia.yml:docker-compose.live.yml:panel/compose.build.yml` i `COMPOSE_PROFILES=grafika,ingest` (RUNBOOK §2b).
+1. **Q1 (ręcznie, z użytkownikiem):** Sloty na żywo z prawdziwym sygnałem OBS → CG Playout, Plex z prawdziwym kontem (LUKI #3).
+2. **Nagła emisja live „dziś”** – analiza 2026-11-26, projekt do uzgodnienia z użytkownikiem: jednorazowa emisja z datą (zastępuje pozycję tylko w danym dniu), w `live/channels/N/rebuild` Refresh zamiast Reset (`src/etv_api.rs` `reset_playout` kasuje postęp odcinków), obsługa godziny zajętej przez stałą pozycję (`insertAiring` w `views/live.js`).
+3. **Do decyzji:** „Ramówka dnia” i kreator szablonu dnia (PLAN-mcr §7.3 – przy akceptacji nowe numery, bo K19/K20 to dziś konta), próba N0/N1 z ErsatzTV Next (§8), D3 (CG Playout przestaje pisać do legacy) i D4 (jedna nakładka compose) z §9.
 
 ## Panel – zrobione (wg planu)
 
@@ -30,8 +38,11 @@
 | R10 | web GUI legacy zamknięte za proxy Caddy, lista pokrycia, legacy v26.12.0, CI | `panel/docker/proxy.Caddyfile`, `.github/workflows/` |
 | R11 | wydanie 1.0: instrukcja operatora, runbook, obrazy ghcr, przegląd bezpieczeństwa | `docs/INSTRUKCJA.md`, `docs/RUNBOOK.md`, `release.yml` |
 | R12 | Sloty na żywo (MCR), Audycje LIVE, operator i studio w pasku górnym | `views/live.js`, `app.js` |
+| K1–K21 | PLAN-mcr: sesje, CSP, kontrola ramówki, mozaika, import ramówki, warstwy i TAKE/OUT, as-run, zdarzenia wtórne z ważnością, alarmy, konta operatorów, okno logowane kontem, jedno konto w pakiecie | [plany/PLAN-mcr.md](plany/PLAN-mcr.md) §4 |
 
 ## Panel – historia wydań
+
+Wydania od 26.11.11 (wspólne z sidecarem) opisuje [CHANGELOG.md](../CHANGELOG.md); niżej historia panelu sprzed połączenia.
 
 ### Wydanie 26.11.10 (2026-11-14, gałąź `main`)
 
@@ -63,13 +74,8 @@ Zrobione w panelu: K1–K11, K18 (sesje, CSP, numeracja kanałów, rozdzielczoś
 
 ## Panel – kroki ręczne (czekają na użytkownika)
 
-Sesje automatu niczego nie publikują i nie ruszają produkcji; to zostało do zrobienia ręcznie:
-
-- Wydanie 1.2.3: tag `v1.2.3` wypchnięty 2026-11-08 (razem z VizRS CG Playout v2.12.0 – wejścia studia z panelu; s1 przez stack-refresh); pakiety ghcr publiczne.
-- Lokalna produkcja (stos `virtrs` CG Playout) przełączona 2026-11-07 na VizRS Live nakładką `compose.cg-playout.yml` ([RUNBOOK.md §2a](RUNBOOK.md#2a-wdrożenie-w-portainerze-gitops-i-konfiguracja-proxy)): legacy v26.11.6 → v26.12.0 z mostem (migracja bazy; kopia w `~/vizrs-kopie/`), proxy na 8409, panel na 8090, CG Playout z live API. Do sprawdzenia: tunery i odtwarzacze, które korzystały z innych ścieżek niż `/iptv/*` (`curl -I`, [DOKUMENTACJA.md §15](DOKUMENTACJA.md#15-zamknięcie-web-gui-legacy-r10)).
-- Produkcja (stos `virtrs`) po poprawce integracji z VizRS (Trio, podgląd `/output`): przebudować obraz panelu (`vizrs-live:local`), w `.env` CG Playout usunąć `VIZRS_LIVE_VIZRS_URL=http://127.0.0.1:8789` (nakładka ustawi `:8789` = host panelu, token wyjścia i anteny kanałów), `docker compose up -d live`; sprawdzić ramkę w Grafice kanału i „Trio ↗”.
-- ~~Produkcja (stos `virtrs`) – legacy zawsze najnowsze~~ – zrobione 2026-11-07 21:15: kopia `~/vizrs-kopie/etv-config-2026-11-07-2114-przed-legacy-latest.tgz` i `.env`, `LIVE_LEGACY_IMAGE` usunięte z `.env` CG Playout, `ersatztv` na `vizrs-live-legacy:local` (najnowsze legacy = v26.12.0, most 1.2.0, `commandsMissing = []`, NVIDIA przez CDI, `panel/tests/hwaccel.sh` zielony).
-- Przed wdrożeniem z grafiką: `panel_token` w CG Playout, `VIZRS_LIVE_CG_URL`/`VIZRS_LIVE_CG_TOKEN` w panelu, Sloty na żywo z prawdziwym sygnałem z OBS (LUKI #3).
+- Sloty na żywo z prawdziwym sygnałem z OBS i Plex z prawdziwym kontem – Q1 (LUKI #3).
+- Lokalny stos `virtrs` (poza repo): `.env` poprawiony 2026-11-16 (`COMPOSE_FILE` z `docker-compose.live.yml` i `panel/compose.build.yml`, `COMPOSE_PROFILES=grafika,ingest`; kopia `.env.bak-przed-p4`). Kroki ręczne sprzed połączenia (nakładka `compose.cg-playout.yml`, legacy v26.12.0, `VIZRS_LIVE_VIZRS_URL`) są nieaktualne – historia w gicie (`d849485` i wcześniej).
 
 ## Panel – blokery / uwagi
 

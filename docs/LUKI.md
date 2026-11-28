@@ -9,7 +9,7 @@
 | # | Grupa | Luka | Stan / uwagi |
 |---|---|---|---|
 | 2 | G2 | Jeden sygnał live na kanał: drugi dostaje 409, aktywne przejęcie nie jest wywłaszczane – brak priorytetów odbiorników | [DOKUMENTACJA.md §1](DOKUMENTACJA.md#1-jak-to-działa) oraz [API.md §1](API.md) |
-| 3 | G2 | Renderer natywny (`vizrs-render`) nie rysuje wszystkiego (np. ruch `node.motion`, WebP, wideo, fonty spoza wbudowanych) – w trybie `auto` rysuje wtedy Chromium (więcej CPU) | [DOKUMENTACJA.md §1](DOKUMENTACJA.md#1-jak-to-działa) |
+| 3 | G2 | Renderer natywny (`vizrs-render`) nie rysuje wszystkiego (np. ruch 3D, maska ukośna, żaluzja, efekty tekstu, pętle i tło `node.motion`, glitch/RGB, WebP animowane, wideo, fonty spoza wbudowanych; ruch 2D i WebP nieruchome – od 26.11.30) – w trybie `auto` rysuje wtedy Chromium (więcej CPU) | [DOKUMENTACJA.md §1](DOKUMENTACJA.md#1-jak-to-działa) |
 | 4 | G2 | Dokładne granice stron (`vizrs-render bounds`) wymagają VizRS CG System ≥ 26.11.2; ze starszym strefy grafiki są uczone z pikseli klatek | [DOKUMENTACJA.md §1](DOKUMENTACJA.md#1-jak-to-działa) |
 
 ## G1 – niezawodność i bezpieczeństwo (panel)

@@ -1,6 +1,8 @@
 # PLAN: natywny renderer grafiki VizRS (bez Chromium)
 
-> Status (2026-10-31): **etap N1 rozpoczęty** na gałęziach `render-native` obu repozytoriów: renderer `vizrs-render` 0.1
+> Stan (2026-11-28): renderer w `main` obu repozytoriów; obraz `vizrs-cg` od 26.11.30 wkompilowuje `vizrs-render` z VizRS CG System 26.11.13 (`ARG VIZRS_REF`) – N1, N2 oraz ruch `node.motion` 2D i WebP nieruchome; reszta N3/N4 i N5 – VizRS `docs/plany/PLAN-native.md`.
+>
+> Pierwotnie (2026-10-31): **etap N1 rozpoczęty** na gałęziach `render-native` obu repozytoriów: renderer `vizrs-render` 0.1
 > (VizRS `source/render/`, stan etapów: VizRS `docs/plany/PLAN-native.md`) i opcja `renderer: chromium|native|auto`
 > w sidecarze (DOKUMENTACJA §1, §5). Decyzje z §8 podjęte wg propozycji planu (niżej, „Decyzje – stan”).
 > Dotyczy dwóch repozytoriów: **VizRS CG System** (renderer, nowy kanał protokołu) i **VizRS CG Playout** (odbiór klatek w sidecarze).
