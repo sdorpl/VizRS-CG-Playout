@@ -7,7 +7,7 @@ import { itemCard } from './zdarzenia.js';
 
 /** Przebudowa playoutu przez kolejkę legacy (też w widoku Playouty). */
 export async function build(p, mode) {
-  if (mode === 'Reset' && !(await confirmDlg('Playout od nowa', `Zbudować playout kanału ${p.ChannelNumber} · ${p.ChannelName} od nowa? Ramówka zostanie ułożona ponownie od teraz.`, 'Buduj od nowa'))) return;
+  if (mode === 'Reset' && !(await confirmDlg('Playout od nowa', `Zbudować playout kanału ${p.ChannelNumber} · ${p.ChannelName} od nowa? Ramówka zostanie ułożona ponownie od teraz, a postęp odcinków seriali i kolekcji się skasuje (zacznie od początku). Zwykła przebudowa – „Przebuduj” – zachowuje postęp.`, 'Buduj od nowa'))) return;
   try {
     await cmd('BuildPlayout', { PlayoutId: p.PlayoutId, Mode: mode });
     toast(`Playout ${p.ChannelName}: zlecono (${pl(mode)}). Legacy buduje go w tle.`, 'ok');

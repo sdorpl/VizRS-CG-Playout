@@ -395,7 +395,7 @@ function channelCard(c, receivedAt) {
     inputPicker(c),
     h('div', { class: 'bar ctl' }, main,
       h('label', { class: 'chk' }, anytime, 'studio także poza audycjami'),
-      btn('⟲ Przebuduj ramówkę', () => act(c, 'rebuild', `Kanał ${c.number}: ramówka przebudowana – EPG odświeży się za chwilę`))),
+      btn('⟲ Przebuduj ramówkę', async () => { await rebuild(c.number); route(true); })),
     how);
 }
 
@@ -564,8 +564,21 @@ const STEP = {
   schedule: 'Godzina emisji w harmonogramie', rebuild: 'Ramówka kanału przebudowana',
 };
 
+// K22: przebudowa kanału = Refresh legacy (BuildPlayout przez most) – postęp serii zostaje. REST legacy ma tylko Reset
+// (`/rebuild` CG Playout), który kasuje postęp odcinków – zostaje w Playoutach jako „Od nowa” z potwierdzeniem.
+const REFRESH_CMDS = ['GetPlayoutIdByChannelNumber', 'BuildPlayout'];
+
+/** Refresh playoutu kanału w legacy; błąd z polskim opisem. */
+export async function refreshChannel(channel) {
+  if (!REFRESH_CMDS.every(has)) throw new Error('most bez komend GetPlayoutIdByChannelNumber / BuildPlayout – przebuduj kanał w Playoutach');
+  const id = await cmd('GetPlayoutIdByChannelNumber', { ChannelNumber: String(channel) });
+  if (!Number.isInteger(id)) throw new Error(`kanał ${channel} nie ma playoutu w ErsatzTV`);
+  await cmd('BuildPlayout', { PlayoutId: id, Mode: 'Refresh' });
+}
+
+const REBUILT = (n) => `Kanał ${n}: ramówka przebudowana (postęp serii zostaje) – EPG odświeży się za chwilę`;
 async function rebuild(channel) {
-  try { await cg(`live/channels/${encodeURIComponent(channel)}/rebuild`, 'POST'); toast(`Kanał ${channel}: ramówka przebudowana – EPG odświeży się za chwilę`); } catch (e) { toast(e.message, 'bad'); }
+  try { await refreshChannel(channel); toast(REBUILT(channel)); } catch (e) { toast(`Przebudowa kanału ${channel}: ${e.message}`, 'bad'); }
 }
 
 // ---------- godziny emisji: pozycje harmonogramu kanału ----------
@@ -673,7 +686,7 @@ const loadItems = async (id) => ((await cmd('GetProgramScheduleItems', { Id: id 
 const airingsOf = (items, coll) => items.map((it, i) => ({ it, i })).filter(({ it }) => isLive(it, coll) && isFixed(it));
 
 async function rebuildStep(channel) {
-  try { await cg(`live/channels/${encodeURIComponent(channel)}/rebuild`, 'POST'); return { step: 'rebuild', ok: true, detail: 'EPG odświeży się za chwilę' }; } catch (e) { return { step: 'rebuild', ok: false, detail: e.message }; }
+  try { await refreshChannel(channel); return { step: 'rebuild', ok: true, detail: 'Refresh – postęp serii zostaje; EPG odświeży się za chwilę' }; } catch (e) { return { step: 'rebuild', ok: false, detail: e.message }; }
 }
 
 // ---------- okno audycji: EPG + emisje ----------
@@ -850,7 +863,10 @@ async function showDialog(channels, show) {
       try { steps.push(...(await saveAirings(saved, ch, loaded, rows))); } catch (e) { steps.push({ step: 'schedule', ok: false, detail: e.message }); }
     }
   }
-  if ((changed && show) || steps.some((x) => x.step === 'schedule' && x.ok)) steps.push(await rebuildStep(saved.channel || data.channel));
+  // K22: zapis harmonogramu (ReplaceProgramScheduleItems) legacy sam kończy Refreshem – drugi niepotrzebny;
+  // przebudowa tylko po zmianie danych audycji widocznych w EPG
+  if (changed && show) steps.push(await rebuildStep(saved.channel || data.channel));
+  else if (steps.some((x) => x.step === 'schedule' && x.ok)) steps.push({ step: 'rebuild', ok: true, detail: 'legacy przebudował ramówkę sam po zapisie harmonogramu (Refresh – postęp serii zostaje)' });
   await route(true);
   if (!steps.length) { toast('Bez zmian'); return; }
   await doneDialog(`„${saved.title || data.title}” ${show ? 'zapisana' : 'jest'} w ErsatzTV`, { steps }, show ? null : saved);
@@ -1001,7 +1017,7 @@ VIEWS.audycje = async () => {
       h('div', { class: 'cols' },
         await libraryPanel(shows),
         panel('Przebuduj ramówkę', null, h('div', { class: 'live-side' },
-          h('p', { class: 'dim' }, 'Po zmianie harmonogramu przebuduj playout kanału, żeby audycje trafiły do EPG.'),
+          h('p', { class: 'dim' }, 'Po zmianie harmonogramu przebuduj playout kanału, żeby audycje trafiły do EPG. Przebudowa zachowuje postęp serii (Refresh); „Od nowa” – tylko w Playoutach.'),
           numbers.length ? h('div', { class: 'bar' }, numbers.map((n) => btn(`⟲ kanał ${n}`, async () => { await rebuild(n); route(true); }))) : h('div', { class: 'empty' }, 'Brak kanałów.'))))),
   ];
 };

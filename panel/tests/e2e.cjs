@@ -26,6 +26,9 @@ function check(cond, msg) {
   // 404 miniatury strony VizRS jest zamierzony: CG Playout nie ma jej jeszcze, panel pokazuje napis „VizRS n”
   const thumb404 = (status, url) => status === 404 && /\/api\/cg\/live\/thumbs\//.test(url || '');
   page.on('console', (m) => m.type() === 'error' && !((expectFail || thumb404(404, m.location()?.url)) && /Failed to load resource/.test(m.text())) && errors.push(m.text()));
+  // K22: przebudowy kanału z panelu – BuildPlayout przez most (Refresh), nie Reset CG Playout (`/rebuild`)
+  const builds = [];
+  page.on('request', (r) => { if (/\/api\/cmd\/BuildPlayout$/.test(r.url())) builds.push(JSON.parse(r.postData() || '{}')); });
   page.on('response', (r) => r.status() >= 400 && !expectFail && !thumb404(r.status(), r.url()) && errors.push(`${r.status()} ${r.request().method()} ${r.url()}`));
 
 
@@ -1670,6 +1673,14 @@ function check(cond, msg) {
     && await page.getAttribute('input[aria-label="Link wejścia 24-4"]', 'type') === 'password' && /pobiera go znowu/.test(await page.textContent('[data-inputs="24"]')), 'sloty: wejście z linku – adres ukryty (token), opis');
   check(/NA ANTENIE/.test(await page.textContent('main')), 'sloty: kanał 24 z sygnałem studia NA ANTENIE');
   check(/live – ramówka wstrzymana/.test(await page.textContent('[data-live-channel="24"] [data-live-graphics]')), 'sloty: przejęcie – grafika live zamiast ramówki');
+  {
+    const nb = builds.length, rb = CG.rebuilt || 0;
+    await page.click('[data-live-channel="24"] button:has-text("Przebuduj ramówkę")');
+    await page.waitForFunction(() => /postęp serii zostaje/.test(document.getElementById('toast').textContent));
+    check(builds.length === nb + 1 && builds[nb].Mode === 'Refresh' && Number.isInteger(builds[nb].PlayoutId) && (CG.rebuilt || 0) === rb,
+      'K22: „Przebuduj ramówkę” na karcie kanału = Refresh przez most, bez Resetu CG Playout');
+    await page.waitForSelector('main[data-view="live"] [data-live-channel="24"]');
+  }
   const inTab = await page.textContent('[data-inputs-table]');
   check(inTab.includes('rtmp://tv.example.pl:1936/live') && inTab.includes('YouTube') && inTab.includes('https://youtu.be/abc123') && /nadaje/.test(inTab) && /h264 · z dźwiękiem/.test(inTab) && !inTab.includes('studio-klucz') && !inTab.includes('tajne')
     && inTab.includes('Link') && inTab.includes('https://cdn.example.pl/live/index.m3u8?***') && !inTab.includes('tajny-token'),
@@ -1876,8 +1887,9 @@ function check(cond, msg) {
   await page.click('#dlg-buttons button:has-text("Utwórz")');
   await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
   const wiz = await page.textContent('[data-wizard]');
-  check(/Audycja zapisana/.test(wiz) && /Godzina emisji w harmonogramie.*INFO24 dzień.*07:15, 20:00/.test(wiz) && /Ramówka kanału przebudowana/.test(wiz) && CG.rebuilt === 1,
-    `audycje: dwie emisje zapisane przy zakładaniu, ramówka przebudowana (${wiz})`);
+  check(/Audycja zapisana/.test(wiz) && /Godzina emisji w harmonogramie.*INFO24 dzień.*07:15, 20:00/.test(wiz) && /Ramówka kanału przebudowana.*legacy przebudował ramówkę sam/.test(wiz) && !CG.rebuilt && !builds.some((b) => b.Mode !== 'Refresh'),
+    `audycje: dwie emisje zapisane przy zakładaniu, ramówkę przebudował legacy (Refresh) bez Resetu CG (${wiz})`);
+  const builtAt = builds.length;
   check(CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '12'), 'audycje: kategoria wiekowa zapisana w CG Playout');
   let li = await liveItems();
   check(li.length === 2 && li.every((it) => it.StartType === 'Fixed' && it.PlayoutMode === 'One') && /^07:15/.test(li[0].StartTime) && li[0].FixedStartTimeBehavior === 'Flexible'
@@ -1898,7 +1910,7 @@ function check(cond, msg) {
   await page.click('#dlg-buttons button:has-text("Zapisz")');
   await page.waitForSelector('#overlay:not([hidden]) [data-wizard]');
   li = await liveItems();
-  check(li.length === 1 && /^21:15/.test(li[0].StartTime) && (await items24()).length === before24 + 1 && CG.rebuilt === 2
+  check(li.length === 1 && /^21:15/.test(li[0].StartTime) && (await items24()).length === before24 + 1 && !CG.rebuilt && builds.length === builtAt + 1 && builds[builtAt].Mode === 'Refresh'
     && CG.shows.some((x) => x.title === 'Debata E2E' && x.content_rating === '16'), 'audycje: emisja przeniesiona, powtórka usunięta, kategoria zmieniona');
   await page.click('#dlg-buttons button:has-text("Gotowe")');
   // bez zmian = bez zapisu i bez przebudowy; potem usunięcie ostatniej emisji
@@ -1906,7 +1918,7 @@ function check(cond, msg) {
   await page.waitForSelector('input[aria-label="Godzina emisji 1"]');
   await page.click('#dlg-buttons button:has-text("Zapisz")');
   await page.waitForFunction(() => /Bez zmian/.test(document.getElementById('toast').textContent));
-  check(CG.rebuilt === 2, 'audycje: zapis bez zmian nie przebudowuje ramówki');
+  check(!CG.rebuilt && builds.length === builtAt + 1, 'audycje: zapis bez zmian nie przebudowuje ramówki');
   await page.click('tr:has(td:has-text("Debata E2E")) button:has-text("Edytuj…")');
   await page.waitForSelector('input[aria-label="Godzina emisji 1"]');
   await page.click('[data-airings] tbody tr:first-child button:has-text("✕")');

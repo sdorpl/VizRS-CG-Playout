@@ -4,6 +4,8 @@ Wydania VizRS CG Playout w numeracji rok.miesiąc.rewizja od wersji 26.11.1, pub
 
 ## Niewydane
 
+- **Panel: przebudowa ramówki bez kasowania postępu seriali (PLAN-mcr K22).** „⟲ Przebuduj ramówkę” na karcie kanału w Slotach na żywo i w Audycjach LIVE oraz przebudowa po zmianie audycji robią Refresh playoutu przez most (`BuildPlayout`), a nie Reset CG Playout (`/rebuild`), który zaczynał seriale od początku. Po zapisie samych emisji panel nie przebudowuje drugi raz – legacy robi to sam. „Od nowa” zostaje w Playoutach i Na antenie, z ostrzeżeniem o skasowaniu postępu.
+
 ## 26.11.35 (2026-11-27)
 
 - **Wejście YouTube znowu działa: yt-dlp 2026.11.23** (było 2026.10.26) w obrazie `vizrs-cg`. YouTube zmienił skrypt odtwarzacza (player `b485e332`) i solver wyzwań yt-dlp 2026.10.26 (EJS 0.8.0) przestał go rozwiązywać – „n challenge solving failed”, „No video formats found!” mimo ważnych ciasteczek (S1 2026-11-27, kanał 1). Wersja 2026.11.23 z Deno i tymi samymi ciasteczkami znajduje transmisję (H.264 1080p + AAC).
